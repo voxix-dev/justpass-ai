@@ -4,6 +4,21 @@ Homework samples with what a good answer must contain, and a scorer, so model an
 can be compared. Real agent runs cost model credits: run them nightly or on PRs labelled
 `run-evals`, never on every PR. Tests only use the fake solver and the fake judge.
 
+## Checks
+Deterministic, run on every output:
+- `not_empty`
+- `math_syntax`: math delimiters, braces, `\begin`/`\end` and `\left`/`\right` balance, so KaTeX can
+  render it. Inline `$...$` follows pandoc's rule; a dollar sign for money must be written `\$`.
+  Code spans are ignored. Unknown commands are not caught.
+- `final_answer` (math): the last `\boxed{...}` must match one of `answers`. Normalised first:
+  spaces, everything up to the last `=` (`f'(1) = 1`), anything after `\approx`, a trailing
+  `\text{unit}`, `\dfrac`, `\frac12`, and equal numbers (`\frac{1}{2}` = `0.5`). A comma between
+  digits is a decimal comma (`2,5`) unless `language` is `en`, where it separates thousands.
+  One answer per sample: sets of solutions are not supported yet.
+- `length`: word count within `min_words`/`max_words`, when set.
+
+Rubric scoring by an LLM judge comes in the next PR.
+
 ## Samples
 One YAML file per sample in `samples/<subject>/<id>.yaml` (not `.yml`); the file name must equal
 `id`. The `Sample` model in `evals/src/evals/models.py` validates every field:

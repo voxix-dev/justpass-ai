@@ -51,3 +51,9 @@ class Sample(BaseModel):
         if self.min_words and self.max_words and self.min_words > self.max_words:
             raise ValueError("min_words is larger than max_words")
         return self
+
+
+class CheckResult(BaseModel):
+    name: str
+    passed: bool
+    detail: str = ""
