@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.115",
     "pydantic>=2.7",
     "pyjwt[crypto]>=2.15",
+    "shared",
     "sqlalchemy[asyncio]>=2.1.6,<2.2",
     "uvicorn>=0.30",
 ]
@@ -24,3 +25,6 @@ packages = ["src/api"]
 # uvicorn: the server binary. alembic: used by migrations/ and its CLI. asyncpg: the Postgres
 # driver, which SQLAlchemy loads from the postgresql+asyncpg:// URL. None of them is imported in src.
 DEP002 = ["uvicorn", "alembic", "asyncpg"]
+
+[tool.uv.sources]
+shared = { workspace = true }
