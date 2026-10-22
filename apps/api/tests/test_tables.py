@@ -6,7 +6,16 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.tables import REVIEW_WINDOW, Artifact, InvalidTransition, Job, JobRound, User
+from api.tables import (
+    REVIEW_WINDOW,
+    Artifact,
+    InvalidTransition,
+    Job,
+    JobRound,
+    MemoryDoc,
+    User,
+    search_memory,
+)
 from shared.models import ArtifactKind, JobStatus, Level, Role
 
 NOW = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
@@ -114,10 +123,15 @@ async def test_artifact_has_content_or_a_storage_key_not_both(session: AsyncSess
 
 
 @pytest.mark.anyio
-async def test_deleting_a_user_deletes_their_jobs_rounds_and_artifacts(session: AsyncSession):
+async def test_deleting_a_user_deletes_all_their_data(session: AsyncSession):
     job = await add_job_with_round(session)
-    session.add(
-        Artifact(job_id=job.id, round=1, role=Role.WRITER, kind=ArtifactKind.FINAL, content="x")
+    session.add_all(
+        [
+            Artifact(
+                job_id=job.id, round=1, role=Role.WRITER, kind=ArtifactKind.FINAL, content="x"
+            ),
+            MemoryDoc(user_id=job.user_id, body="profile"),
+        ]
     )
     await session.flush()
     await session.delete(await session.get_one(User, job.user_id))
@@ -126,3 +140,31 @@ async def test_deleting_a_user_deletes_their_jobs_rounds_and_artifacts(session: 
     for table in (JobRound, Artifact):
         count = select(func.count()).select_from(table).where(table.job_id == job.id)
         assert await session.scalar(count) == 0
+    docs = select(func.count()).select_from(MemoryDoc).where(MemoryDoc.user_id == job.user_id)
+    assert await session.scalar(docs) == 0
+
+
+@pytest.mark.anyio
+async def test_one_profile_doc_per_user(session: AsyncSession):
+    user = await add_user(session)
+    session.add(MemoryDoc(user_id=user.id, body="Writes informally."))
+    await session.flush()
+    session.add(MemoryDoc(user_id=user.id, body="A second profile."))
+    with pytest.raises(IntegrityError, match="uq_memory_docs_user_id_subject"):
+        await session.flush()
+
+
+@pytest.mark.anyio
+async def test_search_finds_only_this_users_docs(session: AsyncSession):
+    alice, bob = await add_user(session), await add_user(session)
+    session.add_all(
+        [
+            MemoryDoc(user_id=alice.id, subject="physics", body="Loses points for missing units."),
+            MemoryDoc(user_id=alice.id, body="Writes informally."),
+            MemoryDoc(user_id=bob.id, subject="physics", body="Always forgets units."),
+        ]
+    )
+    await session.flush()
+    found = await search_memory(session, alice.id, "units")
+    assert [doc.subject for doc in found] == ["physics"]
+    assert await search_memory(session, alice.id, "chemistry") == []

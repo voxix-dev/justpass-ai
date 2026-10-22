@@ -3,7 +3,8 @@ API, and anything that leaves the api is converted to a Pydantic model first.
 
 After changing a table run `uv run --env-file .env alembic revision --autogenerate --rev-id 0004
 -m "what changed"` (next free number) and read the generated migration. Autogenerate does not see
-changes to computed columns or to the values of an enum column: write those by hand.
+changes to computed columns (memory_docs.tsv) or to the values of an enum column: write those by
+hand.
 
 There are no relationship()s, so the session does not know which row to insert first: add the
 parent row (user, job, round) and flush it before adding rows that point to it.
@@ -15,6 +16,7 @@ from enum import StrEnum
 
 from sqlalchemy import (
     CheckConstraint,
+    Computed,
     DateTime,
     Enum,
     ForeignKey,
@@ -22,10 +24,14 @@ from sqlalchemy import (
     Index,
     MetaData,
     String,
+    UniqueConstraint,
     func,
+    literal_column,
+    select,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, TSVECTOR
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from shared.models import ArtifactKind, JobStatus, Level, Role, can_transition
@@ -170,3 +176,43 @@ class Artifact(Base):
     content: Mapped[str | None]  # Markdown, math as KaTeX
     storage_key: Mapped[str | None]  # Cloud Storage object key, for files
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class MemoryDoc(Base):
+    """A Markdown doc of what agents know about a student: the profile (subject is None) or one
+    per subject. Derived from the other tables by the curator agent, so it can be rebuilt."""
+
+    __tablename__ = "memory_docs"
+    __table_args__ = (
+        UniqueConstraint("user_id", "subject", postgresql_nulls_not_distinct=True),
+        Index(None, "tsv", postgresql_using="gin"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    subject: Mapped[str | None] = mapped_column(String(100))
+    body: Mapped[str]
+    # 'simple' does no stemming, so it works the same for every language.
+    tsv: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed(
+            "to_tsvector('simple'::regconfig, coalesce(subject, '') || ' ' || body)",
+            persisted=True,
+        ),
+        deferred=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+async def search_memory(
+    session: AsyncSession, user_id: str, query: str, limit: int = 5
+) -> list[MemoryDoc]:
+    """One user's memory docs matching `query` (web-search syntax), best match first."""
+    tsquery = func.websearch_to_tsquery(literal_column("'simple'::regconfig"), query)
+    found = await session.scalars(
+        select(MemoryDoc)
+        .where(MemoryDoc.user_id == user_id, MemoryDoc.tsv.bool_op("@@")(tsquery))
+        .order_by(func.ts_rank(MemoryDoc.tsv, tsquery).desc())
+        .limit(limit)
+    )
+    return list(found)
