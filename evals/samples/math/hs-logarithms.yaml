@@ -1,0 +1,7 @@
+id: hs-logarithms
+subject: math
+level: high_school
+language: en
+prompt: Evaluate log_2(32) + log_3(9).
+answers: ["7"]
+source: synthetic

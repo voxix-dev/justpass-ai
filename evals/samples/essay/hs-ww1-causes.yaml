@@ -1,0 +1,13 @@
+id: hs-ww1-causes
+subject: essay
+level: high_school
+language: en
+prompt: Write an essay of 500 to 800 words on the main causes of World War I.
+min_words: 500
+max_words: 800
+rubric:
+  - {description: "Clear thesis in the introduction", points: 2}
+  - {description: "Explains at least three causes (e.g. alliances, militarism, imperialism, nationalism, the Sarajevo assassination)", points: 4}
+  - {description: "Facts and dates are accurate", points: 3}
+  - {description: "Conclusion ties the causes together", points: 1}
+source: synthetic

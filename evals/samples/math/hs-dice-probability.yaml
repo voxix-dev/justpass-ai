@@ -1,0 +1,7 @@
+id: hs-dice-probability
+subject: math
+level: high_school
+language: en
+prompt: Two fair six-sided dice are rolled. What is the probability that the sum is 7?
+answers: ['\frac{1}{6}']
+source: synthetic

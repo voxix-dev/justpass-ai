@@ -1,0 +1,13 @@
+id: hs-es-tecnologia
+subject: essay
+level: high_school
+language: es
+prompt: Escribe un ensayo de 300 a 500 palabras sobre las ventajas y desventajas de la tecnología en la educación.
+min_words: 300
+max_words: 500
+rubric:
+  - {description: "Presenta ventajas y desventajas de forma equilibrada", points: 3}
+  - {description: "Usa ejemplos concretos", points: 2}
+  - {description: "Conclusión con opinión propia", points: 2}
+  - {description: "Escrito en español correcto", points: 2}
+source: synthetic

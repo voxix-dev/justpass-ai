@@ -1,0 +1,7 @@
+id: hs-parabola-vertex
+subject: math
+level: high_school
+language: en
+prompt: Find the x-coordinate of the vertex of the parabola y = 2x^2 - 8x + 3.
+answers: ["2"]
+source: synthetic

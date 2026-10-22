@@ -1,0 +1,7 @@
+id: college-de-grenzwert
+subject: math
+level: college
+language: de
+prompt: Berechnen Sie den Grenzwert von sin(3x) / x für x gegen 0.
+answers: ["3"]
+source: synthetic

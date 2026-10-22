@@ -1,0 +1,7 @@
+id: hs-linear-equation
+subject: math
+level: high_school
+language: en
+prompt: Solve for x. 3x + 7 = 22
+answers: ["5"]
+source: synthetic

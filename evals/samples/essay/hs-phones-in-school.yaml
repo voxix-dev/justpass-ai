@@ -1,0 +1,13 @@
+id: hs-phones-in-school
+subject: essay
+level: high_school
+language: en
+prompt: Argumentative essay (400-600 words). Should schools ban phones during the school day?
+min_words: 400
+max_words: 600
+rubric:
+  - {description: "Takes a clear position", points: 2}
+  - {description: "At least two arguments supported by examples or evidence", points: 4}
+  - {description: "Addresses and rebuts a counterargument", points: 2}
+  - {description: "Organised paragraphs with transitions", points: 2}
+source: synthetic

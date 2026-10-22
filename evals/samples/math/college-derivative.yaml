@@ -1,0 +1,7 @@
+id: college-derivative
+subject: math
+level: college
+language: en
+prompt: Let f(x) = x^3 ln(x). Compute f'(1).
+answers: ["1"]
+source: synthetic

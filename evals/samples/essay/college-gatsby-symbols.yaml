@@ -1,0 +1,13 @@
+id: college-gatsby-symbols
+subject: essay
+level: college
+language: en
+prompt: Analyse two symbols in The Great Gatsby and what they say about the American Dream. 700-1000 words.
+min_words: 700
+max_words: 1000
+rubric:
+  - {description: "Identifies two real symbols (e.g. the green light, the valley of ashes, Eckleburg's eyes)", points: 2}
+  - {description: "Interprets each symbol with textual evidence", points: 4}
+  - {description: "Links the symbols to an argument about the American Dream", points: 3}
+  - {description: "No invented quotations or plot events", points: 1}
+source: synthetic

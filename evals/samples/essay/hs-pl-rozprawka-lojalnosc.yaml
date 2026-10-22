@@ -1,0 +1,12 @@
+id: hs-pl-rozprawka-lojalnosc
+subject: essay
+level: high_school
+language: pl
+prompt: Rozprawka (min. 300 słów). Czy lojalność zawsze jest cnotą? Odwołaj się do lektury obowiązkowej i innego tekstu kultury.
+min_words: 300
+rubric:
+  - {description: "Jasne stanowisko wobec problemu", points: 2}
+  - {description: "Argument oparty na lekturze obowiązkowej, z trafnym przykładem", points: 3}
+  - {description: "Argument oparty na innym tekście kultury", points: 2}
+  - {description: "Podsumowanie i poprawny język", points: 2}
+source: synthetic

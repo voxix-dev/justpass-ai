@@ -1,0 +1,7 @@
+id: hs-pl-obnizka
+subject: math
+level: high_school
+language: pl
+prompt: Kurtka kosztowała 250 zł. Sklep obniżył cenę o 20%. Ile kosztuje kurtka po obniżce?
+answers: ["200", "200 zł"]
+source: synthetic

@@ -1,0 +1,13 @@
+id: college-minimum-wage
+subject: essay
+level: college
+language: en
+prompt: Analyse the effects of raising the minimum wage on employment, using the competitive and monopsony models. 800-1000 words.
+min_words: 800
+max_words: 1000
+rubric:
+  - {description: "Correct competitive labour market prediction (lower employment)", points: 3}
+  - {description: "Correct monopsony prediction (employment can rise)", points: 3}
+  - {description: "Mentions empirical evidence and that results are debated", points: 2}
+  - {description: "Clear structure and economic vocabulary", points: 2}
+source: synthetic

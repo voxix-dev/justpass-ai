@@ -1,0 +1,7 @@
+id: college-definite-integral
+subject: math
+level: college
+language: en
+prompt: Compute the integral of sin(x) cos(x) from x = 0 to x = pi/2.
+answers: ['\frac{1}{2}']
+source: synthetic

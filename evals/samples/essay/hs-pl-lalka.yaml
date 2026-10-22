@@ -1,0 +1,13 @@
+id: hs-pl-lalka
+subject: essay
+level: high_school
+language: pl
+prompt: Stanisław Wokulski jako romantyk i pozytywista. Napisz wypracowanie (400-700 słów) na podstawie "Lalki" Bolesława Prusa.
+min_words: 400
+max_words: 700
+rubric:
+  - {description: "Teza odpowiada na temat", points: 2}
+  - {description: "Cechy romantyka poparte scenami z powieści (np. miłość do Izabeli)", points: 3}
+  - {description: "Cechy pozytywisty poparte scenami z powieści (np. praca, handel, nauka)", points: 3}
+  - {description: "Poprawna polszczyzna i kompozycja (wstęp, rozwinięcie, zakończenie)", points: 2}
+source: synthetic

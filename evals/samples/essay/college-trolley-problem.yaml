@@ -1,0 +1,13 @@
+id: college-trolley-problem
+subject: essay
+level: college
+language: en
+prompt: In 800-1200 words, compare how utilitarianism and Kantian ethics answer the trolley problem, and defend one view.
+min_words: 800
+max_words: 1200
+rubric:
+  - {description: "Accurately explains the utilitarian answer", points: 3}
+  - {description: "Accurately explains the Kantian answer (persons as ends, not means)", points: 3}
+  - {description: "Discusses the footbridge variant or another variant that separates the views", points: 2}
+  - {description: "Defends a position and answers the strongest objection", points: 2}
+source: synthetic

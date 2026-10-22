@@ -1,0 +1,13 @@
+id: college-replication-crisis
+subject: essay
+level: college
+language: en
+prompt: Explain the replication crisis in psychology, its causes and the reforms proposed. 600-900 words.
+min_words: 600
+max_words: 900
+rubric:
+  - {description: "Defines the crisis and cites a large replication effort", points: 2}
+  - {description: "Explains causes (p-hacking, small samples, publication bias)", points: 4}
+  - {description: "Describes reforms (preregistration, open data, larger samples)", points: 3}
+  - {description: "Neutral academic tone", points: 1}
+source: synthetic

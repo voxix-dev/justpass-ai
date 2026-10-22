@@ -1,0 +1,13 @@
+id: college-pl-transformacja
+subject: essay
+level: college
+language: pl
+prompt: Esej (700-1000 słów). Oceń skutki społeczne transformacji gospodarczej w Polsce po 1989 roku.
+min_words: 700
+max_words: 1000
+rubric:
+  - {description: "Opisuje główne reformy (np. plan Balcerowicza)", points: 2}
+  - {description: "Analizuje skutki pozytywne i negatywne (np. bezrobocie, wzrost PKB)", points: 4}
+  - {description: "Własna, uargumentowana ocena", points: 2}
+  - {description: "Fakty i dane są poprawne", points: 2}
+source: synthetic

@@ -1,0 +1,7 @@
+id: hs-pl-przekatna
+subject: math
+level: high_school
+language: pl
+prompt: Oblicz długość przekątnej kwadratu o boku 4 cm.
+answers: ['4\sqrt{2}']
+source: synthetic
