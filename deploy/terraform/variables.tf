@@ -55,8 +55,14 @@ variable "spot_nodes" {
   default     = true
 }
 
+variable "db_tier" {
+  description = "Cloud SQL tier. Not db-f1-micro: its ~25 connections don't fit Substrate's ~20 plus the api."
+  type        = string
+  default     = "db-g1-small"
+}
+
 variable "deletion_protection" {
-  description = "Protects the cluster (and, later, the database and buckets). Set to false only to tear down."
+  description = "Protects the cluster, database and buckets. Set to false only to tear down."
   type        = bool
   default     = true
 }
