@@ -1,0 +1,51 @@
+# Debug client with the identity our API will run as (spiffe://cluster.local/ns/homework/sa/api).
+# The atenet router only accepts mTLS from SPIFFE IDs in ATE_INGRESS_ALLOWED_SPIFFE_IDS (see env.sh).
+#   kubectl exec -n homework router-client -- curl -s -X POST \
+#     --cert /run/identity/credential-bundle.pem --cacert /run/router-ca/trust-bundle.pem \
+#     -H "ate-target-actor: ate-demo-counter/my-counter-1" https://atenet-router.ate-system.svc/
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: homework
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api
+  namespace: homework
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: router-client
+  namespace: homework
+spec:
+  serviceAccountName: api
+  containers:
+  - name: curl
+    image: docker.io/curlimages/curl:8.11.1
+    command: ["sleep", "infinity"]
+    volumeMounts:
+    - name: identity
+      mountPath: /run/identity
+    - name: router-ca
+      mountPath: /run/router-ca
+  volumes:
+  # Client certificate + key, issued for this pod's service account.
+  - name: identity
+    projected:
+      sources:
+      - podCertificate:
+          signerName: podidentity.podcert.ate.dev/identity
+          keyType: ECDSAP256
+          credentialBundlePath: credential-bundle.pem
+  # CA that signs the router's serving certificate.
+  - name: router-ca
+    projected:
+      sources:
+      - clusterTrustBundle:
+          signerName: servicedns.podcert.ate.dev/identity
+          labelSelector:
+            matchLabels:
+              podcert.ate.dev/canarying: live
+          path: trust-bundle.pem

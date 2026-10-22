@@ -1,0 +1,9 @@
+name: math
+description: Solve each task in parallel, verify with code, review.
+steps:
+  - role: solver
+    tier: mid
+    escalate_to: strong
+    parallel_per_task: true
+  - role: review
+    tier: mid

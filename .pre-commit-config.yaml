@@ -1,0 +1,20 @@
+# Local hooks use the versions pinned in uv.lock, so nothing here needs updating.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: uv-lock
+        name: uv lock is up to date
+        entry: uv lock --check
+        language: system
+        pass_filenames: false
+        files: pyproject\.toml$

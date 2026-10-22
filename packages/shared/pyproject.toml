@@ -1,0 +1,13 @@
+[project]
+name = "shared"
+version = "0.0.0"
+description = "Models shared by the API and the agent: job states, roles, tiers, agent results."
+requires-python = ">=3.14"
+dependencies = ["pydantic>=2.7"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shared"]

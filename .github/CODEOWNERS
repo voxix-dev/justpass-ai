@@ -1,0 +1,6 @@
+# Replace OWNER with your GitHub username. Changes to these paths need the owner's approval.
+# /apps/agent/      @OWNER
+# /packages/shared/ @OWNER
+# /contracts/       @OWNER
+# /deploy/          @OWNER
+# /.github/         @OWNER

@@ -1,0 +1,10 @@
+name: essay
+description: Research the topic, write the essay, review it against the task.
+steps:
+  - role: research
+    tier: mid
+  - role: writer
+    tier: mid
+    escalate_to: strong
+  - role: review
+    tier: mid

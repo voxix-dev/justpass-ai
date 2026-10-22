@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run pyright
+      - run: uv run lint-imports
+      - name: deptry
+        run: for p in apps/api apps/agent packages/shared; do (cd "$p" && uv run deptry src) || exit 1; done
+      - run: uv run pytest --cov --cov-report=xml
+      - name: coverage of changed lines
+        if: github.event_name == 'pull_request'
+        run: uv run diff-cover coverage.xml --compare-branch=origin/${{ github.base_ref }} --fail-under=70
+      - name: API contract is up to date
+        run: |
+          uv run python -m api.export_openapi
+          test -z "$(git status --porcelain contracts/)" || { git status contracts/; exit 1; }
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  pr-size:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: at most 400 changed lines (lockfile and contract excluded)
+        run: |
+          changed=$(git diff --numstat origin/${{ github.base_ref }}...HEAD -- . ':!uv.lock' ':!contracts/' \
+            | awk '{s += $1 + $2} END {print s + 0}')
+          echo "changed lines: $changed"
+          test "$changed" -le 400
