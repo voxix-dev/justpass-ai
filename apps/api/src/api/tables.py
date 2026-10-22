@@ -84,6 +84,10 @@ class Job(Base):
     __tablename__ = "jobs"
     __table_args__ = (
         CheckConstraint("input_text IS NOT NULL OR cardinality(photo_keys) > 0", name="has_input"),
+        CheckConstraint(
+            "(status = 'awaiting_review') = (review_deadline IS NOT NULL)",
+            name="deadline_iff_awaiting_review",
+        ),
         Index(None, "user_id", "updated_at"),  # "my jobs" and "what changed since"
         Index(None, "review_deadline", postgresql_where=text("status = 'awaiting_review'")),
     )
@@ -91,7 +95,9 @@ class Job(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     # Change it with move_to(), never directly.
-    status: Mapped[JobStatus] = mapped_column(str_enum(JobStatus, "status"))
+    status: Mapped[JobStatus] = mapped_column(
+        str_enum(JobStatus, "status"), default=JobStatus.RECEIVED
+    )
     subject: Mapped[str] = mapped_column(String(100))
     level: Mapped[Level] = mapped_column(str_enum(Level, "level"))
     language: Mapped[str] = mapped_column(String(8))
@@ -104,14 +110,19 @@ class Job(Base):
     grade: Mapped[str | None] = mapped_column(String(32))
     grade_comment: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+    # Wall-clock time of the change (now() would be the transaction's start). Rows can still
+    # commit a little after this time, so poll "updated since" with a few seconds of overlap.
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.clock_timestamp(), onupdate=func.clock_timestamp()
+    )
 
     def move_to(self, new: JobStatus, now: datetime) -> None:
-        """Changes the status if shared.models.TRANSITIONS allows it, else raises."""
+        """Changes the status if shared.models.TRANSITIONS allows it, else raises. Load the job with
+        select(Job).with_for_update() first, so two requests cannot change it at the same time."""
         if not can_transition(self.status, new):
             raise InvalidTransition(self.status, new)
         self.status = new
-        self.review_deadline = now + REVIEW_WINDOW if new is JobStatus.AWAITING_REVIEW else None
+        self.review_deadline = now + REVIEW_WINDOW if new == JobStatus.AWAITING_REVIEW else None
 
 
 class JobRound(Base):

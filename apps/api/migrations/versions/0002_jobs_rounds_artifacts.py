@@ -23,8 +23,10 @@ ROLES = "'orchestrator', 'research', 'writer', 'solver', 'review', 'curator'"
 KINDS = "'research_notes', 'outline', 'draft', 'review', 'final', 'test_summary'"
 
 
-def timestamp(name: str) -> sa.Column[Any]:
-    return sa.Column(name, sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)
+def timestamp(name: str, default: str = "now()") -> sa.Column[Any]:
+    return sa.Column(
+        name, sa.DateTime(timezone=True), server_default=sa.text(default), nullable=False
+    )
 
 
 def upgrade() -> None:
@@ -42,12 +44,16 @@ def upgrade() -> None:
         sa.Column("grade", sa.String(32)),
         sa.Column("grade_comment", sa.String()),
         timestamp("created_at"),
-        timestamp("updated_at"),
+        timestamp("updated_at", "clock_timestamp()"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.CheckConstraint(f"status IN ({STATUSES})", name="status"),
         sa.CheckConstraint("level IN ('high_school', 'college')", name="level"),
         sa.CheckConstraint(
             "input_text IS NOT NULL OR cardinality(photo_keys) > 0", name="has_input"
+        ),
+        sa.CheckConstraint(
+            "(status = 'awaiting_review') = (review_deadline IS NOT NULL)",
+            name="deadline_iff_awaiting_review",
         ),
     )
     op.create_index("ix_jobs_user_id_updated_at", "jobs", ["user_id", "updated_at"])

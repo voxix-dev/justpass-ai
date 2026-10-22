@@ -46,6 +46,10 @@ def test_move_to_follows_shared_transitions_and_sets_the_review_deadline():
     job.move_to(JobStatus.PROCESSING, NOW)
     job.move_to(JobStatus.AWAITING_REVIEW, NOW)
     assert job.review_deadline == NOW + REVIEW_WINDOW
+    job.move_to(JobStatus.EXPIRED, NOW)  # late feedback can still restart it
+    job.move_to(JobStatus.PROCESSING, NOW)
+    job.move_to(JobStatus.AWAITING_REVIEW, NOW + REVIEW_WINDOW)
+    assert job.review_deadline == NOW + 2 * REVIEW_WINDOW
     job.move_to(JobStatus.ACCEPTED, NOW)
     assert job.review_deadline is None
     with pytest.raises(InvalidTransition):
@@ -60,6 +64,25 @@ async def test_job_needs_text_or_a_photo(session: AsyncSession):
     session.add(new_job(user.id, input_text=None))
     with pytest.raises(IntegrityError, match="ck_jobs_has_input"):
         await session.flush()
+
+
+@pytest.mark.anyio
+async def test_a_job_in_review_always_has_a_deadline(session: AsyncSession):
+    session.add(new_job((await add_user(session)).id, status=JobStatus.AWAITING_REVIEW))
+    with pytest.raises(IntegrityError, match="ck_jobs_deadline_iff_awaiting_review"):
+        await session.flush()
+
+
+@pytest.mark.anyio
+async def test_updated_at_moves_when_a_job_changes(session: AsyncSession):
+    job = new_job((await add_user(session)).id)
+    session.add(job)
+    await session.flush()
+    before = job.updated_at
+    job.move_to(JobStatus.PROCESSING, NOW)
+    await session.flush()
+    await session.refresh(job)
+    assert job.updated_at > before
 
 
 @pytest.mark.anyio
@@ -99,5 +122,7 @@ async def test_deleting_a_user_deletes_their_jobs_rounds_and_artifacts(session: 
     await session.flush()
     await session.delete(await session.get_one(User, job.user_id))
     await session.flush()
-    for table in (Job, JobRound, Artifact):
-        assert await session.scalar(select(func.count()).select_from(table)) == 0
+    assert await session.scalar(select(func.count()).where(Job.id == job.id)) == 0
+    for table in (JobRound, Artifact):
+        count = select(func.count()).select_from(table).where(table.job_id == job.id)
+        assert await session.scalar(count) == 0
