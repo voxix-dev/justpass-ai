@@ -4,6 +4,22 @@ Homework samples with what a good answer must contain, and a scorer, so model an
 can be compared. Real agent runs cost model credits: run them nightly or on PRs labelled
 `run-evals`, never on every PR. Tests only use the fake solver and the fake judge.
 
+## Run
+```
+uv run python -m evals run out/            # solve every sample, writes out/<id>.md (fake solver for now)
+uv run python -m evals score out/ --json results.json
+uv run python -m evals score out/ --judge fake   # also score rubrics
+```
+`--samples <dir>` picks another sample folder (default `evals/samples`).
+
+`score` prints one row per sample and writes the same results as JSON. A missing `<id>.md` fails
+that sample.
+
+Plugging in the real thing: a solver is any `Solver` (`evals/src/evals/solve.py`) that turns a
+sample into Markdown, e.g. by calling the Jobs API over HTTP; a judge is any `Judge`
+(`judge.py`). Add them to `SOLVERS`/`JUDGES` in `__main__.py`. Math answers must end with
+`\boxed{...}`.
+
 ## Checks
 Deterministic, run on every output:
 - `not_empty`
@@ -17,7 +33,8 @@ Deterministic, run on every output:
   One answer per sample: sets of solutions are not supported yet.
 - `length`: word count within `min_words`/`max_words`, when set.
 
-Rubric scoring by an LLM judge comes in the next PR.
+Rubrics are scored by an LLM judge (`evals/src/evals/judge.py`): it gets `judge_prompt(...)` and
+returns points per criterion. Only `FakeJudge` exists for now; a real one must never run in tests.
 
 ## Samples
 One YAML file per sample in `samples/<subject>/<id>.yaml` (not `.yml`); the file name must equal
