@@ -7,17 +7,19 @@ table), not here.
 No signed URLs: files reach the browser through an API route that checks the user and calls
 `get()`. That keeps the ownership check in one place, needs no extra IAM permission to sign
 URLs, and works the same on local disk. Photos are a few MB, so proxying them is cheap.
+That route should send the Content-Type stored in Postgres plus `X-Content-Type-Options: nosniff`,
+and the upload route should read at most MAX_PHOTO_BYTES + 1 bytes. These calls block, so call
+them from plain `def` routes.
 
 Environment:
-- STORAGE_BACKEND: `local` (default) or `gcs`.
-- STORAGE_DIR: folder for `local` (default: a folder in the system temp dir).
+- STORAGE_BACKEND: `local` or `gcs`. Required, so production can't fall back to local disk.
+- STORAGE_DIR: folder for `local`. Required with it.
 - GCS_BUCKET: bucket for `gcs`. Credentials come from Application Default Credentials.
   STORAGE_EMULATOR_HOST (e.g. `http://localhost:4443`) points the client at fake-gcs-server.
 """
 
 import os
 import re
-import tempfile
 import uuid
 from contextlib import suppress
 from functools import cache
@@ -29,7 +31,8 @@ from google.cloud import storage as gcs
 
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
 KEY_SEGMENT_RE = re.compile(r"[A-Za-z0-9_.-]+")
-HEIC_BRANDS = {b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"mif1", b"msf1"}
+# HEIC brands only: the generic HEIF ones (mif1, msf1) are also used by AVIF.
+HEIC_BRANDS = {b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx"}
 
 
 class ObjectNotFoundError(Exception):
@@ -37,7 +40,11 @@ class ObjectNotFoundError(Exception):
 
 
 class InvalidPhotoError(ValueError):
-    """Not a JPEG/PNG/WebP/HEIC image, empty, or too big. Answer 400/413."""
+    """Not a JPEG/PNG/WebP/HEIC image, or empty. Answer 400."""
+
+
+class PhotoTooLargeError(InvalidPhotoError):
+    """Answer 413."""
 
 
 class Storage(Protocol):
@@ -63,6 +70,8 @@ def check_key(key: str) -> str:
 
 
 def new_upload_key(user_id: str) -> str:
+    if not KEY_SEGMENT_RE.fullmatch(user_id) or user_id in {".", ".."}:
+        raise ValueError(f"invalid user id: {user_id!r}")
     return check_key(f"users/{user_id}/uploads/{uuid.uuid4().hex}")
 
 
@@ -71,7 +80,7 @@ def photo_content_type(data: bytes) -> str:
     if not data:
         raise InvalidPhotoError("the photo is empty")
     if len(data) > MAX_PHOTO_BYTES:
-        raise InvalidPhotoError(f"the photo is larger than {MAX_PHOTO_BYTES // 2**20} MB")
+        raise PhotoTooLargeError(f"the photo is larger than {MAX_PHOTO_BYTES // 2**20} MB")
     if data.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -129,10 +138,9 @@ class GcsStorage:
 
 @cache
 def get_storage() -> Storage:
-    backend = os.environ.get("STORAGE_BACKEND", "local")
+    backend = os.environ.get("STORAGE_BACKEND")
     if backend == "gcs":
         return GcsStorage(gcs.Client().bucket(os.environ["GCS_BUCKET"]))
     if backend == "local":
-        default_dir = Path(tempfile.gettempdir()) / "homework-storage"
-        return LocalStorage(Path(os.environ.get("STORAGE_DIR") or default_dir))
+        return LocalStorage(Path(os.environ["STORAGE_DIR"]))
     raise ValueError(f"unknown STORAGE_BACKEND: {backend!r}")
