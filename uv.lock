@@ -6,6 +6,7 @@ requires-python = ">=3.14"
 members = [
     "agent",
     "api",
+    "evals",
     "homework-agents",
     "shared",
 ]
@@ -246,6 +247,21 @@ wheels = [
 ]
 
 [[package]]
+name = "evals"
+version = "0.0.0"
+source = { editable = "evals" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pyyaml", specifier = ">=6" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.159.1"
 source = { registry = "https://pypi.org/simple" }
@@ -337,6 +353,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "agent" },
     { name = "api" },
+    { name = "evals" },
     { name = "shared" },
 ]
 
@@ -358,6 +375,7 @@ dev = [
 requires-dist = [
     { name = "agent", editable = "apps/agent" },
     { name = "api", editable = "apps/api" },
+    { name = "evals", editable = "evals" },
     { name = "shared", editable = "packages/shared" },
 ]
 

@@ -2,17 +2,18 @@
 name = "homework-agents"
 version = "0.0.0"
 requires-python = ">=3.14"
-dependencies = ["api", "agent", "shared"]
+dependencies = ["api", "agent", "evals", "shared"]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["apps/api", "apps/agent", "packages/shared"]
+members = ["apps/api", "apps/agent", "evals", "packages/shared"]
 
 [tool.uv.sources]
 api = { workspace = true }
 agent = { workspace = true }
+evals = { workspace = true }
 shared = { workspace = true }
 
 [dependency-groups]
@@ -37,25 +38,25 @@ target-version = "py314"
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["api", "agent", "shared"]
+known-first-party = ["api", "agent", "evals", "shared"]
 
 [tool.pyright]
-include = ["apps", "packages"]
+include = ["apps", "evals", "packages"]
 exclude = ["apps/web", "**/node_modules", "**/.venv"]
-strict = ["packages/shared", "apps/agent"]
+strict = ["packages/shared", "apps/agent", "evals"]
 pythonVersion = "3.14"
 venvPath = "."
 venv = ".venv"
 
 [tool.pytest.ini_options]
-testpaths = ["apps", "packages"]
+testpaths = ["apps", "evals", "packages"]
 addopts = "--import-mode=importlib"
 
 [tool.coverage.run]
-source = ["apps/api/src", "apps/agent/src", "packages/shared/src"]
+source = ["apps/api/src", "apps/agent/src", "evals/src", "packages/shared/src"]
 
 [tool.importlinter]
-root_packages = ["shared", "api", "agent"]
+root_packages = ["shared", "api", "agent", "evals"]
 
 [[tool.importlinter.contracts]]
 name = "api and agent never import each other (they talk over HTTP)"
@@ -66,4 +67,10 @@ modules = ["api", "agent"]
 name = "shared depends on nothing in this repo"
 type = "forbidden"
 source_modules = ["shared"]
+forbidden_modules = ["api", "agent", "evals"]
+
+[[tool.importlinter.contracts]]
+name = "evals reaches the app only over HTTP"
+type = "forbidden"
+source_modules = ["evals"]
 forbidden_modules = ["api", "agent"]
