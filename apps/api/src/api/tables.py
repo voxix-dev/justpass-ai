@@ -201,7 +201,9 @@ class MemoryDoc(Base):
         ),
         deferred=True,
     )
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.clock_timestamp(), onupdate=func.clock_timestamp()
+    )
 
 
 async def search_memory(
