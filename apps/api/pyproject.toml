@@ -3,7 +3,11 @@ name = "api"
 version = "0.0.0"
 description = "FastAPI service: Jobs API, Context API, dispatcher."
 requires-python = ">=3.14"
-dependencies = ["fastapi>=0.115", "uvicorn>=0.30"]
+dependencies = [
+    "fastapi>=0.115",
+    "google-cloud-storage>=3",
+    "uvicorn>=0.30",
+]
 
 [build-system]
 requires = ["hatchling"]
