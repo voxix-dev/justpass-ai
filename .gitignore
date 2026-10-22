@@ -10,3 +10,5 @@ coverage.xml
 node_modules/
 .terraform/
 *.tfstate*
+*.tfvars
+tfplan
