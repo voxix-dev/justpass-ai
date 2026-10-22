@@ -14,14 +14,18 @@ config = context.config
 
 
 def run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=Base.metadata)
+    context.configure(
+        connection=connection, target_metadata=Base.metadata, compare_server_default=True
+    )
     with context.begin_transaction():
         context.run_migrations()
 
 
 async def main() -> None:
     # Tests pass their own database in config.attributes.
-    url = config.attributes.get("database_url") or os.environ["DATABASE_URL"]
+    url = config.attributes.get("database_url") or os.environ.get("DATABASE_URL")
+    if not url:
+        raise SystemExit("Set DATABASE_URL (postgresql+asyncpg://...), e.g. `--env-file .env`.")
     engine = create_async_engine(url, poolclass=pool.NullPool)
     async with engine.connect() as connection:
         await connection.run_sync(run_migrations)

@@ -21,6 +21,6 @@
 ## Before you push
 ```
 uv run ruff format . && uv run ruff check --fix .
-uv run pyright && uv run lint-imports && uv run pytest
+uv run pyright && uv run lint-imports && uv run --env-file .env pytest   # needs `docker compose up -d db`
 uv run python -m api.export_openapi   # if you changed the API; commit contracts/openapi.json
 ```

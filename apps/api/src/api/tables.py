@@ -1,9 +1,9 @@
 """Postgres tables. Only the api package touches the database: the agent goes through the Context
 API, and anything that leaves the api is converted to a Pydantic model first.
 
-After changing a table run `uv run alembic revision --autogenerate -m "what changed"` and read the
-generated migration. Autogenerate does not see changes to computed columns or to the values of an
-enum column: write those by hand.
+After changing a table run `uv run --env-file .env alembic revision --autogenerate --rev-id 0004
+-m "what changed"` (next free number) and read the generated migration. Autogenerate does not see
+changes to computed columns or to the values of an enum column: write those by hand.
 
 There are no relationship()s, so the session does not know which row to insert first: add the
 parent row (e.g. the user) and flush it before adding rows that point to it.
