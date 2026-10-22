@@ -9,7 +9,7 @@ from sqlalchemy.pool import NullPool
 
 from api.tables import Base
 
-TABLES = {"users", "jobs", "job_rounds", "artifacts"}
+TABLES = {"users", "jobs", "job_rounds", "artifacts", "memory_docs"}
 
 # What `alembic check` does not compare: CHECK contents, partial-index WHERE clauses, defaults
 # and generated-column expressions.
