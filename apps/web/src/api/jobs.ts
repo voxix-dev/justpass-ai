@@ -53,8 +53,14 @@ $$
 The sum of the roots is $-\\tfrac{b}{a} = 5$ and the product is $\\tfrac{c}{a} = 6$ (Vieta's formulas).
 `
 
+/** Simulate network latency; the delay is in milliseconds. */
 const delay = (ms = 300) => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * Return a copy with simulated progress: queued before 1.5 s, running until 6 s,
+ * then failed or done with a sample answer. Does not update the stored job.
+ * @throws {Error} If the ID is unknown ("Job not found").
+ */
 function snapshot(id: string): Job {
   const j = jobs.get(id)
   if (!j) throw new Error('Job not found')
@@ -67,6 +73,12 @@ function snapshot(id: string): Job {
   return { ...job, status: 'done', result: revised }
 }
 
+/**
+ * Store a new in-memory job and return its initial snapshot. The first line becomes
+ * its title, truncated to 80 characters; an empty first line uses "Photo question".
+ * The whole word "fail" in the question, ignoring case, simulates solver failure.
+ * parentId links a revision to its source; nonempty feedback appears in a successful answer.
+ */
 function add(text: string, imageUrl: string | null, parentId: string | null, feedback: string | null): Job {
   const id = crypto.randomUUID()
   jobs.set(id, {
@@ -88,16 +100,26 @@ function add(text: string, imageUrl: string | null, parentId: string | null, fee
   return snapshot(id)
 }
 
+/** Return current snapshots of all jobs in this module's memory, newest first. */
 export async function listJobs(): Promise<Job[]> {
   await delay()
   return [...jobs.keys()].map(snapshot).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
 
+/**
+ * Return a job's simulated progress at the time it is read.
+ * @throws {Error} If the ID is unknown ("Job not found").
+ */
 export async function getJob(id: string): Promise<Job> {
   await delay()
   return snapshot(id)
 }
 
+/**
+ * Trim the question and store a new in-memory job, optionally with a photo.
+ * Creates an object URL for the supplied image without resizing it or revoking the URL.
+ * @throws {Error} If both trimmed text and image are absent ("Add a question or a photo.").
+ */
 export async function createJob(input: NewJob): Promise<Job> {
   await delay(600)
   if (!input.text.trim() && !input.image) throw new Error('Add a question or a photo.')
@@ -105,6 +127,10 @@ export async function createJob(input: NewJob): Promise<Job> {
   return add(text, input.image ? URL.createObjectURL(input.image) : null, null, null)
 }
 
+/**
+ * Mark a stored job accepted, regardless of its status, and return its current snapshot.
+ * @throws {Error} If the ID is unknown ("Job not found").
+ */
 export async function acceptJob(id: string): Promise<Job> {
   await delay()
   const j = jobs.get(id)
@@ -113,7 +139,12 @@ export async function acceptJob(id: string): Promise<Job> {
   return snapshot(id)
 }
 
-/** Starts a new run of the same question with the student's feedback. */
+/**
+ * Starts a new run of the same question with the student's feedback.
+ * Reuses the parent's photo URL, trims feedback (which may be empty), and returns
+ * the new job linked to the parent. The parent is unchanged.
+ * @throws {Error} If the parent ID is unknown ("Job not found").
+ */
 export async function sendFeedback(id: string, feedback: string): Promise<Job> {
   await delay(600)
   const parent = jobs.get(id)

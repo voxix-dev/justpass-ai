@@ -2,6 +2,7 @@ import { Link } from 'react-router'
 import { GradesFocus, LabCard, PassPlan, TeacherTopics } from '@/components/lab'
 import { Button } from '@/components/ui/button'
 
+/** Show test prep previews with browser-local interest toggles and a link to send homework. */
 export default function Prep() {
   return (
     <div>

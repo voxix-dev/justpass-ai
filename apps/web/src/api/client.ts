@@ -6,6 +6,7 @@ import type { paths } from './schema.gen'
 export const api = createClient<paths>({ baseUrl: '/api' })
 
 api.use({
+  /** Add the current bearer token when signed in, preserving other request headers. */
   async onRequest({ request }) {
     const token = await getIdToken()
     if (token) request.headers.set('Authorization', `Bearer ${token}`)

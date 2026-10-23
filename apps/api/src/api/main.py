@@ -9,7 +9,12 @@ app = FastAPI(title="Homework API", version="0.0.0")
 async def strip_api_prefix(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
-    """Firebase Hosting forwards /api/** with the prefix; routes are defined at the root."""
+    """Strip /api from paths starting with /api/ before forwarding to root routes.
+
+    Firebase Hosting forwards the prefix. Update the request scope in place, leaving
+    other paths (including bare /api) unchanged. Return the downstream response;
+    errors from call_next propagate to the caller.
+    """
     if request.scope["path"].startswith("/api/"):
         request.scope["path"] = request.scope["path"].removeprefix("/api")
     return await call_next(request)

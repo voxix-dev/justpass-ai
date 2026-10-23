@@ -8,6 +8,7 @@ import { ago, isPending as pending, useJobs } from '@/lib/jobs'
 /** Rough time a student would spend on one task by hand. An estimate, and labelled as one. */
 const MIN_PER_TASK = 20
 
+/** Show job history and summary stats, with loading, retry, and empty states. */
 export default function Jobs() {
   const { data, isPending, isError, refetch } = useJobs()
 
@@ -81,6 +82,7 @@ export default function Jobs() {
   )
 }
 
+/** Show job counts and estimated time saved at 20 minutes per successfully finished job. */
 function Stats({ jobs }: { jobs: Job[] }) {
   const done = jobs.filter((j) => j.status === 'done').length
   const working = jobs.filter(pending).length

@@ -4,6 +4,7 @@ import Markdown from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
 import remarkMath from 'remark-math'
 
+/** Render answer Markdown with inline and display math through KaTeX. */
 export default function Answer({ markdown }: { markdown: string }) {
   return (
     <div className="answer">

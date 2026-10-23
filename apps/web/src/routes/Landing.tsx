@@ -17,6 +17,7 @@ const ROADMAP = [
   ['Later', 'Pass mode and grade tracking', 'The bare minimum for subjects you only need to pass.', 'border-input'],
 ] as const
 
+/** Present the homework workflow, sample future features, and links to submit a task. */
 export default function Landing() {
   return (
     <div className="space-y-24 sm:space-y-36">
@@ -110,6 +111,7 @@ export default function Landing() {
   )
 }
 
+/** Render a section introduction; id connects its heading to the section's accessible label. */
 function Heading({ id, tag, tagClass, title, sub }: { id: string; tag: string; tagClass: string; title: string; sub: string }) {
   return (
     <div className="max-w-2xl">

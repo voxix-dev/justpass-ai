@@ -27,6 +27,7 @@ export function LabCard({ id, title, pitch, children, className }: { id: string;
   )
 }
 
+/** Toggle the browser's saved interest in the feature identified by id. */
 function NotifyToggle({ id }: { id: string }) {
   const [on, toggle] = useNotify(id)
   return (
@@ -52,6 +53,7 @@ const TOPICS = [
   ['Osmosis', 2],
 ] as const
 
+/** Render fixed sample topic rankings for the test prep preview. */
 export function TeacherTopics() {
   return (
     <div>
@@ -80,6 +82,7 @@ const PLAN = [
   ['10 min', 'Practice: 6 likely questions', 'Worked answers included'],
 ] as const
 
+/** Render a fixed sample 40-minute chemistry plan for the pass mode preview. */
 export function PassPlan() {
   return (
     <div>
@@ -110,6 +113,7 @@ const GRADES = [
   ['Chemistry', 'D', 'At risk', 'bg-coral text-ink'],
 ] as const
 
+/** Render sample grades and study priorities for the grade tracking preview. */
 export function GradesFocus() {
   return (
     <div>

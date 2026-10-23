@@ -16,6 +16,7 @@ const NAV = [
   { to: '/prep', label: 'Test prep', Icon: FlaskConical, soon: true },
 ]
 
+/** Render navigation and job notifications; focus and scroll to the main content on path changes. */
 export function Shell() {
   const user = useAuth()
   const navigate = useNavigate()
@@ -93,6 +94,7 @@ export function Shell() {
   )
 }
 
+/** Render protected routes or redirect to sign-in, preserving the requested location in state. */
 export function RequireAuth() {
   const user = useAuth()
   const location = useLocation()
@@ -114,6 +116,7 @@ function useJobWatcher(pathname: string) {
   }, [data, pathname])
 }
 
+/** Announce job notifications with links to their results and controls to dismiss them. */
 function Toaster() {
   const toasts = useToasts()
   return (

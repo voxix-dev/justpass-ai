@@ -4,6 +4,7 @@ import { LoaderCircle } from 'lucide-react'
 import { signIn, useAuth } from '@/auth/auth'
 import { Button } from '@/components/ui/button'
 
+/** Sign in to the development stub and return to the requested path and query, or /new. */
 export default function SignIn() {
   const user = useAuth()
   const navigate = useNavigate()
@@ -14,6 +15,7 @@ export default function SignIn() {
 
   if (user && !busy) return <Navigate to={target} replace />
 
+  /** Sign in and replace the current route; show failures in the form and allow another attempt. */
   async function go() {
     setBusy(true)
     setError('')

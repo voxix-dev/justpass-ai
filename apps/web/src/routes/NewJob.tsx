@@ -6,6 +6,7 @@ import { createJob } from '@/api/jobs'
 import { Button } from '@/components/ui/button'
 import { shrinkImage } from '@/lib/image'
 
+/** Collect text and a resized photo, then cache the submitted job and navigate to its result. */
 export default function NewJob() {
   const navigate = useNavigate()
   const qc = useQueryClient()
@@ -26,6 +27,7 @@ export default function NewJob() {
     onError: (e) => setError(e.message || 'Could not send your task. Try again.'),
   })
 
+  /** Prepare a selected photo; ignore an empty selection and display image errors in the form. */
   async function pick(file: File | undefined) {
     if (!file) return
     setPreparing(true)
@@ -39,6 +41,7 @@ export default function NewJob() {
     }
   }
 
+  /** Prevent native submission and submit only when text or a photo is present. */
   function onSubmit(e: FormEvent) {
     e.preventDefault()
     if (!text.trim() && !photo) return setError('Add the task as text or a photo first.')

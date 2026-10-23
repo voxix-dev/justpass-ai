@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 
 const RULED = 'repeating-linear-gradient(transparent 0 27px, #b9c6e6 27px 28px)'
 
+/** Render the sample handwritten question used in the landing page illustrations. */
 function Worksheet({ className }: { className?: string }) {
   return (
     <div className={cn('rotate-2 rounded-sm bg-[#fdfcf7] p-3 pl-6 font-hand text-[1.35rem] leading-7 text-[#26306b] shadow-[0_8px_0_#000]', className)} style={{ backgroundImage: RULED, backgroundPositionY: '10px' }}>
@@ -14,8 +15,10 @@ function Worksheet({ className }: { className?: string }) {
   )
 }
 
+/** Typeset a variable in the illustrated worked answer. */
 const Var = ({ v }: { v: string }) => <i className="font-serif">{v}</i>
 
+/** Render a decorative phone with a sample question and worked answer. */
 export function HeroPhone() {
   return (
     <div aria-hidden="true" className="relative mx-auto w-[min(300px,82vw)] rotate-2 lg:w-[340px] rounded-[2.6rem] border-[9px] border-black bg-ink p-3 pb-5 shadow-[10px_10px_0_var(--volt)]">
@@ -47,6 +50,7 @@ export function HeroPhone() {
   )
 }
 
+/** Illustrate taking a question photo; the camera controls are decorative. */
 export function SnapMock() {
   return (
     <div aria-hidden="true" className="relative rounded-xl bg-black p-4">
@@ -65,6 +69,7 @@ export function SnapMock() {
   )
 }
 
+/** Illustrate solver progress with fixed sample content. */
 export function SolvingMock() {
   return (
     <div aria-hidden="true" className="rounded-xl bg-raised p-4">
@@ -81,6 +86,7 @@ export function SolvingMock() {
   )
 }
 
+/** Illustrate answer review with decorative acceptance and feedback controls. */
 export function ReviewMock() {
   return (
     <div aria-hidden="true" className="rounded-xl bg-paper p-4 text-paper-ink">

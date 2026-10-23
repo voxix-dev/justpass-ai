@@ -3,6 +3,7 @@ import type { Job } from '@/api/jobs'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
+/** Render the decorative JustPass mark, hidden from assistive technology. */
 export function Logo({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 32 32" aria-hidden="true" className={cn('size-8 -rotate-6', className)}>
@@ -19,6 +20,7 @@ const STATUS = {
   failed: ['Failed', 'bg-coral text-ink'],
 } as const
 
+/** Label a job's status, giving acceptance precedence over its progress label. */
 export function StatusBadge({ job, className }: { job: Job; className?: string }) {
   const [label, cls] = job.accepted ? (['Accepted', 'bg-foreground text-ink'] as const) : STATUS[job.status]
   return (
@@ -30,6 +32,7 @@ export function StatusBadge({ job, className }: { job: Job; className?: string }
   )
 }
 
+/** Show an error alert and invoke onRetry when the user chooses "Try again". */
 export function ErrorState({ title, onRetry }: { title: string; onRetry: () => void }) {
   return (
     <div role="alert" className="rounded-2xl border-2 border-coral/70 bg-card p-5">
@@ -42,6 +45,7 @@ export function ErrorState({ title, onRetry }: { title: string; onRetry: () => v
   )
 }
 
+/** Render a pulsing loading placeholder, hidden from assistive technology. */
 export function Skeleton({ className }: { className?: string }) {
   return <div aria-hidden="true" className={cn('animate-pulse rounded-lg bg-raised', className)} />
 }

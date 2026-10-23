@@ -9,11 +9,13 @@ import { ago, isNotFound, isPending, useJob } from '@/lib/jobs'
 
 const Answer = lazy(() => import('./Answer'))
 
+/** Show the job from the route, resetting the detail view's local state when its ID changes. */
 export default function Result() {
   const { id = '' } = useParams()
   return <ResultView key={id} id={id} />
 }
 
+/** Load a job and show its detail, a missing-job message, or a retryable fetch error. */
 function ResultView({ id }: { id: string }) {
   const { data: job, isPending: loading, error, refetch } = useJob(id)
 
@@ -49,6 +51,7 @@ function ResultView({ id }: { id: string }) {
   )
 }
 
+/** Show the question and current outcome, offering review actions once the job is no longer pending. */
 function JobDetail({ job }: { job: Job }) {
   return (
     <>
@@ -120,6 +123,7 @@ function JobDetail({ job }: { job: Job }) {
   )
 }
 
+/** Offer answer acceptance and feedback; cache mutations and navigate to a new revision on feedback. */
 function Actions({ job }: { job: Job }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -144,6 +148,7 @@ function Actions({ job }: { job: Job }) {
     onError: (e) => setError(e.message),
   })
 
+  /** Prevent native submission, display an error for blank feedback, and submit a revision otherwise. */
   function onSubmit(e: FormEvent) {
     e.preventDefault()
     if (!note.trim()) return setError('Write what should change first.')
