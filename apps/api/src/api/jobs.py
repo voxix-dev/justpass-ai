@@ -4,7 +4,7 @@ A user only ever sees their own jobs: another user's job answers 404, the same a
 """
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -43,6 +43,12 @@ class JobCreate(JobFields):
     model_config = ConfigDict(extra="forbid")
 
     text: Annotated[str, _text(20_000)]
+
+
+class FeedbackCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: Annotated[str, _text(4_000)]
 
 
 class JobSummary(BaseModel):
@@ -107,11 +113,23 @@ async def add_job(
     return job
 
 
-async def _own_job(session: AsyncSession, user: CurrentUser, job_id: uuid.UUID) -> Job:
-    job = await session.scalar(select(Job).where(Job.id == job_id, Job.user_id == user.uid))
+async def _own_job(
+    session: AsyncSession, user: CurrentUser, job_id: uuid.UUID, *, lock: bool = False
+) -> Job:
+    query = select(Job).where(Job.id == job_id, Job.user_id == user.uid)
+    if lock:  # always lock before move_to(), so two requests cannot change the job at once
+        query = query.with_for_update().execution_options(populate_existing=True)
+    job = await session.scalar(query)
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
     return job
+
+
+def _check_review_open(job: Job, now: datetime) -> None:
+    if job.status != JobStatus.AWAITING_REVIEW:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"the job is {job.status}, not in review")
+    if job.review_deadline is None or now >= job.review_deadline:
+        raise HTTPException(status.HTTP_409_CONFLICT, "the review window has closed")
 
 
 async def _current_round(session: AsyncSession, job_id: uuid.UUID) -> int:
@@ -168,3 +186,30 @@ async def list_jobs(
 @router.get("/{job_id}")
 async def get_job(job_id: uuid.UUID, user: Me, session: Session) -> JobDetail:
     return await _detail(session, await _own_job(session, user, job_id))
+
+
+@router.post("/{job_id}/accept")
+async def accept_job(job_id: uuid.UUID, user: Me, session: Session) -> JobDetail:
+    """Accepts the answer. This is final: no more feedback after it."""
+    now = datetime.now(UTC)
+    job = await _own_job(session, user, job_id, lock=True)
+    _check_review_open(job, now)
+    job.move_to(JobStatus.ACCEPTED, now)
+    await session.commit()
+    return await _detail(session, job)
+
+
+@router.post("/{job_id}/feedback")
+async def send_feedback(
+    job_id: uuid.UUID, body: FeedbackCreate, user: Me, session: Session, dispatch: Dispatcher
+) -> JobDetail:
+    """Asks for changes to the answer in review. The agents redo it as a new round."""
+    now = datetime.now(UTC)
+    job = await _own_job(session, user, job_id, lock=True)
+    _check_review_open(job, now)
+    job.move_to(JobStatus.PROCESSING, now)
+    number = await _current_round(session, job.id) + 1
+    session.add(JobRound(job_id=job.id, number=number, feedback=body.text))
+    await session.commit()
+    await dispatch(job.id, number)
+    return await _detail(session, job)
