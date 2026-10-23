@@ -80,6 +80,27 @@
         "title": "FeedbackCreate",
         "type": "object"
       },
+      "GetProfile": {
+        "description": "Read the student's profile: level, language, writing style.",
+        "properties": {},
+        "title": "GetProfile",
+        "type": "object"
+      },
+      "GetSubjectMemory": {
+        "description": "Read what is known about the student in one subject.",
+        "properties": {
+          "subject": {
+            "maxLength": 100,
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject"
+        ],
+        "title": "GetSubjectMemory",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -91,6 +112,58 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HistoryItem": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "grade": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grade"
+          },
+          "grade_comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grade Comment"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "subject",
+          "status",
+          "created_at",
+          "grade",
+          "grade_comment"
+        ],
+        "title": "HistoryItem",
         "type": "object"
       },
       "JobCreate": {
@@ -312,6 +385,72 @@
         "title": "Level",
         "type": "string"
       },
+      "ListHistory": {
+        "description": "List the student's recent homework, newest first.",
+        "properties": {
+          "limit": {
+            "default": 10,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "ListHistory",
+        "type": "object"
+      },
+      "Memory": {
+        "properties": {
+          "content_md": {
+            "title": "Content Md",
+            "type": "string"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          }
+        },
+        "required": [
+          "subject",
+          "content_md"
+        ],
+        "title": "Memory",
+        "type": "object"
+      },
+      "Profile": {
+        "properties": {
+          "language": {
+            "title": "Language",
+            "type": "string"
+          },
+          "level": {
+            "$ref": "#/components/schemas/Level"
+          },
+          "profile_md": {
+            "title": "Profile Md",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "level",
+          "language",
+          "subject",
+          "profile_md"
+        ],
+        "title": "Profile",
+        "type": "object"
+      },
       "ReadArtifact": {
         "description": "Read an artifact's full content by id.",
         "properties": {
@@ -338,6 +477,57 @@
         ],
         "title": "Role",
         "type": "string"
+      },
+      "SearchHistory": {
+        "description": "Full-text search over the student's past homework and memory.",
+        "properties": {
+          "query": {
+            "maxLength": 200,
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchHistory",
+        "type": "object"
+      },
+      "UpdateMemory": {
+        "description": "Replace the student's profile doc or one subject doc (Markdown, about 2k tokens max).",
+        "properties": {
+          "content_md": {
+            "maxLength": 10000,
+            "title": "Content Md",
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "profile",
+              "subject"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          }
+        },
+        "required": [
+          "scope",
+          "content_md"
+        ],
+        "title": "UpdateMemory",
+        "type": "object"
       },
       "ValidationError": {
         "properties": {
@@ -709,6 +899,149 @@
         ]
       }
     },
+    "/v1/context/get_profile": {
+      "post": {
+        "operationId": "get_profile_v1_context_get_profile_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetProfile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Profile",
+        "tags": [
+          "context (agents only)"
+        ]
+      }
+    },
+    "/v1/context/get_subject_memory": {
+      "post": {
+        "operationId": "get_subject_memory_v1_context_get_subject_memory_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetSubjectMemory"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Memory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Subject Memory",
+        "tags": [
+          "context (agents only)"
+        ]
+      }
+    },
+    "/v1/context/list_history": {
+      "post": {
+        "description": "The student's other jobs, newest first.",
+        "operationId": "list_history_v1_context_list_history_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListHistory"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/HistoryItem"
+                  },
+                  "title": "Response List History V1 Context List History Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List History",
+        "tags": [
+          "context (agents only)"
+        ]
+      }
+    },
     "/v1/context/read_artifact": {
       "post": {
         "description": "Any artifact of this job, from any round. Others answer 404, the same as missing ones.",
@@ -751,6 +1084,104 @@
           }
         ],
         "summary": "Read Artifact",
+        "tags": [
+          "context (agents only)"
+        ]
+      }
+    },
+    "/v1/context/search_history": {
+      "post": {
+        "description": "Searches the student's memory docs, which the curator distills from past jobs.",
+        "operationId": "search_history_v1_context_search_history_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchHistory"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Memory"
+                  },
+                  "title": "Response Search History V1 Context Search History Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Search History",
+        "tags": [
+          "context (agents only)"
+        ]
+      }
+    },
+    "/v1/context/update_memory": {
+      "post": {
+        "description": "scope=profile ignores `subject`; scope=subject needs one.",
+        "operationId": "update_memory_v1_context_update_memory_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMemory"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Memory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Memory",
         "tags": [
           "context (agents only)"
         ]
