@@ -8,5 +8,7 @@ coverage.xml
 .env
 *.kubeconfig
 node_modules/
+dist/
+.worktrees/
 .terraform/
 *.tfstate*
