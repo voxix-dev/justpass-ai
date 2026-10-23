@@ -83,7 +83,6 @@ export default function NewJob() {
             <input
               type="file"
               accept="image/*"
-              capture="environment"
               className="sr-only"
               disabled={preparing}
               onChange={(e) => {

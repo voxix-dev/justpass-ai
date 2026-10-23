@@ -40,7 +40,7 @@ function NotifyToggle({ id }: { id: string }) {
       )}
     >
       {on ? <Check className="size-4" aria-hidden="true" /> : <Bell className="size-4" aria-hidden="true" />}
-      {on ? "You're on the list" : 'Notify me'}
+      {on ? 'Saved on this device' : 'Notify me'}
     </button>
   )
 }

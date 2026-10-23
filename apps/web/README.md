@@ -7,7 +7,7 @@ Requests to `/api/**` are rewritten to Cloud Run on the same origin.
 
 ```
 pnpm install
-pnpm dev        # http://localhost:5173, proxies /api to localhost:8000
+pnpm dev        # http://localhost:5173, proxies /api/** to the API on localhost:8000
 pnpm lint
 pnpm typecheck
 pnpm build
@@ -29,10 +29,5 @@ CORS), gets a preview URL per PR from Hosting, and can move to GCS + Cloud CDN u
 
 - `src/auth/auth.ts`: fake signed-in user, to be replaced by Firebase Auth.
 - `src/api/jobs.ts`: in-memory Jobs API. A question containing "fail" ends in the error state.
-- Test prep features are previews only (`src/components/lab.tsx`); "Notify me" is stored in
-  `localStorage`.
-
-## Known issues
-
-- The API serves routes at `/`, but Hosting forwards `/api/...`. The dev proxy strips the prefix;
-  the API must accept it before deployment.
+- Test prep features are previews only (`src/components/lab.tsx`); "Notify me" is saved in
+  `localStorage` only.
