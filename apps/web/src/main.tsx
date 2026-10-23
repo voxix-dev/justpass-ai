@@ -7,6 +7,7 @@ import { RequireAuth, Shell } from '@/components/Shell'
 import Jobs from '@/routes/Jobs'
 import Landing from '@/routes/Landing'
 import NewJob from '@/routes/NewJob'
+import Prep from '@/routes/Prep'
 import Result from '@/routes/Result'
 import SignIn from '@/routes/SignIn'
 import './index.css'
@@ -25,14 +26,16 @@ const router = createBrowserRouter([
           { path: 'new', element: <NewJob /> },
           { path: 'jobs', element: <Jobs /> },
           { path: 'jobs/:id', element: <Result /> },
+          { path: 'prep', element: <Prep /> },
         ],
       },
       {
         path: '*',
         element: (
-          <div>
-            <h1 className="text-3xl">Page not found</h1>
-            <Link to="/" className="mt-4 inline-block font-semibold text-ink underline underline-offset-4">
+          <div className="max-w-xl">
+            <span className="sticker bg-coral text-ink">404</span>
+            <h1 className="mt-5 text-6xl sm:text-7xl">Nothing here. Not even homework.</h1>
+            <Link to="/" className="mt-6 inline-flex h-11 items-center font-bold text-volt underline underline-offset-4">
               Go to the home page
             </Link>
           </div>

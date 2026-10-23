@@ -1,104 +1,81 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "shadcn/tailwind.css";
+@import "@fontsource-variable/bricolage-grotesque/standard.css";
 @import "@fontsource-variable/inclusive-sans";
+@import "@fontsource-variable/caveat";
 
-/* Dark mode follows the OS setting. */
-@custom-variant dark (@media (prefers-color-scheme: dark));
+/* Inclusive Sans draws a slashed zero, which reads as the empty set in math. Digits come from Bricolage. */
+@font-face {
+  font-family: 'JP Digits';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url('@fontsource-variable/bricolage-grotesque/files/bricolage-grotesque-latin-standard-normal.woff2') format('woff2-variations');
+  unicode-range: U+0030-0039;
+}
+
+/* Dark-first by design: the app is used at night. Answers sit on a light "paper" sheet. */
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
-  --font-sans: 'Inclusive Sans Variable', ui-sans-serif, system-ui, sans-serif;
-  --font-heading: var(--font-sans);
+  --font-sans: 'JP Digits', 'Inclusive Sans Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Bricolage Grotesque Variable', 'Inclusive Sans Variable', sans-serif;
+  --font-heading: var(--font-display);
+  --font-hand: 'Caveat Variable', cursive;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
+  --color-card-foreground: var(--foreground);
+  --color-popover: var(--card);
+  --color-popover-foreground: var(--foreground);
+  --color-primary: var(--volt);
+  --color-primary-foreground: var(--ink);
+  --color-secondary: var(--raised);
+  --color-secondary-foreground: var(--foreground);
+  --color-muted: var(--raised);
   --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-border: var(--border);
+  --color-accent: var(--raised);
+  --color-accent-foreground: var(--foreground);
+  --color-destructive: var(--coral);
+  --color-border: var(--line);
   --color-input: var(--input);
-  --color-ring: var(--ring);
+  --color-ring: var(--volt);
   --color-ink: var(--ink);
-  --color-grid: var(--grid);
-  --color-hl-yellow: var(--hl-yellow);
-  --color-hl-green: var(--hl-green);
-  --color-hl-pink: var(--hl-pink);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
+  --color-raised: var(--raised);
+  --color-volt: var(--volt);
+  --color-pink: var(--pink);
+  --color-coral: var(--coral);
+  --color-paper: var(--paper);
+  --color-paper-ink: var(--paper-ink);
+  --color-paper-muted: var(--paper-muted);
+  --radius-sm: 0.5rem;
+  --radius-md: 0.7rem;
+  --radius-lg: 0.9rem;
+  --radius-xl: 1.25rem;
+  --radius-2xl: 1.75rem;
 }
 
-/* Quad-ruled notebook by day: cool paper, fountain-pen ink, highlighters. */
 :root {
-  --paper: #f6f8fb;
-  --grid: #e3e9f3;
-  --ink: #1a2b6d;
-  --hl-yellow: #ffe94d;
-  --hl-green: #b6f08a;
-  --hl-pink: #ffb8cb;
-  --hl-text: #1a2b6d;
-
-  --background: var(--paper);
-  --foreground: #2a3042;
-  --card: #ffffff;
-  --card-foreground: #2a3042;
-  --popover: #ffffff;
-  --popover-foreground: #2a3042;
-  --primary: var(--ink);
-  --primary-foreground: #ffffff;
-  --secondary: #e6ecf7;
-  --secondary-foreground: var(--ink);
-  --muted: #edf1f8;
-  --muted-foreground: #565e74;
-  --accent: #e6ecf7;
-  --accent-foreground: var(--ink);
-  --destructive: #c4303c;
-  --border: #cfd8e8;
-  --input: #7f8ba6;
-  --ring: #3d5bd9;
-  --radius: 0.75rem;
-}
-
-/* Night desk: deep ink-navy page, lamp-yellow primary. */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --paper: #0f1736;
-    --grid: #18224a;
-    --ink: #e9edf8;
-    --background: var(--paper);
-    --foreground: #dfe5f3;
-    --card: #16204a;
-    --card-foreground: #dfe5f3;
-    --popover: #16204a;
-    --popover-foreground: #dfe5f3;
-    --primary: var(--hl-yellow);
-    --primary-foreground: #1a2b6d;
-    --secondary: #212c5c;
-    --secondary-foreground: #e9edf8;
-    --muted: #1b2552;
-    --muted-foreground: #a9b3d0;
-    --accent: #212c5c;
-    --accent-foreground: #e9edf8;
-    --destructive: #ff8a95;
-    --border: #2a3668;
-    --input: #6c79b3;
-    --ring: #ffe94d;
-  }
+  color-scheme: dark;
+  --ink: #130f2b;
+  --background: var(--ink);
+  --card: #1d1840;
+  --raised: #282256;
+  --line: #3b3470;
+  --input: #6e66a8;
+  --foreground: #f1eeff;
+  --muted-foreground: #b1aad6;
+  --volt: #d4ff3a;
+  --pink: #ff4fa3;
+  --coral: #ff7a59;
+  --paper: #f6f5fb;
+  --paper-ink: #17132f;
+  --paper-muted: #5b5680;
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/60;
+    @apply border-border;
   }
   html {
     @apply font-sans;
@@ -108,21 +85,18 @@
     @apply min-h-dvh bg-background text-foreground antialiased;
     font-size: 1.0625rem;
     line-height: 1.55;
-    background-image:
-      linear-gradient(var(--grid) 1px, transparent 1px),
-      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-    background-size: 24px 24px;
   }
   h1, h2, h3 {
-    @apply font-heading text-ink;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    line-height: 1.15;
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-stretch: 82%;
+    letter-spacing: -0.015em;
+    line-height: 1;
     text-wrap: balance;
   }
   :focus-visible {
-    outline: 3px solid var(--ring);
-    outline-offset: 2px;
+    outline: 3px solid var(--volt);
+    outline-offset: 3px;
   }
   @media (prefers-reduced-motion: reduce) {
     *, ::before, ::after {
@@ -134,35 +108,80 @@
   }
 }
 
-/* A highlighter swipe: slightly uneven ends, a hair off level. Text stays ink in both themes. */
-@utility hl {
-  color: var(--hl-text);
-  border-radius: 0.25em 0.6em 0.35em 0.7em / 0.6em 0.35em 0.7em 0.4em;
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
+/* A slapped-on label: tilted, hard shadow. Colour comes from bg-/text- utilities. */
+@utility sticker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 90%;
+  border-radius: 0.5rem;
+  padding: 0.3em 0.7em;
+  rotate: -3deg;
+  box-shadow: 3px 3px 0 #000;
 }
 
-/* Worked-solution typography for rendered answers. */
+/* Work in progress, everywhere: hot pink hazard tape. */
+@utility tape {
+  background: repeating-linear-gradient(-45deg, var(--pink) 0 14px, var(--ink) 14px 28px);
+}
+
+/* Diagonal hatching laid over sample content so it reads as a preview, not data. */
+@utility hatch {
+  background-image: repeating-linear-gradient(45deg, rgb(255 79 163 / 0.09) 0 2px, transparent 2px 11px);
+}
+
+/* The rubber "PASS" stamp. */
+@utility stamp {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 75%;
+  letter-spacing: 0.06em;
+  border: 4px solid currentColor;
+  border-radius: 0.6rem;
+  padding: 0.05em 0.4em;
+  rotate: -12deg;
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+
+/* Worked answers: a clean, high-contrast sheet of paper. */
 @layer components {
-  .answer { @apply leading-relaxed; }
+  .answer { @apply rounded-xl bg-paper p-5 leading-relaxed text-paper-ink sm:p-8; }
   .answer > * + * { margin-top: 0.9em; }
-  .answer h2 { @apply text-2xl; }
-  .answer h3 { @apply mt-8 text-xl; }
-  .answer strong { @apply text-ink; font-weight: 700; }
-  .answer em { @apply text-muted-foreground; }
+  .answer h2, .answer h3 { color: var(--paper-ink); }
+  .answer h2 { @apply text-3xl; }
+  .answer h3 { @apply mt-8 text-2xl; }
+  .answer strong { font-weight: 700; }
+  .answer em { color: var(--paper-muted); }
+  .answer a { @apply font-bold underline underline-offset-4; }
+  .answer :focus-visible { outline-color: var(--paper-ink); }
   .answer ul, .answer ol { padding-left: 1.4em; }
   .answer ul { list-style: disc; }
   .answer ol { list-style: decimal; }
-  .answer code { @apply rounded bg-muted px-1 py-0.5 text-[0.92em]; }
-  .answer pre { @apply overflow-x-auto rounded-lg bg-muted p-3; }
-  .answer blockquote {
-    @apply hl bg-hl-yellow -mx-1 w-fit max-w-full px-4 py-3;
-  }
-  .answer blockquote strong { color: inherit; }
-  /* Long display math scrolls inside its own box instead of widening the page. */
+  .answer code { @apply rounded bg-paper-ink/10 px-1 py-0.5 text-[0.92em]; }
+  .answer pre { @apply overflow-x-auto rounded-lg bg-paper-ink/10 p-3; }
+  .answer blockquote { @apply w-fit max-w-full rounded-lg border-2 border-paper-ink bg-volt px-4 py-3; }
+  /* Long display math scrolls in its own box. Edge shadows appear only on the side with more to see. */
   .answer .katex-display {
     overflow-x: auto;
     overflow-y: hidden;
     padding: 0.25em 0;
+    background:
+      linear-gradient(to right, var(--paper) 40%, transparent) left / 2.5rem 100% no-repeat local,
+      linear-gradient(to left, var(--paper) 40%, transparent) right / 2.5rem 100% no-repeat local,
+      radial-gradient(farthest-side at 0 50%, rgb(23 19 47 / 0.5), transparent) left / 1rem 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%, rgb(23 19 47 / 0.5), transparent) right / 1rem 100% no-repeat scroll;
   }
+}
+
+/* Hero: one scan pass over the worksheet on load. */
+.scan {
+  top: 100%;
+  animation: scan 1.6s ease-in-out 0.4s 1 both;
+}
+@keyframes scan {
+  from { top: 0; opacity: 1; }
+  to { top: 100%; opacity: 0; }
 }

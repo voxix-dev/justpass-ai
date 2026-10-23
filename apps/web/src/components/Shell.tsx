@@ -1,21 +1,25 @@
 import { useEffect, useRef } from 'react'
 import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react-router'
-import { CircleAlert, CircleCheck, ListChecks, LogOut, PenLine, X } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { CircleAlert, CircleCheck, FlaskConical, ListChecks, LogOut, PenLine, X } from 'lucide-react'
 import type { JobStatus } from '@/api/jobs'
 import { signOut, useAuth } from '@/auth/auth'
-import { Logo } from '@/components/bits'
+import { Logo, Soon } from '@/components/bits'
 import { Button } from '@/components/ui/button'
 import { isPending, useJobs } from '@/lib/jobs'
 import { dismissToast, pushToast, useToasts } from '@/lib/toast'
+import { cn } from '@/lib/utils'
 
 const NAV = [
-  { to: '/new', label: 'New', Icon: PenLine },
-  { to: '/jobs', label: 'My jobs', Icon: ListChecks },
+  { to: '/new', label: 'New', Icon: PenLine, soon: false },
+  { to: '/jobs', label: 'My jobs', Icon: ListChecks, soon: false },
+  { to: '/prep', label: 'Test prep', Icon: FlaskConical, soon: true },
 ]
 
 export function Shell() {
   const user = useAuth()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { pathname } = useLocation()
   const main = useRef<HTMLElement>(null)
   const shown = useRef(pathname)
@@ -35,28 +39,29 @@ export function Shell() {
       <a href="#main" className="sr-only z-50 rounded-lg bg-primary p-3 text-primary-foreground focus:not-sr-only focus:fixed focus:top-2 focus:left-2">
         Skip to content
       </a>
-      <header className="sticky top-0 z-30 border-b bg-background/90 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-5xl items-center gap-1 px-4">
-          <Link to="/" className="-ml-2 flex h-11 items-center gap-2 rounded-lg px-2 text-xl font-extrabold tracking-tight text-ink">
+      <header className="sticky top-0 z-30 border-b-2 border-border bg-background/90 backdrop-blur">
+        <div className="mx-auto flex h-16 max-w-6xl items-center gap-1 px-4">
+          <Link to="/" className="-ml-2 flex h-11 items-center gap-2.5 rounded-lg px-2 font-display text-2xl font-extrabold tracking-tight [font-stretch:85%]">
             <Logo /> JustPass
           </Link>
           {user && (
-            <nav aria-label="Main" className="ml-6 hidden gap-1 sm:flex">
-              {NAV.map(({ to, label }) => (
-                <NavLink key={to} to={to} end className="group flex h-11 items-center rounded-lg px-3 font-semibold hover:bg-muted">
-                  <span className="group-aria-[current=page]:hl group-aria-[current=page]:bg-hl-yellow group-aria-[current=page]:px-1.5">{label}</span>
+            <nav aria-label="Main" className="ml-8 hidden gap-1 sm:flex">
+              {NAV.map(({ to, label, soon }) => (
+                <NavLink key={to} to={to} className="flex h-11 items-center gap-2 rounded-xl px-3 font-bold text-muted-foreground hover:text-foreground aria-[current=page]:bg-raised aria-[current=page]:text-volt">
+                  {label}
+                  {soon && <>{' '}<Soon /></>}
                 </NavLink>
               ))}
             </nav>
           )}
           <div className="ml-auto">
             {user ? (
-              <Button variant="ghost" onClick={() => (signOut(), navigate('/'))}>
+              <Button variant="ghost" onClick={() => (signOut(), queryClient.clear(), navigate('/'))}>
                 <LogOut aria-hidden="true" /> Sign out
               </Button>
             ) : (
               pathname !== '/signin' && (
-                <Button asChild variant="outline">
+                <Button asChild>
                   <Link to="/signin">Sign in</Link>
                 </Button>
               )
@@ -65,16 +70,20 @@ export function Shell() {
         </div>
       </header>
 
-      <main id="main" ref={main} tabIndex={-1} className="mx-auto w-full max-w-5xl flex-1 px-4 pt-6 pb-32 outline-none sm:pt-10 sm:pb-16">
+      <main id="main" ref={main} tabIndex={-1} className="mx-auto w-full max-w-6xl flex-1 px-4 pt-8 pb-32 outline-none sm:pt-12 sm:pb-20">
         <Outlet />
       </main>
 
       {user && (
-        <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-2 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur sm:hidden">
-          {NAV.map(({ to, label, Icon }) => (
-            <NavLink key={to} to={to} end className="group flex h-16 flex-col items-center justify-center gap-0.5 text-sm font-bold text-muted-foreground aria-[current=page]:text-ink">
-              <Icon className="size-6" aria-hidden="true" />
-              <span className="group-aria-[current=page]:hl group-aria-[current=page]:bg-hl-yellow group-aria-[current=page]:px-1.5">{label}</span>
+        <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-3 border-t-2 border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur sm:hidden">
+          {NAV.map(({ to, label, Icon, soon }) => (
+            <NavLink key={to} to={to} className="group relative flex h-16 flex-col items-center justify-center gap-0.5 text-sm font-bold text-muted-foreground aria-[current=page]:text-foreground">
+              <span className="grid h-7 w-12 place-items-center rounded-full group-aria-[current=page]:bg-volt group-aria-[current=page]:text-ink">
+                <Icon className="size-5" aria-hidden="true" />
+              </span>
+              {label}
+              {soon && ' '}
+              {soon && <Soon className="absolute top-1 right-[calc(50%-2.6rem)] text-[0.7rem] leading-4" />}
             </NavLink>
           ))}
         </nav>
@@ -116,14 +125,14 @@ function Toaster() {
       {toasts.map((t) => {
         const done = t.tone === 'done'
         return (
-          <div key={t.id} data-toast={t.id} className="pointer-events-auto flex animate-in items-center gap-3 rounded-xl border-2 border-ink/80 bg-card p-2 pl-3 shadow-[4px_4px_0_var(--ink)] fade-in slide-in-from-bottom-4">
+          <div key={t.id} data-toast={t.id} className={cn('pointer-events-auto flex animate-in items-center gap-3 rounded-2xl border-2 bg-card p-2 pl-3 shadow-[5px_5px_0_#000] fade-in slide-in-from-bottom-4', done ? 'border-volt' : 'border-coral')}>
             {done ? (
-              <CircleCheck className="size-6 shrink-0 text-ink" aria-hidden="true" />
+              <CircleCheck className="size-7 shrink-0 text-volt" aria-hidden="true" />
             ) : (
-              <CircleAlert className="size-6 shrink-0 text-destructive" aria-hidden="true" />
+              <CircleAlert className="size-7 shrink-0 text-coral" aria-hidden="true" />
             )}
             <Link to={t.to} onClick={() => dismissToast(t.id)} className="flex min-h-11 min-w-0 flex-1 flex-col justify-center rounded-md">
-              <span className="font-bold">{done ? 'Your answer is ready' : 'Could not solve this one'}</span>
+              <span className="font-display text-lg font-extrabold">{done ? 'Your answer is ready' : 'Could not solve this one'}</span>
               <span className="truncate text-sm text-muted-foreground">{t.title}</span>
             </Link>
             <Button variant="ghost" size="icon" aria-label="Dismiss notification" onClick={() => dismissToast(t.id)}>

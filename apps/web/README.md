@@ -31,6 +31,12 @@ regenerates `src/api/schema.gen.ts` and fails if it differs from the committed f
 
 Both can be swapped for the real thing without touching the screens.
 
+Test prep (`/prep` and the "In the lab" cards on the landing page) is not built yet. Every such
+feature uses one treatment (`src/components/lab.tsx`): pink hazard tape, an "In the lab" sticker,
+and sample UI marked "Sample" behind a hatched frame. Nothing there calls an API. The only control,
+"Notify me", is stored in `localStorage` (`src/lib/notify.ts`) until a waitlist endpoint exists.
+The "Time saved" number on My jobs is an estimate: 20 minutes per finished job.
+
 ## API prefix (open item)
 
 Firebase Hosting forwards the full path, so the API will receive `/api/...`. The dev server proxies

@@ -27,15 +27,16 @@ export default function SignIn() {
   }
 
   return (
-    <div className="mx-auto max-w-sm pt-6 sm:pt-12">
-      <h1 className="text-3xl">Sign in to JustPass</h1>
-      <p className="mt-3 text-muted-foreground">Your questions and answers are saved to your account, so you can pick up on any device.</p>
-      <Button size="lg" className="mt-8 w-full" onClick={go} disabled={busy} aria-busy={busy}>
+    <div className="mx-auto max-w-md pt-4 sm:pt-12">
+      <span className="sticker bg-volt text-ink">Takes one tap</span>
+      <h1 className="mt-5 text-6xl">Sign in. Skip the busywork.</h1>
+      <p className="mt-4 text-lg text-muted-foreground">Your tasks and answers are saved to your account, so you can pick up on any device.</p>
+      <Button size="lg" className="mt-8 h-14 w-full text-lg" onClick={go} disabled={busy} aria-busy={busy}>
         {busy && <LoaderCircle className="animate-spin" aria-hidden="true" />}
         {busy ? 'Signing in…' : 'Continue'}
       </Button>
       {error && (
-        <p role="alert" className="mt-4 font-semibold text-destructive">
+        <p role="alert" className="mt-4 font-bold text-coral">
           {error}
         </p>
       )}
