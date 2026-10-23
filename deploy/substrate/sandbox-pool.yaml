@@ -1,0 +1,30 @@
+# Worker pool for code sandbox actors: one gVisor worker per job that is running code. The actor
+# template is not a Kubernetes resource; see sandbox-template.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: justpass-sandbox
+---
+apiVersion: ate.dev/v1alpha1
+kind: WorkerPool
+metadata:
+  name: sandbox
+  namespace: justpass-sandbox
+  labels:
+    workload: justpass-sandbox
+spec:
+  # One worker per job running code at the same time, plus one for building the golden snapshot:
+  # 2 lets one job run code at a time. Raise it for production.
+  replicas: 2
+  workerImage: ${ATEWORKER_GVISOR_IMAGE}
+  sandboxClasses:
+  - name: gvisor
+  template:
+    # Sizes the worker pod. The sandbox itself is sized by the template's resources.
+    resources:
+      limits:
+        cpu: "1"
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 1Gi
