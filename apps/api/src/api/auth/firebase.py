@@ -57,6 +57,12 @@ class FirebaseVerifier:
     def __init__(
         self, project_id: str, keys: jwt.PyJWKClient | None = None, *, emulator: bool = False
     ) -> None:
+        """Configure token verification for a Firebase project.
+
+        Use the supplied keys client for signing-key lookup, or Google's public keys
+        by default. Emulator mode skips signature verification but still checks claims.
+        Raise ValueError if project_id is empty or emulator mode uses a non-demo-* project.
+        """
         if not project_id:
             raise ValueError("FIREBASE_PROJECT_ID is not set")
         if emulator and not project_id.startswith("demo-"):
@@ -70,6 +76,16 @@ class FirebaseVerifier:
             log.warning("Firebase Auth Emulator mode: ID token signatures are NOT checked")
 
     def verify(self, token: str) -> AuthUser:
+        """Validate an ID token and return its user and sign-in information.
+
+        Require a UID of 1 to 128 characters, a numeric auth_time no more than 10 seconds
+        in the future, and a string sign-in provider. A non-string email becomes None;
+        email_verified is true only for the literal boolean True. Revocation and disabled
+        user status are not checked. Emulator mode skips signature verification.
+
+        Raise InvalidIdTokenError for rejected claims or PyJWT validation/key lookup
+        errors. Signing-key fetch failures propagate as jwt.PyJWKClientConnectionError.
+        """
         try:
             claims = self._decode(token)
         except jwt.PyJWKClientConnectionError:
@@ -98,6 +114,12 @@ class FirebaseVerifier:
         )
 
     def _decode(self, token: str) -> dict[str, Any]:
+        """Decode required Firebase claims with 10 seconds of leeway for PyJWT time checks.
+
+        Require the configured project as the single audience and in the issuer.
+        Check the RS256 signature outside emulator mode. Leave auth_time and provider
+        validation to verify. PyJWT errors, including key connection errors, propagate.
+        """
         # PyJWT turns the other checks off when the signature isn't checked, so list them all.
         checks: Options = {
             "verify_signature": not self.emulator,
@@ -122,6 +144,12 @@ class FirebaseVerifier:
 
 @cache
 def _verifier() -> FirebaseVerifier:
+    """Cache a verifier using the environment at the first successful call.
+
+    Read FIREBASE_PROJECT_ID; a non-empty FIREBASE_AUTH_EMULATOR_HOST enables emulator
+    mode. Later environment changes require clearing this cache to take effect.
+    Raise ValueError for a missing project ID or a non-demo-* project in emulator mode.
+    """
     return FirebaseVerifier(
         os.environ.get("FIREBASE_PROJECT_ID", ""),
         emulator=bool(os.environ.get("FIREBASE_AUTH_EMULATOR_HOST")),
@@ -129,5 +157,11 @@ def _verifier() -> FirebaseVerifier:
 
 
 def verify_id_token(token: str) -> AuthUser:
-    """Check a Firebase ID token and return who it belongs to. Raises InvalidIdTokenError."""
+    """Check a Firebase ID token and return who it belongs to.
+
+    Use the cached environment-configured verifier; see FirebaseVerifier.verify for
+    validation and user-field behavior. Raise InvalidIdTokenError for rejected tokens,
+    jwt.PyJWKClientConnectionError for signing-key fetch failures, or ValueError for
+    invalid project/emulator configuration when creating the verifier.
+    """
     return _verifier().verify(token)
