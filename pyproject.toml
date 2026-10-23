@@ -67,3 +67,7 @@ name = "shared depends on nothing in this repo"
 type = "forbidden"
 source_modules = ["shared"]
 forbidden_modules = ["api", "agent"]
+
+# Database migrations: `uv run --env-file .env alembic upgrade head`
+[tool.alembic]
+script_location = "%(here)s/apps/api/migrations"

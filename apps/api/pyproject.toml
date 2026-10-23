@@ -4,9 +4,12 @@ version = "0.0.0"
 description = "FastAPI service: Jobs API, Context API, dispatcher."
 requires-python = ">=3.14"
 dependencies = [
+    "alembic>=1.20.1",
+    "asyncpg>=0.32.0",
     "fastapi>=0.115",
     "pydantic>=2.7",
     "pyjwt[crypto]>=2.15",
+    "sqlalchemy[asyncio]>=2.1.6,<2.2",
     "uvicorn>=0.30",
 ]
 
@@ -18,4 +21,6 @@ build-backend = "hatchling.build"
 packages = ["src/api"]
 
 [tool.deptry.per_rule_ignores]
-DEP002 = ["uvicorn"]  # used as the server binary, never imported
+# uvicorn: the server binary. alembic: used by migrations/ and its CLI. asyncpg: the Postgres
+# driver, which SQLAlchemy loads from the postgresql+asyncpg:// URL. None of them is imported in src.
+DEP002 = ["uvicorn", "alembic", "asyncpg"]
