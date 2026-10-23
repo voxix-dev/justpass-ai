@@ -18,6 +18,10 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    """Create the users table with a creation timestamp that defaults to the database's now().
+
+    Database errors propagate to the caller.
+    """
     op.create_table(
         "users",
         sa.Column("id", sa.String(128), primary_key=True),
@@ -29,4 +33,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Drop the users table and all of its data.
+
+    Database errors propagate to the caller.
+    """
     op.drop_table("users")

@@ -14,6 +14,10 @@ config = context.config
 
 
 def run_migrations(connection: Connection) -> None:
+    """Run the configured Alembic operation on an open synchronous connection.
+
+    Database and migration errors propagate to the caller.
+    """
     context.configure(
         connection=connection, target_metadata=Base.metadata, compare_server_default=True
     )
@@ -22,6 +26,12 @@ def run_migrations(connection: Connection) -> None:
 
 
 async def main() -> None:
+    """Run the configured Alembic operation against the selected database.
+
+    A non-empty config.attributes["database_url"] overrides DATABASE_URL.
+    Raise SystemExit if neither supplies a URL. Invalid URL, connection, and
+    migration errors propagate to the caller.
+    """
     # Tests pass their own database in config.attributes.
     url = config.attributes.get("database_url") or os.environ.get("DATABASE_URL")
     if not url:
