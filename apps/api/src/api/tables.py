@@ -97,6 +97,9 @@ class Job(Base):
         Index(None, "user_id", "updated_at"),  # "my jobs" and "what changed since"
         Index(None, "review_deadline", postgresql_where=text("status = 'awaiting_review'")),
     )
+    # Read back the values the database sets (updated_at, created_at) right after each flush,
+    # so they never need a lazy load, which async sessions cannot do.
+    __mapper_args__ = {"eager_defaults": True}  # noqa: RUF012
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
