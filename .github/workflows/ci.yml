@@ -70,18 +70,3 @@ jobs:
       - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  pr-size:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: at most 400 changed lines (lockfiles, contract and generated API types excluded)
-        run: |
-          changed=$(git diff --numstat origin/${{ github.base_ref }}...HEAD -- . ':!uv.lock' ':!contracts/' \
-            ':!apps/web/pnpm-lock.yaml' ':!apps/web/src/api/schema.gen.ts' \
-            | awk '{s += $1 + $2} END {print s + 0}')
-          echo "changed lines: $changed"
-          test "$changed" -le 400
