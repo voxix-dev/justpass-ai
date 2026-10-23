@@ -176,6 +176,7 @@ class Artifact(Base):
     round: Mapped[int]
     role: Mapped[Role] = mapped_column(str_enum(Role, "role"))
     kind: Mapped[ArtifactKind] = mapped_column(str_enum(ArtifactKind, "kind"))
+    title: Mapped[str | None] = mapped_column(String(200))
     content: Mapped[str | None]  # Markdown, math as KaTeX
     storage_key: Mapped[str | None]  # Cloud Storage object key, for files
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
