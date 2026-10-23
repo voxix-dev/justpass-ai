@@ -13,6 +13,8 @@ from agent.tools import (
     HttpContextClient,
     ReadArtifact,
     RunAgent,
+    RunCode,
+    SandboxClient,
     ToolError,
     UnavailableTool,
     UpdateMemory,
@@ -56,8 +58,8 @@ def test_fake_context_client_keeps_memory():
 
 
 def test_unbuilt_tools_say_so():
-    with pytest.raises(ToolError, match="run_code is not available yet"):
-        asyncio.run(UnavailableTool().call("run_code", GetProfile()))
+    with pytest.raises(ToolError, match="web_search is not available yet"):
+        asyncio.run(UnavailableTool().call("web_search", GetProfile()))
 
 
 def test_http_context_client_sends_the_token_and_maps_errors():
@@ -78,3 +80,37 @@ def test_http_context_client_sends_the_token_and_maps_errors():
         asyncio.run(ctx.call("get_profile", GetProfile()))
     with pytest.raises(ToolError, match="invalid JSON"):
         asyncio.run(ctx.call("get_profile", GetProfile()))
+
+
+def test_sandbox_client_posts_the_code_and_checks_the_result():
+    result = {"exit_code": 0, "stdout": "4\n", "stderr": "", "timed_out": False}
+    replies = [
+        httpx2.Response(200, json=result | {"output_truncated": False}),
+        httpx2.Response(200, json=result),  # a field missing
+        httpx2.Response(502),
+    ]
+    seen: list[httpx2.Request] = []
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return replies[len(seen) - 1]
+
+    http = httpx2.AsyncClient(transport=httpx2.MockTransport(handle))
+    sandbox = SandboxClient("http://api/v1/context/run_code", {"Authorization": "Bearer t"}, http)
+    out = asyncio.run(sandbox.call("run_code", RunCode(code="print(2 + 2)")))
+    assert out == result | {"output_truncated": False}
+    assert seen[0].headers["authorization"] == "Bearer t"
+    assert seen[0].content == b'{"code":"print(2 + 2)"}'
+    with pytest.raises(ToolError, match="invalid result"):
+        asyncio.run(sandbox.call("run_code", RunCode(code="1")))
+    with pytest.raises(ToolError, match="HTTP 502"):
+        asyncio.run(sandbox.call("run_code", RunCode(code="1")))
+
+
+def test_sandbox_client_maps_network_errors():
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("refused")
+
+    http = httpx2.AsyncClient(transport=httpx2.MockTransport(handle))
+    with pytest.raises(ToolError, match="unreachable: ConnectError"):
+        asyncio.run(SandboxClient("http://x/run", {}, http).call("run_code", RunCode(code="1")))
