@@ -92,7 +92,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.20.1" },
     { name = "asyncpg", specifier = ">=0.32.0" },
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pydantic", specifier = ">=2.14" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.15" },
     { name = "shared", editable = "packages/shared" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.6,<2.2" },
