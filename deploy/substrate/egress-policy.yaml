@@ -1,0 +1,18 @@
+# EgressPolicy for one agent actor (protojson ateapipb.EgressPolicy). Everything not listed is
+# denied, DNS included. Apply per actor:
+#   kubectl ate create egress-policy <actor> -a justpass-agents -f egress-policy.yaml
+rules:
+# OpenRouter, intercepted by the gateway so it can replace the placeholder key with the real one
+# from the Secret `openrouter` in namespace justpass-agents.
+- https:
+    hostnames:
+    - openrouter.ai
+    effects:
+      replaceHeaders:
+      - header: Authorization
+        prefix: "Bearer "
+        credentialUri: ate-secret://k8s.io/default/justpass-agents/openrouter/api-key
+# The Context API (the api Service in namespace homework), cleartext HTTP on port 80.
+- http:
+    hostnames:
+    - api.homework.svc.cluster.local
