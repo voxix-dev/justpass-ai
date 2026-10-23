@@ -2,17 +2,18 @@
 name = "homework-agents"
 version = "0.0.0"
 requires-python = ">=3.14"
-dependencies = ["api", "agent", "shared"]
+dependencies = ["api", "agent", "sandbox", "shared"]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["apps/api", "apps/agent", "packages/shared"]
+members = ["apps/api", "apps/agent", "apps/sandbox", "packages/shared"]
 
 [tool.uv.sources]
 api = { workspace = true }
 agent = { workspace = true }
+sandbox = { workspace = true }
 shared = { workspace = true }
 
 [dependency-groups]
@@ -37,12 +38,12 @@ target-version = "py314"
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["api", "agent", "shared"]
+known-first-party = ["api", "agent", "sandbox", "shared"]
 
 [tool.pyright]
 include = ["apps", "packages"]
 exclude = ["apps/web", "**/node_modules", "**/.venv"]
-strict = ["packages/shared", "apps/agent"]
+strict = ["packages/shared", "apps/agent", "apps/sandbox"]
 pythonVersion = "3.14"
 venvPath = "."
 venv = ".venv"
@@ -50,23 +51,24 @@ venv = ".venv"
 [tool.pytest.ini_options]
 testpaths = ["apps", "packages"]
 addopts = "--import-mode=importlib"
+markers = ["integration: needs a live sandbox actor; skipped unless SANDBOX_URL is set"]
 
 [tool.coverage.run]
-source = ["apps/api/src", "apps/agent/src", "packages/shared/src"]
+source = ["apps/api/src", "apps/agent/src", "apps/sandbox/src", "packages/shared/src"]
 
 [tool.importlinter]
-root_packages = ["shared", "api", "agent"]
+root_packages = ["shared", "api", "agent", "sandbox"]
 
 [[tool.importlinter.contracts]]
-name = "api and agent never import each other (they talk over HTTP)"
+name = "api, agent and sandbox never import each other (they talk over HTTP)"
 type = "independence"
-modules = ["api", "agent"]
+modules = ["api", "agent", "sandbox"]
 
 [[tool.importlinter.contracts]]
 name = "shared depends on nothing in this repo"
 type = "forbidden"
 source_modules = ["shared"]
-forbidden_modules = ["api", "agent"]
+forbidden_modules = ["api", "agent", "sandbox"]
 
 # Database migrations: `uv run --env-file .env alembic upgrade head`
 [tool.alembic]

@@ -8,6 +8,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY apps/agent/pyproject.toml apps/agent/
 COPY apps/api/pyproject.toml apps/api/
+COPY apps/sandbox/pyproject.toml apps/sandbox/
 COPY packages/shared/pyproject.toml packages/shared/
 RUN uv sync --locked --no-dev --package agent --no-install-workspace
 COPY apps/agent apps/agent
