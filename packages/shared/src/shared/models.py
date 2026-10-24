@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -62,7 +62,7 @@ class ResearchBrief(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     topic: str = Field(max_length=200)
-    questions: list[str] = Field(max_length=10)
+    questions: list[Annotated[str, Field(max_length=200)]] = Field(max_length=10)
     level: Literal["high_school", "college"]
     language: str = Field(min_length=2, max_length=8)
     length_words: int = Field(gt=0, le=5000)
