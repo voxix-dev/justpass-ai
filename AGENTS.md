@@ -1,7 +1,7 @@
 # Repository rules
 
-Design docs live in [`wiki/`](wiki/Home.md). Read the page for the area you change, and update it in the
-same PR when a design decision changes.
+Design docs live in the [GitHub wiki](https://github.com/voxix-dev/justpass-ai/wiki). Read the page for the area you
+change, and update it when your PR changes a design decision.
 
 ## Layout
 - `apps/api/` FastAPI: Jobs API, Context API, dispatcher.
@@ -9,7 +9,6 @@ same PR when a design decision changes.
 - `apps/web/` frontend. Talks to the API only through `contracts/openapi.json`.
 - `packages/shared/` Pydantic models used by both api and agent.
 - `deploy/` local cluster, k8s and Substrate manifests. `evals/` homework samples and scoring.
-- `wiki/` architecture, design decisions, local development.
 
 ## Rules
 - Every boundary (HTTP, agent tool input/output, DB row) uses a Pydantic model. Shared ones live in `packages/shared`.

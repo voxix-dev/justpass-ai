@@ -19,7 +19,7 @@ web (SPA) ──/api/** + Firebase ID token──▶ API (FastAPI) ──▶ Pos
 - The agent has no database or storage access. It reads and writes through the Context API.
 - API keys are added by the egress gateway, outside the sandbox.
 
-Details: [wiki](wiki/Home.md).
+Details: [wiki](https://github.com/voxix-dev/justpass-ai/wiki).
 
 ## Setup
 
@@ -34,4 +34,4 @@ uv run --env-file .env uvicorn api.main:app --reload
 ```
 
 Web app: [apps/web/README.md](apps/web/README.md). Local Substrate cluster:
-[wiki/Local-development.md](wiki/Local-development.md). Repo rules: [AGENTS.md](AGENTS.md).
+[wiki: Local development](https://github.com/voxix-dev/justpass-ai/wiki/Local-development). Repo rules: [AGENTS.md](AGENTS.md).
