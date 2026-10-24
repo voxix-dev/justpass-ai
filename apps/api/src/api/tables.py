@@ -219,7 +219,12 @@ class MemoryDoc(Base):
 async def search_memory(
     session: AsyncSession, user_id: str, query: str, limit: int = 5
 ) -> list[MemoryDoc]:
-    """One user's memory docs matching `query` (web-search syntax), best match first."""
+    """Return up to limit of one user's matching memory docs, best match first.
+
+    Search subject and body using PostgreSQL web-search syntax with no stemming. Return an
+    empty list if nothing matches. The session may autoflush pending changes; session and
+    database errors propagate to the caller.
+    """
     tsquery = func.websearch_to_tsquery(literal_column("'simple'::regconfig"), query)
     found = await session.scalars(
         select(MemoryDoc)

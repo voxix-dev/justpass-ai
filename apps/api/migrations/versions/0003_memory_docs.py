@@ -23,6 +23,11 @@ TSV = "to_tsvector('simple'::regconfig, coalesce(subject, '') || ' ' || body)"
 
 
 def upgrade() -> None:
+    """Create memory_docs with a generated subject/body search vector and a GIN index.
+
+    Allow one profile (NULL subject) and one document per subject for each user.
+    Database errors propagate to the caller.
+    """
     op.create_table(
         "memory_docs",
         sa.Column("id", sa.Uuid(), primary_key=True),
@@ -44,4 +49,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Drop memory_docs, including all memory documents and its search index.
+
+    Database errors propagate to the caller.
+    """
     op.drop_table("memory_docs")
