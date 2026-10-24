@@ -82,7 +82,7 @@ class OpenRouterClient:
         backoff_s: float = 1.0,
         http: httpx2.AsyncClient | None = None,
     ) -> None:
-        # No key is fine when an egress gateway adds it on the way out.
+        # Behind the egress gateway the key is a placeholder: the gateway swaps in the real one.
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._timeout_s = timeout_s
         self._max_retries = max_retries

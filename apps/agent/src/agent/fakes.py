@@ -83,3 +83,45 @@ class FakeContextClient:
                 return "ok"
             case _:  # list_history, search_history
                 return []
+
+
+def essay_demo() -> ScriptedModel:
+    """A scripted essay job that passes review: for demos of the actor without paid calls."""
+    brief = {
+        "topic": "Causes of World War I",
+        "questions": ["What role did alliances play?"],
+        "level": "high_school",
+        "language": "en",
+        "length_words": 300,
+    }
+
+    def run(role: str, task: str, *inputs: str) -> Message:
+        ids: list[JsonValue] = list(inputs)
+        return call(
+            "run_agent", {"role": role, "tier": "mid", "task": task, "input_artifact_ids": ids}
+        )
+
+    def done(artifact_id: str, summary: str) -> Message:
+        return say(json.dumps({"artifact_id": artifact_id, "summary": summary, "confidence": 0.9}))
+
+    final = {"final_artifact_id": "art-2", "summary": "Essay on the causes of World War I."}
+    return ScriptedModel(
+        {
+            Role.ORCHESTRATOR: [
+                run("research", json.dumps(brief)),
+                run("writer", "Write the essay from the notes.", "art-1"),
+                run("review", "Review the essay against the task.", "art-2"),
+                say(json.dumps(final)),
+            ],
+            Role.RESEARCH: [
+                call("write_artifact", {"title": "Notes", "content_md": "Alliances: ..."}),
+                done("art-1", "Notes saved."),
+            ],
+            Role.WRITER: [
+                call("read_artifact", {"artifact_id": "art-1"}),
+                call("write_artifact", {"title": "Essay", "content_md": "# WW1\n\n..."}),
+                done("art-2", "Essay written."),
+            ],
+            Role.REVIEW: [call("read_artifact", {"artifact_id": "art-2"}), done("art-2", "PASS")],
+        }
+    )
