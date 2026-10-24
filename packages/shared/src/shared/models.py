@@ -39,6 +39,22 @@ class Role(StrEnum):
     CURATOR = "curator"
 
 
+class Level(StrEnum):
+    HIGH_SCHOOL = "high_school"
+    COLLEGE = "college"
+
+
+class ArtifactKind(StrEnum):
+    """What an agent wrote. Each round has at most one FINAL: the answer the student reviews."""
+
+    RESEARCH_NOTES = "research_notes"
+    OUTLINE = "outline"
+    DRAFT = "draft"
+    REVIEW = "review"
+    FINAL = "final"
+    TEST_SUMMARY = "test_summary"
+
+
 class Tier(StrEnum):
     """Agents ask for a tier; config maps tiers to concrete models."""
 
@@ -63,6 +79,6 @@ class ResearchBrief(BaseModel):
 
     topic: str = Field(max_length=200)
     questions: list[str] = Field(max_length=10)
-    level: Literal["high_school", "college"]
+    level: Level
     language: str = Field(min_length=2, max_length=8)
     length_words: int = Field(gt=0, le=5000)
