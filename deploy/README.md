@@ -1,7 +1,8 @@
 # Deploy
 
-- `terraform/`: GCP project resources (GKE, Cloud SQL, buckets, Workload Identity Federation for CI).
-- `kind/`: local Substrate cluster for development.
-- `k8s/`: manifests for the API and Substrate worker pools.
+- `kind/`: local Substrate cluster for development. See [wiki: Local development](https://github.com/voxix-dev/justpass-ai/wiki/Local-development).
+- `k8s/`, `substrate/`: manifests for the API and Substrate worker pools (to be added).
+
+Cloud targets: [wiki: Architecture](https://github.com/voxix-dev/justpass-ai/wiki/Architecture#hosting).
 
 Local clusters use their own kubeconfig (`~/.kube/substrate-kind.yaml`); never write to `~/.kube/config`.
