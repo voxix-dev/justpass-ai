@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.db import get_session
 from api.dispatch import get_dispatch
 from api.main import app
-from api.tables import Artifact, Job
+from api.tables import REVIEW_WINDOW, Artifact, Job, JobRound
 from shared.models import ArtifactKind, JobStatus, Role
 
 pytestmark = pytest.mark.anyio
@@ -72,7 +72,11 @@ async def test_users_never_see_each_others_jobs(client: httpx2.AsyncClient, sess
     job_id = await create_job(client, ALICE)
     await put_in_review(session, job_id, datetime.now(UTC))
     assert (await client.get(f"/jobs/{job_id}", headers=BOB)).status_code == 404
+    assert (await client.post(f"/jobs/{job_id}/accept", headers=BOB)).status_code == 404
+    feedback = await client.post(f"/jobs/{job_id}/feedback", json={"text": "x"}, headers=BOB)
+    assert feedback.status_code == 404
     assert (await client.get("/jobs", headers=BOB)).json() == []
+    assert (await session.get_one(Job, job_id)).status == JobStatus.AWAITING_REVIEW
 
 
 async def test_a_job_in_review_shows_its_answer_and_deadline(
@@ -97,6 +101,55 @@ async def test_requests_without_a_valid_token_are_rejected(
     response = await client.get("/jobs", headers=headers)
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+async def test_feedback_starts_a_new_round(
+    client: httpx2.AsyncClient, session: AsyncSession, dispatched: list[object]
+):
+    job_id = await create_job(client)
+    await put_in_review(session, job_id, datetime.now(UTC))
+    url = f"/jobs/{job_id}/feedback"
+    response = await client.post(url, json={"text": "  Shorter, please. "}, headers=ALICE)
+    assert response.status_code == 200, response.text
+    job = response.json()
+    assert (job["status"], job["round"], job["review_deadline"]) == ("processing", 2, None)
+    assert job["result"] == {"round": 1, "markdown": "# A"}  # still the previous answer
+    assert (await session.get_one(JobRound, (job_id, 2))).feedback == "Shorter, please."
+    assert dispatched[-1] == (job_id, 2)
+    again = await client.post(url, json={"text": "More."}, headers=ALICE)
+    assert again.status_code == 409  # not in review any more
+    assert dispatched[-1] == (job_id, 2)
+
+
+async def test_review_actions_are_rejected_after_the_deadline(
+    client: httpx2.AsyncClient, session: AsyncSession, dispatched: list[object]
+):
+    job_id = await create_job(client)
+    await put_in_review(session, job_id, datetime.now(UTC) - REVIEW_WINDOW - timedelta(minutes=1))
+    for response in [
+        await client.post(f"/jobs/{job_id}/feedback", json={"text": "x"}, headers=ALICE),
+        await client.post(f"/jobs/{job_id}/accept", headers=ALICE),
+    ]:
+        assert response.status_code == 409
+        assert response.json()["detail"] == "the review window has closed"
+    assert dispatched == [(job_id, 1)]
+
+
+async def test_feedback_is_rejected_before_there_is_an_answer(client: httpx2.AsyncClient):
+    job_id = await create_job(client)
+    url = f"/jobs/{job_id}/feedback"
+    assert (await client.post(url, json={"text": "x"}, headers=ALICE)).status_code == 409
+
+
+async def test_accept_is_final(client: httpx2.AsyncClient, session: AsyncSession):
+    job_id = await create_job(client)
+    await put_in_review(session, job_id, datetime.now(UTC))
+    accepted = (await client.post(f"/jobs/{job_id}/accept", headers=ALICE)).json()
+    assert (accepted["status"], accepted["review_deadline"]) == ("accepted", None)
+    assert (await client.post(f"/jobs/{job_id}/accept", headers=ALICE)).status_code == 409
+    feedback = await client.post(f"/jobs/{job_id}/feedback", json={"text": "x"}, headers=ALICE)
+    assert feedback.status_code == 409
+    assert (await session.get_one(Job, job_id)).status == JobStatus.ACCEPTED
 
 
 async def test_polling_returns_jobs_updated_since_with_some_overlap(client: httpx2.AsyncClient):
