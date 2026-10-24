@@ -1,6 +1,69 @@
 {
   "components": {
     "schemas": {
+      "ArtifactContent": {
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "content_md": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Md"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ArtifactKind"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "round": {
+            "title": "Round",
+            "type": "integer"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "title",
+          "role",
+          "kind",
+          "round",
+          "content_md"
+        ],
+        "title": "ArtifactContent",
+        "type": "object"
+      },
+      "ArtifactKind": {
+        "description": "What an agent wrote. Each round has at most one FINAL: the answer the student reviews.",
+        "enum": [
+          "research_notes",
+          "outline",
+          "draft",
+          "review",
+          "final",
+          "test_summary"
+        ],
+        "title": "ArtifactKind",
+        "type": "string"
+      },
       "FeedbackCreate": {
         "additionalProperties": false,
         "properties": {
@@ -249,6 +312,33 @@
         "title": "Level",
         "type": "string"
       },
+      "ReadArtifact": {
+        "description": "Read an artifact's full content by id.",
+        "properties": {
+          "artifact_id": {
+            "maxLength": 100,
+            "title": "Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id"
+        ],
+        "title": "ReadArtifact",
+        "type": "object"
+      },
+      "Role": {
+        "enum": [
+          "orchestrator",
+          "research",
+          "writer",
+          "solver",
+          "review",
+          "curator"
+        ],
+        "title": "Role",
+        "type": "string"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -287,6 +377,40 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WriteArtifact": {
+        "description": "Save Markdown as a new artifact. Returns {artifact_id}.",
+        "properties": {
+          "content_md": {
+            "maxLength": 200000,
+            "title": "Content Md",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 200,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "content_md"
+        ],
+        "title": "WriteArtifact",
+        "type": "object"
+      },
+      "WrittenArtifact": {
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id"
+        ],
+        "title": "WrittenArtifact",
         "type": "object"
       }
     },
@@ -582,6 +706,100 @@
         "summary": "Send Feedback",
         "tags": [
           "jobs"
+        ]
+      }
+    },
+    "/v1/context/read_artifact": {
+      "post": {
+        "description": "Any artifact of this job, from any round. Others answer 404, the same as missing ones.",
+        "operationId": "read_artifact_v1_context_read_artifact_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadArtifact"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactContent"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Artifact",
+        "tags": [
+          "context (agents only)"
+        ]
+      }
+    },
+    "/v1/context/write_artifact": {
+      "post": {
+        "description": "Saves the artifact in the token's round. The dispatcher later marks the answer FINAL.",
+        "operationId": "write_artifact_v1_context_write_artifact_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WriteArtifact"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WrittenArtifact"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Write Artifact",
+        "tags": [
+          "context (agents only)"
         ]
       }
     }
