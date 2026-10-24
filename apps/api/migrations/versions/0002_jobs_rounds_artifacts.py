@@ -24,12 +24,20 @@ KINDS = "'research_notes', 'outline', 'draft', 'review', 'final', 'test_summary'
 
 
 def timestamp(name: str, default: str = "now()") -> sa.Column[Any]:
+    """Return a non-null timestamp column with time zone support.
+
+    Use default as a server-side SQL expression (now() by default).
+    """
     return sa.Column(
         name, sa.DateTime(timezone=True), server_default=sa.text(default), nullable=False
     )
 
 
 def upgrade() -> None:
+    """Create jobs, job_rounds, and artifacts with their constraints and indexes.
+
+    Database errors propagate to the caller.
+    """
     op.create_table(
         "jobs",
         sa.Column("id", sa.Uuid(), primary_key=True),
@@ -103,6 +111,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Drop artifacts, job_rounds, and jobs, including their indexes and all their data.
+
+    Database errors propagate to the caller.
+    """
     # Dropping a table drops its indexes too.
     for table in ("artifacts", "job_rounds", "jobs"):
         op.drop_table(table)

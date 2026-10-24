@@ -49,6 +49,7 @@ class Base(DeclarativeBase):
 
 
 def _values(enum: type[StrEnum]) -> list[str]:
+    """Return enum values in iteration order for SQLAlchemy's text representation."""
     return [member.value for member in enum]
 
 
@@ -66,6 +67,7 @@ def str_enum(enum: type[StrEnum], name: str) -> Enum:
 
 class InvalidTransition(ValueError):
     def __init__(self, current: JobStatus, new: JobStatus) -> None:
+        """Create an error identifying the current and requested job statuses."""
         super().__init__(f"a job cannot go from {current} to {new}")
 
 
@@ -117,8 +119,16 @@ class Job(Base):
     )
 
     def move_to(self, new: JobStatus, now: datetime) -> None:
-        """Changes the status if shared.models.TRANSITIONS allows it, else raises. Load the job with
-        select(Job).with_for_update() first, so two requests cannot change it at the same time."""
+        """Change the status if shared.models.TRANSITIONS allows it.
+
+        Set review_deadline to 48 hours after the supplied now when entering awaiting_review;
+        clear it for every other allowed status. The existing deadline is not checked.
+        The caller manages flushing and committing the change.
+
+        Raise InvalidTransition for a disallowed transition before changing either field.
+        Load the job with select(Job).with_for_update() first, so two requests cannot
+        change it at the same time.
+        """
         if not can_transition(self.status, new):
             raise InvalidTransition(self.status, new)
         self.status = new
