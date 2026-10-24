@@ -1,0 +1,49 @@
+# ActorTemplate for the agent (protojson ateapipb.ActorTemplate, created through the ate API with
+# `kubectl ate create actor-template -f -`). Fill the ${...} placeholders with envsubst first.
+metadata:
+  atespace: justpass-agents
+  name: agent
+workerSelector:
+  matchLabels:
+    workload: justpass-agent
+containers:
+- name: agent
+  image: ${AGENT_IMAGE} # must be pinned by digest: <registry>/justpass-agent@sha256:...
+  env:
+  - name: CONTEXT_API_URL
+    value: http://api.homework.svc.cluster.local
+  # A placeholder: the egress gateway swaps it for the real key (see egress-policy.yaml), so the
+  # key never enters the actor or its snapshots.
+  - name: OPENROUTER_API_KEY
+    value: injected-by-egress
+  # Trust the egress gateway, which terminates TLS to OpenRouter to inject the key.
+  - name: SSL_CERT_FILE
+    value: /run/ate/trust/trust-bundle.pem
+  # "1": scripted model and in-memory Context API, for demos without paid calls.
+  - name: AGENT_FAKES
+    value: "${AGENT_FAKES}"
+  wakeupProbe:
+    httpGet:
+      path: /readyz
+      port: 80
+  volumeMounts:
+  - name: trust
+    mountPath: /run/ate/trust
+resources:
+  limits:
+    cpuMillicores: 1000
+    memoryBytes: 536870912 # 512Mi
+snapshotConfig:
+  # MEMORY: a suspend keeps the running process, so the stored results (and later the job's
+  # conversation, for feedback rounds) come back on resume without any code to save or load them.
+  # Postgres stays the source of truth; a lost snapshot only means a fresh actor.
+  preferredFidelity: SNAPSHOT_FIDELITY_MEMORY
+volumes:
+- name: trust
+  systemInfo:
+    dataSources:
+    - trustBundle:
+        names:
+        - egress-mitm.ate.dev
+        - system-roots.ate.dev
+        path: trust-bundle.pem
