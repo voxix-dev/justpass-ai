@@ -111,6 +111,7 @@ async def test_polling_returns_jobs_updated_since_with_some_overlap(client: http
 
     assert len(await poll((updated_at + timedelta(seconds=3)).isoformat())) == 1
     assert await poll((updated_at + timedelta(seconds=10)).isoformat()) == []
+    assert len(await poll("0001-01-01T00:00:00Z")) == 1  # overlap would underflow: no lower bound
     assert "detail" in await poll("2026-10-23T12:00:00")  # no time zone: rejected
 
 

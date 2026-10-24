@@ -4,6 +4,7 @@ A user only ever sees their own jobs: another user's job answers 404, the same a
 """
 
 import uuid
+from contextlib import suppress
 from datetime import datetime, timedelta
 from typing import Annotated
 
@@ -161,7 +162,9 @@ async def list_jobs(
     if updated_since is None:
         query = query.limit(LIST_LIMIT)
     else:
-        query = query.where(Job.updated_at > updated_since - POLL_OVERLAP)
+        # An updated_since at the start of the date range can't go back further: no lower bound.
+        with suppress(OverflowError):
+            query = query.where(Job.updated_at > updated_since - POLL_OVERLAP)
     return [JobSummary.model_validate(job) for job in await session.scalars(query)]
 
 
