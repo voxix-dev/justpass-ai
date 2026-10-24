@@ -2,7 +2,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 class Subject(StrEnum):
@@ -53,7 +53,37 @@ class Sample(BaseModel):
         return self
 
 
+class Judgement(BaseModel):
+    """What an LLM judge returns: points per rubric criterion, in rubric order."""
+
+    points: list[int]
+    reason: str = Field(max_length=2000)
+
+
 class CheckResult(BaseModel):
     name: str
     passed: bool
     detail: str = ""
+
+
+class SampleResult(BaseModel):
+    sample_id: str
+    subject: Subject
+    level: str
+    language: str
+    checks: list[CheckResult]
+    rubric_points: int | None = None
+    rubric_max: int | None = None
+    judge_reason: str = ""
+
+    @computed_field
+    @property
+    def passed(self) -> bool:
+        return all(c.passed for c in self.checks)
+
+
+class Report(BaseModel):
+    results: list[SampleResult]
+    checks_passed: int
+    checks_total: int
+    rubric_score: float | None  # mean of points / max over judged samples
