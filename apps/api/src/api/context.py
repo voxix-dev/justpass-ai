@@ -11,13 +11,27 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.agent_token import InvalidToken, verify_token
 from api.db import get_session
-from api.tables import Artifact, Job
-from shared.context import ArtifactContent, ReadArtifact, WriteArtifact, WrittenArtifact
+from api.tables import Artifact, Job, MemoryDoc, search_memory
+from shared.context import (
+    ArtifactContent,
+    GetProfile,
+    GetSubjectMemory,
+    HistoryItem,
+    ListHistory,
+    Memory,
+    Profile,
+    ReadArtifact,
+    SearchHistory,
+    UpdateMemory,
+    WriteArtifact,
+    WrittenArtifact,
+)
 from shared.models import ArtifactKind, Role
 from shared.roles import ROLE_TOOLS
 
@@ -61,6 +75,94 @@ def _check_text(*texts: str | None) -> None:
     """Postgres cannot store NUL characters, so refuse them rather than fail with a 500."""
     if any(text and "\x00" in text for text in texts):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "text contains a NUL character")
+
+
+async def _memory(session: AsyncSession, user_id: str, subject: str | None) -> str:
+    body = await session.scalar(
+        select(MemoryDoc.body).where(
+            MemoryDoc.user_id == user_id, MemoryDoc.subject.is_not_distinct_from(subject)
+        )
+    )
+    return body or ""
+
+
+@router.post("/get_profile")
+async def get_profile(
+    args: GetProfile, agent: Annotated[Agent, allowed("get_profile")], session: Session
+) -> Profile:
+    job = agent.job
+    return Profile(
+        level=job.level,
+        language=job.language,
+        subject=job.subject,
+        profile_md=await _memory(session, job.user_id, None),
+    )
+
+
+@router.post("/get_subject_memory")
+async def get_subject_memory(
+    args: GetSubjectMemory,
+    agent: Annotated[Agent, allowed("get_subject_memory")],
+    session: Session,
+) -> Memory:
+    _check_text(args.subject)
+    content = await _memory(session, agent.job.user_id, args.subject)
+    return Memory(subject=args.subject, content_md=content)
+
+
+@router.post("/list_history")
+async def list_history(
+    args: ListHistory, agent: Annotated[Agent, allowed("list_history")], session: Session
+) -> list[HistoryItem]:
+    """The student's other jobs, newest first."""
+    jobs = await session.scalars(
+        select(Job)
+        .where(Job.user_id == agent.job.user_id, Job.id != agent.job.id)
+        .order_by(Job.created_at.desc())
+        .limit(args.limit)
+    )
+    return [
+        HistoryItem(
+            job_id=str(job.id),
+            subject=job.subject,
+            status=job.status,
+            created_at=job.created_at,
+            grade=job.grade,
+            grade_comment=job.grade_comment,
+        )
+        for job in jobs
+    ]
+
+
+@router.post("/search_history")
+async def search_history(
+    args: SearchHistory, agent: Annotated[Agent, allowed("search_history")], session: Session
+) -> list[Memory]:
+    """Searches the student's memory docs, which the curator distills from past jobs."""
+    _check_text(args.query)
+    docs = await search_memory(session, agent.job.user_id, args.query)
+    return [Memory(subject=doc.subject, content_md=doc.body) for doc in docs]
+
+
+@router.post("/update_memory")
+async def update_memory(
+    args: UpdateMemory, agent: Annotated[Agent, allowed("update_memory")], session: Session
+) -> Memory:
+    """scope=profile ignores `subject`; scope=subject needs one."""
+    subject = args.subject if args.scope == "subject" else None
+    if args.scope == "subject" and not subject:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "scope=subject needs a subject")
+    _check_text(subject, args.content_md)
+    await session.execute(
+        insert(MemoryDoc)
+        .values(user_id=agent.job.user_id, subject=subject, body=args.content_md)
+        .on_conflict_do_update(
+            constraint="uq_memory_docs_user_id_subject",
+            set_={"body": args.content_md, "updated_at": func.clock_timestamp()},
+        )
+    )
+    await session.commit()
+    return Memory(subject=subject, content_md=args.content_md)
 
 
 @router.post("/read_artifact")
