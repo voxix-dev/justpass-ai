@@ -4,10 +4,13 @@ Each tool's arguments are a Pydantic model; its docstring is the description the
 Which role may call which tool is decided only in roles.py.
 """
 
+from collections.abc import Mapping
 from typing import Literal, Protocol
 
 import httpx2
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import BaseModel, Field, JsonValue, ValidationError
+
+from shared.code_run import CodeRun, CodeRunResult
 
 
 class RunAgent(BaseModel):
@@ -74,10 +77,10 @@ class WebFetch(BaseModel):
     url: str = Field(max_length=2000)
 
 
-class RunCode(BaseModel):
-    """Run Python code (no network) and return its output."""
-
-    code: str = Field(max_length=20_000)
+class RunCode(CodeRun):
+    """Run a Python 3.14 script that can import numpy, scipy and sympy. No network, no files
+    kept between runs, at most 10 s and 16 kB of output: print what you need. Runs of one job
+    wait for each other. Returns {exit_code, stdout, stderr, timed_out, output_truncated}."""
 
 
 TOOL_ARGS: dict[str, type[BaseModel]] = {
@@ -146,8 +149,35 @@ class HttpContextClient:
         return result
 
 
+class SandboxClient:
+    """run_code over HTTP. In production `url` is the API's relay, which runs the code in this
+    job's own sandbox actor: no network, no tokens, no user data (deploy/substrate/sandbox.md)."""
+
+    def __init__(
+        self, url: str, headers: Mapping[str, str], http: httpx2.AsyncClient | None = None
+    ) -> None:
+        self._url, self._headers = url, dict(headers)
+        self._http = http or httpx2.AsyncClient(timeout=60)  # waking the actor + a 10 s run
+
+    async def call(self, tool: str, args: BaseModel) -> JsonValue:
+        if not isinstance(args, RunCode):
+            raise TypeError(f"expected RunCode, got {type(args).__name__}")
+        try:
+            resp = await self._http.post(
+                self._url, json=args.model_dump(mode="json"), headers=self._headers
+            )
+        except httpx2.TransportError as e:
+            raise ToolError(f"code sandbox unreachable: {type(e).__name__}") from e
+        if resp.is_error:
+            raise ToolError(f"code sandbox returned HTTP {resp.status_code}")
+        try:
+            return CodeRunResult.model_validate_json(resp.content).model_dump(mode="json")
+        except ValidationError as e:
+            raise ToolError("code sandbox returned an invalid result") from e
+
+
 class UnavailableTool:
-    """Stand-in for tools not built yet (web search/fetch, code sandbox)."""
+    """Stand-in for tools not built yet (web search/fetch)."""
 
     async def call(self, tool: str, args: BaseModel) -> JsonValue:
         raise ToolError(f"{tool} is not available yet")

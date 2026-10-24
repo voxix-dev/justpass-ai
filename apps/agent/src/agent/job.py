@@ -20,6 +20,7 @@ from agent.tools import (
     CONTEXT_TOOLS,
     HttpContextClient,
     RunAgent,
+    SandboxClient,
     ToolBackend,
     ToolError,
     UnavailableTool,
@@ -62,7 +63,10 @@ class Deps:
             raise ValueError(f"no Context API token for {sorted(missing)}")
         url = os.environ["CONTEXT_API_URL"]
         clients = {role: HttpContextClient(url, token) for role, token in context_tokens.items()}
-        return cls(llm=llm, context=clients.__getitem__, limits=limits)
+        # The API relays run_code to the job's sandbox actor (the solver's token allows it).
+        auth = {"Authorization": f"Bearer {context_tokens[Role.SOLVER]}"}
+        code = SandboxClient(f"{url.rstrip('/')}/v1/context/run_code", auth)
+        return cls(llm=llm, context=clients.__getitem__, code=code, limits=limits)
 
 
 async def run_job(request: JobRequest, deps: Deps) -> JobResult:

@@ -8,7 +8,7 @@ from agent.config import OPUS, Limits
 from agent.fakes import FakeContextClient, ScriptedModel, call, say
 from agent.job import Deps, run_job
 from agent.llm import Message
-from agent.tools import HttpContextClient
+from agent.tools import HttpContextClient, RunCode, SandboxClient
 from shared.agent_run import JobRequest, JobResult
 from shared.models import Role
 
@@ -174,5 +174,38 @@ def test_deps_from_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("CONTEXT_API_URL", "http://api")
     deps = Deps.from_env({role: f"{role}-token" for role in Role})
     assert isinstance(deps.context(Role.WRITER), HttpContextClient)
+    assert isinstance(deps.code, SandboxClient)
     with pytest.raises(ValueError, match="no Context API token"):
         Deps.from_env({Role.WRITER: "writer-token"})
+
+
+class FakeSandbox:
+    def __init__(self) -> None:
+        self.code: list[str] = []
+
+    async def call(self, tool: str, args: BaseModel) -> JsonValue:
+        assert isinstance(args, RunCode)
+        self.code.append(args.code)
+        return {"exit_code": 0, "stdout": "42\n", "stderr": "", "timed_out": False,
+                "output_truncated": False}  # fmt: skip
+
+
+def test_the_solver_runs_code_in_the_sandbox():
+    model, ctx, sandbox = (
+        ScriptedModel(
+            {
+                Role.ORCHESTRATOR: [agent("solver", "mid", "What is 6 * 7?"), say("stop")],
+                Role.SOLVER: [
+                    call("run_code", {"code": "print(6 * 7)"}),
+                    call("write_artifact", {"title": "answer", "content_md": "42"}),
+                    answer("art-1"),
+                ],
+            }
+        ),
+        FakeContextClient(),
+        FakeSandbox(),
+    )
+    request = JobRequest(job_id="job-1", playbook="math", task="6 * 7")
+    asyncio.run(run_job(request, Deps(llm=model, context=lambda _: ctx, code=sandbox)))
+    assert sandbox.code == ["print(6 * 7)"]
+    assert '"stdout": "42\\n"' in tool_replies(model)[0]

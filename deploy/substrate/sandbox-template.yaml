@@ -1,0 +1,33 @@
+# ActorTemplate for the code sandbox (protojson ateapipb.ActorTemplate, created with
+# `kubectl ate create actor-template -f -`). Fill ${SANDBOX_IMAGE} with envsubst first.
+#
+# On purpose there is no env, no volume, no trust bundle and no EgressPolicy for its actors: an
+# actor without a policy gets no egress at all (every DNS lookup fails, every connection is
+# refused). It never holds a token or user data, only the code it is sent.
+metadata:
+  atespace: justpass-sandbox
+  name: sandbox
+workerSelector:
+  matchLabels:
+    workload: justpass-sandbox
+containers:
+- name: sandbox
+  image: ${SANDBOX_IMAGE} # must be pinned by digest: <registry>/justpass-sandbox@sha256:...
+  # Actors run as root (inside gVisor). These let the server run each script as nobody and
+  # delete the files it leaves (runner.py).
+  securityContext:
+    capabilities:
+      add: [SETUID, SETGID, DAC_OVERRIDE]
+  wakeupProbe:
+    httpGet:
+      path: /readyz
+      port: 80
+resources:
+  limits:
+    cpuMillicores: 1000
+    # A run may use 512Mi (runner.py), the server and gVisor need the rest.
+    memoryBytes: 805306368 # 768Mi
+snapshotConfig:
+  # The golden snapshot holds the started server, so a new actor is up in about a second. Nothing
+  # in a sandbox is needed after its job, so any fidelity works; MEMORY is just the fastest to wake.
+  preferredFidelity: SNAPSHOT_FIDELITY_MEMORY

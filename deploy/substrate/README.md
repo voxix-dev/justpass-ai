@@ -10,6 +10,7 @@ resumes it from the snapshot.
 | `agent-pool.yaml` | Namespace `justpass-agents` and its gVisor `WorkerPool` |
 | `agent-template.yaml` | The `ActorTemplate` (a Substrate resource, not a CRD) |
 | `egress-policy.yaml` | What one actor may reach: OpenRouter and the Context API, nothing else |
+| `sandbox.md` | The code sandbox for `run_code`: its own actor per job, no network |
 
 The actor's HTTP API (bodies are the models in `packages/shared/src/shared/agent_run.py`):
 
