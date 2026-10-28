@@ -1,6 +1,7 @@
 import { defineConfig, devices } from '@playwright/test'
 
-// End-to-end tests against the dev server, which proxies /api to a live API on localhost:8000.
+// End-to-end tests against the web app (dev server, or the production build in CI), which proxies
+// /api to a live API on localhost:8000.
 // Start the API first (see README.md); each test makes its own jobs, so the database can hold others.
 const CI = !!process.env.CI
 
@@ -10,5 +11,10 @@ export default defineConfig({
   reporter: CI ? [['list'], ['github']] : 'list',
   use: { baseURL: 'http://localhost:5173', trace: 'on-first-retry' },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
-  webServer: { command: 'pnpm dev --port 5173 --strictPort', url: 'http://localhost:5173', reuseExistingServer: !CI },
+  // CI tests the production build; vite preview proxies /api like the dev server.
+  webServer: {
+    command: CI ? 'pnpm build && pnpm preview --port 5173 --strictPort' : 'pnpm dev --port 5173 --strictPort',
+    url: 'http://localhost:5173',
+    reuseExistingServer: !CI,
+  },
 })

@@ -72,7 +72,7 @@ function JobDetail({ job }: { job: Job }) {
       )}
 
       <p aria-live="polite" className="sr-only">
-        {job.status === 'done' ? 'The answer is ready.' : ''}
+        {job.status === 'done' ? (job.round > 1 ? `Revised answer ready, round ${job.round}.` : 'The answer is ready.') : ''}
       </p>
       <div className="mt-8">
         {isPending(job) ? (
@@ -120,6 +120,8 @@ function Actions({ job }: { job: Job }) {
   const qc = useQueryClient()
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
+  // A 409 means the job changed elsewhere (accepted in another tab, say): reload it to show why.
+  const reload = () => void qc.invalidateQueries({ queryKey: ['jobs', job.id] })
 
   const accept = useMutation({
     mutationFn: () => acceptJob(job.id),
@@ -127,6 +129,7 @@ function Actions({ job }: { job: Job }) {
       qc.setQueryData(['jobs', j.id], j)
       void qc.invalidateQueries({ queryKey: ['jobs'], exact: true })
     },
+    onError: reload,
   })
   const feedback = useMutation({
     mutationFn: (text: string) => sendFeedback(job.id, text),
@@ -135,7 +138,10 @@ function Actions({ job }: { job: Job }) {
       void qc.invalidateQueries({ queryKey: ['jobs'], exact: true })
       setNote('')
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => {
+      setError(e.message)
+      reload()
+    },
   })
 
   /** Prevent native submission, display an error for blank feedback, and submit a revision otherwise. */
@@ -182,7 +188,7 @@ function Actions({ job }: { job: Job }) {
           rows={3}
           placeholder="Step 2 skips how you got −2 and −3"
           aria-describedby="feedback-error"
-          aria-invalid={!!error || undefined}
+          aria-invalid={(!!error && !note.trim()) || undefined}
           className="mt-2 block w-full resize-y rounded-2xl border-2 border-input bg-card p-4 text-base placeholder:text-muted-foreground aria-invalid:border-coral"
         />
         <p id="feedback-error" role="alert" className="mt-2 min-h-6 font-bold text-coral">
