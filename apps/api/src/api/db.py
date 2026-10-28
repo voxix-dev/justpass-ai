@@ -12,7 +12,7 @@ def _engine() -> AsyncEngine:
     url = os.environ.get("DATABASE_URL")
     if not url:
         raise RuntimeError("Set DATABASE_URL (postgresql+asyncpg://...), e.g. `--env-file .env`.")
-    return create_async_engine(url)
+    return create_async_engine(url, pool_pre_ping=True)  # survives a database restart
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

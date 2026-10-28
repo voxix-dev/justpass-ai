@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.db import get_session
-from api.jobs import FAILED_MESSAGE, SAMPLE_ANSWER
+from api.jobs import _STATUS, FAILED_MESSAGE, SAMPLE_ANSWER
 from api.main import app
 from api.tables import Artifact, Job, JobRound, User
 from shared.models import ArtifactKind, JobStatus, Level
@@ -18,7 +18,14 @@ pytestmark = pytest.mark.anyio
 
 @pytest.fixture
 async def client(session: AsyncSession) -> AsyncIterator[httpx2.AsyncClient]:
-    app.dependency_overrides[get_session] = lambda: session
+    async def request_session() -> AsyncIterator[AsyncSession]:
+        """Each request gets its own session, as in production, so a missing commit is lost."""
+        async with AsyncSession(
+            session.bind, join_transaction_mode="create_savepoint", expire_on_commit=False
+        ) as s:
+            yield s
+
+    app.dependency_overrides[get_session] = request_session
     transport = httpx2.ASGITransport(app=app)
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
@@ -42,13 +49,15 @@ async def test_create_solves_the_job(client: httpx2.AsyncClient, session: AsyncS
     assert job["result"] == SAMPLE_ANSWER
     assert job["text"] == f"{'a' * 90}\nsecond line"
     assert job["title"] == "a" * 80
-    row = await session.get(Job, uuid.UUID(job["id"]))
+    row = await session.get(Job, uuid.UUID(job["id"]), populate_existing=True)
     assert row is not None
     assert row.status == JobStatus.AWAITING_REVIEW
     assert row.review_deadline is not None
 
 
-@pytest.mark.parametrize("body", [{"text": ""}, {"text": "   "}, {"text": "hi", "extra": 1}, {}])
+@pytest.mark.parametrize(
+    "body", [{"text": ""}, {"text": "   "}, {"text": "a\u0000"}, {"text": "hi", "extra": 1}, {}]
+)
 async def test_create_rejects_bad_bodies(client: httpx2.AsyncClient, body: dict):
     assert (await client.post("/jobs", json=body)).status_code == 422
 
@@ -81,7 +90,7 @@ async def test_list_shows_only_the_dev_users_jobs_newest_first(
 ):
     first, second = await create(client, "first"), await create(client, "second")
     # Both requests ran in the test's one transaction, so now() gave them the same created_at.
-    row = await session.get(Job, uuid.UUID(first["id"]))
+    row = await session.get(Job, uuid.UUID(first["id"]), populate_existing=True)
     assert row is not None
     row.created_at -= timedelta(minutes=1)
     session.add(User(id="someone-else", is_anonymous=True))
@@ -116,7 +125,7 @@ async def test_accept(client: httpx2.AsyncClient, session: AsyncSession):
     response = await client.post(f"/jobs/{job['id']}/accept")
     assert response.status_code == 200
     assert (response.json()["status"], response.json()["accepted"]) == ("done", True)
-    row = await session.get(Job, uuid.UUID(job["id"]))
+    row = await session.get(Job, uuid.UUID(job["id"]), populate_existing=True)
     assert row is not None
     assert row.status == JobStatus.ACCEPTED
     assert row.review_deadline is None
@@ -146,12 +155,13 @@ async def test_feedback_starts_the_next_round(client: httpx2.AsyncClient, sessio
 
 async def test_feedback_on_an_expired_job(client: httpx2.AsyncClient, session: AsyncSession):
     job = await create(client)
-    row = await session.get(Job, uuid.UUID(job["id"]))
+    row = await session.get(Job, uuid.UUID(job["id"]), populate_existing=True)
     assert row is not None
     row.move_to(JobStatus.EXPIRED, datetime.now(UTC))
     await session.flush()
     response = await client.post(f"/jobs/{job['id']}/feedback", json={"text": "again"})
     assert (response.status_code, response.json()["round"]) == (200, 2)
+    await session.refresh(row)
     assert row.status == JobStatus.AWAITING_REVIEW
 
 
@@ -163,3 +173,9 @@ async def test_feedback_conflicts_and_validation(client: httpx2.AsyncClient):
         assert response.status_code == 409
     response = await client.post(f"/jobs/{accepted['id']}/feedback", json={"text": "  "})
     assert response.status_code == 422
+    response = await client.post(f"/jobs/{uuid.uuid4()}/feedback", json={"text": "x"})
+    assert response.status_code == 404
+
+
+async def test_every_status_has_a_web_status():
+    assert _STATUS.keys() == set(JobStatus)

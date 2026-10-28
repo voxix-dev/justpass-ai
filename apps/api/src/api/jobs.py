@@ -24,16 +24,26 @@ LIST_LIMIT = 100
 TITLE_LENGTH = 80
 
 
+# Postgres text cannot hold NUL, so refuse it here (422) rather than fail in the database (500).
+NO_NUL = r"^[^\x00]*$"
+
+
 class JobCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20_000)]
+    text: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=20_000, pattern=NO_NUL),
+    ]
 
 
 class FeedbackCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4_000)]
+    text: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=4_000, pattern=NO_NUL),
+    ]
 
 
 class JobOut(BaseModel):
@@ -148,7 +158,7 @@ async def _out(session: AsyncSession, jobs: list[Job]) -> list[JobOut]:
                 id=job.id,
                 status=shown,
                 created_at=job.created_at,
-                title=text.split("\n")[0][:TITLE_LENGTH],
+                title=(text.splitlines() or [""])[0][:TITLE_LENGTH],
                 text=text,
                 result=finals.get(job.id) if shown == "done" else None,
                 error=FAILED_MESSAGE if shown == "failed" else None,
@@ -204,7 +214,6 @@ async def create_job(body: JobCreate, session: Session) -> JobOut:
     await session.flush()
     fake_solve(session, job, 1, None)
     await session.commit()
-    await session.refresh(job)  # created_at comes from the database
     return (await _out(session, [job]))[0]
 
 

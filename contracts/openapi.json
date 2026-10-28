@@ -7,6 +7,7 @@
           "text": {
             "maxLength": 4000,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Text",
             "type": "string"
           }
@@ -36,6 +37,7 @@
           "text": {
             "maxLength": 20000,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Text",
             "type": "string"
           }
