@@ -2,7 +2,10 @@ from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Request, Response
 
+from api import jobs
+
 app = FastAPI(title="Homework API", version="0.0.0")
+app.include_router(jobs.router)
 
 
 @app.middleware("http")
