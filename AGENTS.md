@@ -18,8 +18,16 @@ change, and update it when your PR changes a design decision.
   `tests/test_roles.py` must keep passing: no role may have both private-data tools and outbound tools.
 - Never call a paid model in tests. Use recorded responses.
 - Never commit secrets. Put them in `.env` (git-ignored); `.env.example` lists the names.
-- Keep PRs small and focused on one change. Split big work into stacked PRs.
 - Add dependencies to the package that uses them: `uv add --package api <pkg>`. No new dependency without a reason.
+
+## Pull requests
+- One PR is one feature or one fix. Keep it small. Avoid big PRs.
+- If the smallest testable change can't be done in under 1000 lines, a bigger PR is fine, but try hard to avoid it.
+- No stacked PRs. Every PR targets `main` and stands on its own. Don't split one change into a chain of PRs.
+- If a change depends on another open PR, wait until that PR is merged before opening it.
+- Only when waiting would block work for too long, put both changes in one bigger PR instead. Avoid this too.
+- To add docstrings with CodeRabbit, pick "Commit on current branch" under "Generate docstrings". Never "Create a new
+  PR": that opens a stacked PR.
 
 ## Before you push
 ```
