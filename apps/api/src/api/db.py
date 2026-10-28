@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 
 @cache
 def _engine() -> AsyncEngine:
+    """The process-wide engine for $DATABASE_URL, created on first use."""
     url = os.environ.get("DATABASE_URL")
     if not url:
         raise RuntimeError("Set DATABASE_URL (postgresql+asyncpg://...), e.g. `--env-file .env`.")
@@ -16,5 +17,6 @@ def _engine() -> AsyncEngine:
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
+    """A session for one request; the route commits what it changes."""
     async with AsyncSession(_engine(), expire_on_commit=False) as session:
         yield session

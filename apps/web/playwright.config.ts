@@ -16,5 +16,6 @@ export default defineConfig({
     command: CI ? 'pnpm build && pnpm preview --port 5173 --strictPort' : 'pnpm dev --port 5173 --strictPort',
     url: 'http://localhost:5173',
     reuseExistingServer: !CI,
+    timeout: 120_000, // in CI this includes the production build
   },
 })

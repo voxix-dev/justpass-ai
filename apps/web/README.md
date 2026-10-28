@@ -7,7 +7,7 @@ Requests to `/api/**` are rewritten to Cloud Run on the same origin.
 
 ```
 pnpm install
-pnpm dev        # http://localhost:5173, proxies /api/** to the API on localhost:8000
+pnpm dev        # http://localhost:5173, proxies /api/** to the API on localhost:8000 ($API_PORT)
 pnpm lint
 pnpm typecheck
 pnpm build

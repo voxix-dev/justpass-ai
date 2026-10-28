@@ -7,7 +7,7 @@ fixed answer in the same request. The response shape is what the web app's scree
 import re
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, StringConstraints
@@ -44,6 +44,17 @@ class FeedbackCreate(BaseModel):
         str,
         StringConstraints(strip_whitespace=True, min_length=1, max_length=4_000, pattern=NO_NUL),
     ]
+
+
+class Problem(BaseModel):
+    """An error response, as FastAPI's HTTPException writes it."""
+
+    detail: str
+
+
+Responses = dict[int | str, dict[str, Any]]
+NOT_FOUND: Responses = {404: {"model": Problem, "description": "No such job for this user"}}
+NOT_IN_REVIEW: Responses = {409: {"model": Problem, "description": "The job is not in review"}}
 
 
 class JobOut(BaseModel):
@@ -197,6 +208,7 @@ async def list_jobs(session: Session) -> list[JobOut]:
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_job(body: JobCreate, session: Session) -> JobOut:
+    """Store a new job with its first round and solve it at once (the dev user is created once)."""
     await session.execute(
         insert(User).values(id=DEV_USER, is_anonymous=False).on_conflict_do_nothing()
     )
@@ -217,15 +229,16 @@ async def create_job(body: JobCreate, session: Session) -> JobOut:
     return (await _out(session, [job]))[0]
 
 
-@router.get("/{job_id}")
+@router.get("/{job_id}", responses=NOT_FOUND)
 async def get_job(job_id: uuid.UUID, session: Session) -> JobOut:
+    """One of the dev user's jobs; 404 for a missing job or another user's."""
     job = await session.scalar(select(Job).where(Job.id == job_id, Job.user_id == DEV_USER))
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
     return (await _out(session, [job]))[0]
 
 
-@router.post("/{job_id}/accept")
+@router.post("/{job_id}/accept", responses=NOT_FOUND | NOT_IN_REVIEW)
 async def accept_job(job_id: uuid.UUID, session: Session) -> JobOut:
     """Accept the answer under review. 409 unless the job is awaiting review."""
     job = await _own_job(session, job_id)
@@ -236,7 +249,7 @@ async def accept_job(job_id: uuid.UUID, session: Session) -> JobOut:
     return (await _out(session, [job]))[0]
 
 
-@router.post("/{job_id}/feedback")
+@router.post("/{job_id}/feedback", responses=NOT_FOUND | NOT_IN_REVIEW)
 async def send_feedback(job_id: uuid.UUID, body: FeedbackCreate, session: Session) -> JobOut:
     """Start the next round of the same job with the student's feedback.
 

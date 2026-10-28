@@ -34,7 +34,10 @@ export interface paths {
          */
         get: operations["list_jobs_jobs_get"];
         put?: never;
-        /** Create Job */
+        /**
+         * Create Job
+         * @description Store a new job with its first round and solve it at once (the dev user is created once).
+         */
         post: operations["create_job_jobs_post"];
         delete?: never;
         options?: never;
@@ -49,7 +52,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Job */
+        /**
+         * Get Job
+         * @description One of the dev user's jobs; 404 for a missing job or another user's.
+         */
         get: operations["get_job_jobs__job_id__get"];
         put?: never;
         post?: never;
@@ -154,6 +160,14 @@ export interface components {
             text: string;
             /** Title */
             title: string;
+        };
+        /**
+         * Problem
+         * @description An error response, as FastAPI's HTTPException writes it.
+         */
+        Problem: {
+            /** Detail */
+            detail: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -272,6 +286,15 @@ export interface operations {
                     "application/json": components["schemas"]["JobOut"];
                 };
             };
+            /** @description No such job for this user */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -301,6 +324,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobOut"];
+                };
+            };
+            /** @description No such job for this user */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The job is not in review */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
             /** @description Validation Error */
@@ -336,6 +377,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobOut"];
+                };
+            };
+            /** @description No such job for this user */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The job is not in review */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
             /** @description Validation Error */

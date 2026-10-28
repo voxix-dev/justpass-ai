@@ -136,6 +136,20 @@
         "title": "JobOut",
         "type": "object"
       },
+      "Problem": {
+        "description": "An error response, as FastAPI's HTTPException writes it.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "Problem",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -232,6 +246,7 @@
         ]
       },
       "post": {
+        "description": "Store a new job with its first round and solve it at once (the dev user is created once).",
         "operationId": "create_job_jobs_post",
         "requestBody": {
           "content": {
@@ -273,6 +288,7 @@
     },
     "/jobs/{job_id}": {
       "get": {
+        "description": "One of the dev user's jobs; 404 for a missing job or another user's.",
         "operationId": "get_job_jobs__job_id__get",
         "parameters": [
           {
@@ -296,6 +312,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No such job for this user"
           },
           "422": {
             "content": {
@@ -340,6 +366,26 @@
               }
             },
             "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No such job for this user"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The job is not in review"
           },
           "422": {
             "content": {
@@ -394,6 +440,26 @@
               }
             },
             "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No such job for this user"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The job is not in review"
           },
           "422": {
             "content": {
