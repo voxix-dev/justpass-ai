@@ -12,7 +12,10 @@ pnpm lint
 pnpm typecheck
 pnpm build
 pnpm gen:api    # regenerate src/api/schema.gen.ts after contracts/openapi.json changes
+pnpm e2e        # Playwright tests; needs the API on localhost:8000 (see Stubs)
 ```
+
+Before the first `pnpm e2e`, run `pnpm exec playwright install chromium`.
 
 ## Stack
 
@@ -28,6 +31,9 @@ CORS), gets a preview URL per PR from Hosting, and can move to GCS + Cloud CDN u
 ## Stubs
 
 - `src/auth/auth.ts`: fake signed-in user, to be replaced by Firebase Auth.
-- `src/api/jobs.ts`: in-memory Jobs API. A question containing "fail" ends in the error state.
+- Jobs come from the real Jobs API, so `pnpm dev` needs the API on localhost:8000. From the repo
+  root: `uv run --env-file .env uvicorn api.main:app --reload`, or `podman compose up -d --build api`.
+  The API's solver is still a fake that answers at once; a task with the word "fail" fails.
+  Photos are not supported yet: a task is text only.
 - Test prep features are previews only (`src/components/lab.tsx`); "Notify me" is saved in
   `localStorage` only.

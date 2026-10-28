@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, type FormEvent } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronLeft, FlaskConical, LoaderCircle } from 'lucide-react'
 import { acceptJob, sendFeedback, type Job } from '@/api/jobs'
@@ -61,26 +61,13 @@ function JobDetail({ job }: { job: Job }) {
           <span>{ago(job.createdAt)}</span>
         </div>
         <h1 className="mt-4 text-4xl break-words sm:text-5xl">{job.title}</h1>
-        {job.parentId && (
-          <p className="mt-3 text-muted-foreground">
-            Revised from{' '}
-            <Link to={`/jobs/${job.parentId}`} className="font-bold text-volt underline underline-offset-4">
-              the earlier answer
-            </Link>
-            .
-          </p>
-        )}
+        {job.round > 1 && <p className="mt-3 text-muted-foreground">Revised answer, round {job.round}.</p>}
       </header>
 
-      {(job.text !== job.title || job.imageUrl) && (
+      {job.text !== job.title && (
         <section aria-labelledby="q" className="mt-6 rounded-2xl border-2 border-border bg-card p-4">
-          <h2 id="q" className="text-xl">{job.imageUrl ? 'Your photo' : 'The full task'}</h2>
-          {job.text !== job.title && <p className="mt-2 whitespace-pre-wrap break-words">{job.text}</p>}
-          {job.imageUrl && (
-            <a href={job.imageUrl} target="_blank" rel="noreferrer" className="mt-3 inline-block rounded-lg">
-              <img src={job.imageUrl} alt="Photo of the question (opens full size)" className="max-h-40 max-w-full rounded-lg" />
-            </a>
-          )}
+          <h2 id="q" className="text-xl">The full task</h2>
+          <p className="mt-2 whitespace-pre-wrap break-words">{job.text}</p>
         </section>
       )}
 
@@ -100,7 +87,12 @@ function JobDetail({ job }: { job: Job }) {
           <div role="alert" className="rounded-2xl border-2 border-coral bg-card p-5">
             <h2 className="text-3xl text-coral">Could not solve this one</h2>
             <p className="mt-2">{job.error ?? 'Something went wrong while solving.'}</p>
-            <p className="mt-1 text-muted-foreground">Add details below and we will try again, or ask it in a different way.</p>
+            <p className="mt-1 text-muted-foreground">
+              <Link to="/new" className="font-bold text-volt underline underline-offset-4">
+                Send it again
+              </Link>
+              , maybe worded a different way.
+            </p>
           </div>
         ) : (
           job.result && (
@@ -118,18 +110,16 @@ function JobDetail({ job }: { job: Job }) {
         )}
       </div>
 
-      {!isPending(job) && <Actions job={job} />}
+      {job.status === 'done' && <Actions job={job} />}
     </>
   )
 }
 
-/** Offer answer acceptance and feedback; cache mutations and navigate to a new revision on feedback. */
+/** Offer acceptance and feedback for a finished answer; feedback revises the same job in a new round. */
 function Actions({ job }: { job: Job }) {
   const qc = useQueryClient()
-  const navigate = useNavigate()
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
-  const done = job.status === 'done'
 
   const accept = useMutation({
     mutationFn: () => acceptJob(job.id),
@@ -143,7 +133,7 @@ function Actions({ job }: { job: Job }) {
     onSuccess: (j) => {
       qc.setQueryData(['jobs', j.id], j)
       void qc.invalidateQueries({ queryKey: ['jobs'], exact: true })
-      navigate(`/jobs/${j.id}`)
+      setNote('')
     },
     onError: (e) => setError(e.message),
   })
@@ -156,40 +146,41 @@ function Actions({ job }: { job: Job }) {
     feedback.mutate(note)
   }
 
+  // Accepted is final: the API refuses more feedback (409).
+  if (job.accepted)
+    return (
+      <div className="mt-8 space-y-4">
+        <p className="flex items-center gap-2 font-display text-2xl font-extrabold text-volt">
+          <Check className="size-6" aria-hidden="true" /> Accepted. Done and dusted.
+        </p>
+        <Link to="/prep" className="flex items-center gap-3 rounded-2xl border-2 border-dashed border-pink/70 p-4 hover:bg-pink/10">
+          <FlaskConical className="size-6 shrink-0 text-pink" aria-hidden="true" />
+          <span>
+            <span className="font-bold text-pink">Soon:</span> accepted answers help JustPass predict your next test.
+          </span>
+        </Link>
+      </div>
+    )
+
   return (
     <div className="mt-8 space-y-8">
-      {done &&
-        (job.accepted ? (
-          <div className="space-y-4">
-            <p className="flex items-center gap-2 font-display text-2xl font-extrabold text-volt">
-              <Check className="size-6" aria-hidden="true" /> Accepted. Done and dusted.
-            </p>
-            <Link to="/prep" className="flex items-center gap-3 rounded-2xl border-2 border-dashed border-pink/70 p-4 hover:bg-pink/10">
-              <FlaskConical className="size-6 shrink-0 text-pink" aria-hidden="true" />
-              <span>
-                <span className="font-bold text-pink">Soon:</span> accepted answers help JustPass predict your next test.
-              </span>
-            </Link>
-          </div>
-        ) : (
-          <div>
-            <Button size="lg" className="w-full sm:w-auto" onClick={() => accept.mutate()} disabled={accept.isPending}>
-              <Check aria-hidden="true" /> {accept.isPending ? 'Accepting…' : 'Accept answer'}
-            </Button>
-            {accept.isError && <p role="alert" className="mt-2 font-bold text-coral">Could not accept. Try again.</p>}
-          </div>
-        ))}
+      <div>
+        <Button size="lg" className="w-full sm:w-auto" onClick={() => accept.mutate()} disabled={accept.isPending}>
+          <Check aria-hidden="true" /> {accept.isPending ? 'Accepting…' : 'Accept answer'}
+        </Button>
+        {accept.isError && <p role="alert" className="mt-2 font-bold text-coral">Could not accept. Try again.</p>}
+      </div>
 
       <form onSubmit={onSubmit} noValidate>
         <label htmlFor="feedback" className="block font-bold">
-          {done ? 'Something off? Push back' : 'Tell us more about the task'}
+          Something off? Push back
         </label>
         <textarea
           id="feedback"
           value={note}
           onChange={(e) => setNote(e.target.value)}
           rows={3}
-          placeholder={done ? 'Step 2 skips how you got −2 and −3' : 'It is question 4b on the photo'}
+          placeholder="Step 2 skips how you got −2 and −3"
           aria-describedby="feedback-error"
           aria-invalid={!!error || undefined}
           className="mt-2 block w-full resize-y rounded-2xl border-2 border-input bg-card p-4 text-base placeholder:text-muted-foreground aria-invalid:border-coral"
@@ -197,9 +188,9 @@ function Actions({ job }: { job: Job }) {
         <p id="feedback-error" role="alert" className="mt-2 min-h-6 font-bold text-coral">
           {error}
         </p>
-        <Button type="submit" variant={done ? 'outline' : 'default'} size="lg" className="mt-1 w-full sm:w-auto" disabled={feedback.isPending}>
+        <Button type="submit" variant="outline" size="lg" className="mt-1 w-full sm:w-auto" disabled={feedback.isPending}>
           {feedback.isPending && <LoaderCircle className="animate-spin" aria-hidden="true" />}
-          {feedback.isPending ? 'Sending…' : done ? 'Get a revised answer' : 'Try again'}
+          {feedback.isPending ? 'Sending…' : 'Get a revised answer'}
         </Button>
       </form>
     </div>

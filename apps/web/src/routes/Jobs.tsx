@@ -56,11 +56,11 @@ export default function Jobs() {
               {data.map((job) => (
                 <li key={job.id}>
                   <Link to={`/jobs/${job.id}`} className="flex min-h-18 items-center gap-3 px-4 py-3 hover:bg-raised focus-visible:-outline-offset-4">
-                    {job.imageUrl && <img src={job.imageUrl} alt="" className="size-11 shrink-0 rounded-md object-cover" />}
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-bold">{job.title}</p>
                       <p className="text-sm text-muted-foreground">
-                        {job.parentId ? 'Revised' : 'Sent'} {ago(job.createdAt)}
+                        Sent {ago(job.createdAt)}
+                        {job.round > 1 && `, round ${job.round}`}
                       </p>
                     </div>
                     <StatusBadge job={job} />

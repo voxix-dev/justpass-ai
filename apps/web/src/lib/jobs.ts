@@ -7,7 +7,7 @@ export const isPending = (j: Job) => j.status === 'queued' || j.status === 'runn
 const POLL_MS = 1000
 
 /**
- * Query all jobs in the in-memory stub when signed in; they are not filtered by user.
+ * Query the user's jobs, newest first, when signed in.
  * Poll every second while any returned job is queued or running.
  */
 export function useJobs() {
