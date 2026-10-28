@@ -33,5 +33,8 @@ uv run --env-file .env pytest
 uv run --env-file .env uvicorn api.main:app --reload
 ```
 
+Or run the API in a container (migrates on start, then serves on :8000; `API_PORT` changes the host
+port): `docker compose up -d --build api`. `podman compose` works the same.
+
 Web app: [apps/web/README.md](apps/web/README.md). Local Substrate cluster:
 [wiki: Local development](https://github.com/voxix-dev/justpass-ai/wiki/Local-development). Repo rules: [AGENTS.md](AGENTS.md).
