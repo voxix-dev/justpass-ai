@@ -131,7 +131,7 @@
           "round",
           "feedback"
         ],
-        "title": "Job",
+        "title": "JobOut",
         "type": "object"
       },
       "ValidationError": {

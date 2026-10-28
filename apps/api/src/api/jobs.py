@@ -39,7 +39,7 @@ class FeedbackCreate(BaseModel):
 class JobOut(BaseModel):
     """A job as the web app shows it. `done` covers awaiting_review, accepted and expired."""
 
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, title="Job")
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
     id: uuid.UUID
     status: Literal["queued", "running", "done", "failed"]
