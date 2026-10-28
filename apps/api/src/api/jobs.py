@@ -27,6 +27,7 @@ LIST_LIMIT = 100
 
 
 def _text(max_length: int) -> StringConstraints:
+    """Return constraints for stripped text of 1 through max_length characters."""
     return StringConstraints(strip_whitespace=True, min_length=1, max_length=max_length)
 
 
@@ -87,7 +88,13 @@ async def add_job(
     input_text: str | None,
     photo_keys: list[str],
 ) -> Job:
-    """Adds the job and its first round (and the user row on their first job). Does not commit."""
+    """Add and flush a job and its first round, returning the job without committing.
+
+    Create the user row or update its is_anonymous flag. input_text may be None for photo jobs;
+    photo_keys contains Cloud Storage object keys. If input_text is None and photo_keys is
+    empty, the database constraint raises IntegrityError. Session and database errors propagate;
+    the caller manages committing or rolling back.
+    """
     await session.execute(
         insert(User)
         .values(id=user.uid, is_anonymous=user.is_anonymous)
@@ -109,6 +116,10 @@ async def add_job(
 
 
 async def _own_job(session: AsyncSession, user: CurrentUser, job_id: uuid.UUID) -> Job:
+    """Return the user's job, raising HTTPException (404) if missing or owned by someone else.
+
+    Session and database errors propagate.
+    """
     job = await session.scalar(select(Job).where(Job.id == job_id, Job.user_id == user.uid))
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
@@ -116,11 +127,20 @@ async def _own_job(session: AsyncSession, user: CurrentUser, job_id: uuid.UUID) 
 
 
 async def _current_round(session: AsyncSession, job_id: uuid.UUID) -> int:
+    """Return the highest round number, or None if the job has no rounds.
+
+    Session and database errors propagate.
+    """
     query = select(func.max(JobRound.number)).where(JobRound.job_id == job_id)
     return (await session.execute(query)).scalar_one()
 
 
 async def _detail(session: AsyncSession, job: Job) -> JobDetail:
+    """Return job details with the latest round number and newest final artifact's inline answer.
+
+    The answer may be from an earlier round. result is None if no final artifact exists or the
+    newest one has no inline content. Session, database, and Pydantic validation errors propagate.
+    """
     final = await session.scalar(
         select(Artifact)
         .where(Artifact.job_id == job.id, Artifact.kind == ArtifactKind.FINAL)
@@ -144,6 +164,11 @@ async def _detail(session: AsyncSession, job: Job) -> JobDetail:
 async def create_job(
     body: JobCreate, user: Me, session: Session, dispatch: Dispatcher
 ) -> JobDetail:
+    """Commit a text job and its first round, dispatch it, and return its details.
+
+    Session, database, dispatch, and Pydantic validation errors propagate. Failures after the
+    commit leave the job and its first round saved.
+    """
     job = await add_job(session, user, body, input_text=body.text, photo_keys=[])
     await session.commit()
     await dispatch(job.id, 1)
@@ -157,7 +182,12 @@ async def list_jobs(
     """My jobs, most recently changed first: the newest 100, or all changed since `updated_since`.
 
     To poll for changes, pass the newest `updated_at` you have seen as `updated_since`. The answer
-    also repeats the few seconds before it, so replace jobs you already have by id."""
+    includes jobs updated strictly after five seconds before that timestamp, with no count limit,
+    so replace jobs you already have by id. If subtracting the overlap underflows the date range,
+    return all of the user's jobs. HTTP requests require a timezone-aware timestamp.
+
+    Session, database, and Pydantic validation errors propagate.
+    """
     query = select(Job).where(Job.user_id == user.uid).order_by(Job.updated_at.desc())
     if updated_since is None:
         query = query.limit(LIST_LIMIT)
@@ -170,4 +200,9 @@ async def list_jobs(
 
 @router.get("/{job_id}")
 async def get_job(job_id: uuid.UUID, user: Me, session: Session) -> JobDetail:
+    """Return the user's job details, including the latest available final answer.
+
+    Raise HTTPException (404) if the job is missing or belongs to someone else. Session, database,
+    and Pydantic validation errors propagate.
+    """
     return await _detail(session, await _own_job(session, user, job_id))

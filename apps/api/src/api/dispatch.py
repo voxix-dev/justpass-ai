@@ -7,8 +7,10 @@ type Dispatch = Callable[[uuid.UUID, int], Awaitable[None]]
 
 
 async def dispatch_round(job_id: uuid.UUID, round_number: int) -> None:
-    """Start the agent run for this round of the job. Called after the round is committed, so it
-    must return quickly and never raise: the student's request has already succeeded.
+    """Dispatch hook for an agent round; currently a no-op.
+
+    Called after the round is committed, so it must return quickly and never raise: the
+    student's job has already been saved.
 
     TODO(dispatcher): start or resume the job's actor, and move a new job to processing.
     """

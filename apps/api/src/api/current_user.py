@@ -27,6 +27,12 @@ class CurrentUser(BaseModel):
 def current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> CurrentUser:
+    """Return an anonymous dev user only while DEV_AUTH is exactly '1'.
+
+    The token must be dev: followed by 1 to 64 ASCII letters, digits, underscores, or hyphens;
+    the uid is the entire token. Raise HTTPException (401) with a Bearer challenge for missing
+    or invalid credentials or when dev auth is disabled.
+    """
     token = credentials.credentials if credentials else ""
     if os.environ.get("DEV_AUTH") == "1" and DEV_TOKEN.fullmatch(token):
         return CurrentUser(uid=token, is_anonymous=True)
