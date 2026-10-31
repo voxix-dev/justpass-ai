@@ -7,10 +7,12 @@ import { ago, isPending as pending, useJobs } from '@/lib/jobs'
 
 /** Rough time a student would spend on one task by hand. An estimate, and labelled as one. */
 const MIN_PER_TASK = 20
+/** The API returns this many jobs at most. */
+const LIST_LIMIT = 100
 
 /** Show job history and summary stats, with loading, retry, and empty states. */
 export default function Jobs() {
-  const { data, isPending, isError, refetch } = useJobs()
+  const { data, isPending, isError, isFetching, refetch } = useJobs()
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -39,8 +41,8 @@ export default function Jobs() {
               </div>
             ))}
           </div>
-        ) : isError ? (
-          <ErrorState title="Your jobs did not load." onRetry={() => void refetch()} />
+        ) : !data ? (
+          <ErrorState title="Your jobs did not load." onRetry={() => void refetch()} busy={isFetching} />
         ) : data.length === 0 ? (
           <div className="rounded-2xl border-2 border-dashed border-input p-8 text-center">
             <h2 className="text-3xl">Nothing here yet</h2>
@@ -51,13 +53,15 @@ export default function Jobs() {
           </div>
         ) : (
           <>
+            {isError && <p role="status" className="mb-4 font-bold text-coral">Could not refresh. This list may be out of date.</p>}
+            {data.length >= LIST_LIMIT && <p className="mb-4 text-muted-foreground">Showing your newest {LIST_LIMIT} jobs. The numbers below count only these.</p>}
             <Stats jobs={data} />
             <ul className="mt-6 divide-y-2 divide-border overflow-hidden rounded-2xl border-2 border-border bg-card">
               {data.map((job) => (
                 <li key={job.id}>
                   <Link to={`/jobs/${job.id}`} className="flex min-h-18 items-center gap-3 px-4 py-3 hover:bg-raised focus-visible:-outline-offset-4">
                     <div className="min-w-0 flex-1">
-                      <p className="truncate font-bold">{job.title}</p>
+                      <p dir="auto" className="truncate font-bold">{job.title}</p>
                       <p className="text-sm text-muted-foreground">
                         Sent {ago(job.createdAt)}
                         {job.round > 1 && `, round ${job.round}`}

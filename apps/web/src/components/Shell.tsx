@@ -7,7 +7,7 @@ import { signOut, useAuth } from '@/auth/auth'
 import { Logo, Soon } from '@/components/bits'
 import { Button } from '@/components/ui/button'
 import { isPending, useJobs } from '@/lib/jobs'
-import { dismissToast, pushToast, useToasts } from '@/lib/toast'
+import { clearToasts, dismissToast, pushToast, useToasts } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 
 const NAV = [
@@ -15,6 +15,14 @@ const NAV = [
   { to: '/jobs', label: 'My jobs', Icon: ListChecks, soon: false },
   { to: '/prep', label: 'Test prep', Icon: FlaskConical, soon: true },
 ]
+
+const TITLES: Record<string, string> = { '/signin': 'Sign in', '/new': 'New task', '/jobs': 'My jobs', '/prep': 'Test prep' }
+
+/** The tab title for a path. Job titles stay out of it: they are untrusted text. */
+function pageTitle(pathname: string) {
+  if (pathname === '/') return 'JustPass'
+  return `${TITLES[pathname] ?? (pathname.startsWith('/jobs/') ? 'Answer' : 'Page not found')} – JustPass`
+}
 
 /** Render navigation and job notifications; focus and scroll to the main content on path changes. */
 export function Shell() {
@@ -25,6 +33,18 @@ export function Shell() {
   const main = useRef<HTMLElement>(null)
   const shown = useRef(pathname)
   useJobWatcher(pathname)
+
+  useEffect(() => {
+    document.title = pageTitle(pathname)
+  }, [pathname])
+
+  /** Leave protected pages first: signed out on one, RequireAuth would send us to /signin instead. */
+  async function leave() {
+    await navigate('/', { flushSync: true })
+    signOut()
+    queryClient.clear()
+    clearToasts()
+  }
 
   // Move focus to the new page so screen readers announce it, like a full page load would.
   useEffect(() => {
@@ -40,7 +60,7 @@ export function Shell() {
       <a href="#main" className="sr-only z-50 rounded-lg bg-primary p-3 text-primary-foreground focus:not-sr-only focus:fixed focus:top-2 focus:left-2">
         Skip to content
       </a>
-      <header className="sticky top-0 z-30 border-b-2 border-border bg-background/90 backdrop-blur">
+      <header className="sticky top-0 z-30 border-b-2 [@media(max-height:480px)]:static border-border bg-background/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-1 px-4">
           <Link to="/" className="-ml-2 flex h-11 items-center gap-2.5 rounded-lg px-2 font-display text-2xl font-extrabold tracking-tight [font-stretch:85%]">
             <Logo /> JustPass
@@ -57,7 +77,7 @@ export function Shell() {
           )}
           <div className="ml-auto">
             {user ? (
-              <Button variant="ghost" onClick={() => (signOut(), queryClient.clear(), navigate('/'))}>
+              <Button variant="ghost" onClick={() => void leave()}>
                 <LogOut aria-hidden="true" /> Sign out
               </Button>
             ) : (
@@ -76,7 +96,7 @@ export function Shell() {
       </main>
 
       {user && (
-        <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-3 border-t-2 border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur sm:hidden">
+        <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-3 [@media(max-height:480px)]:static border-t-2 border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur sm:hidden">
           {NAV.map(({ to, label, Icon, soon }) => (
             <NavLink key={to} to={to} className="group relative flex h-16 flex-col items-center justify-center gap-0.5 text-sm font-bold text-muted-foreground aria-[current=page]:text-foreground">
               <span className="grid h-7 w-12 place-items-center rounded-full group-aria-[current=page]:bg-volt group-aria-[current=page]:text-ink">
