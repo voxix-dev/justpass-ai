@@ -7,12 +7,15 @@ Requests to `/api/**` are rewritten to Cloud Run on the same origin.
 
 ```
 pnpm install
-pnpm dev        # http://localhost:5173, proxies /api/** to the API on localhost:8000
+pnpm dev        # http://localhost:5173, proxies /api/** to the API on localhost:8000 ($API_PORT)
 pnpm lint
 pnpm typecheck
 pnpm build
 pnpm gen:api    # regenerate src/api/schema.gen.ts after contracts/openapi.json changes
+pnpm e2e        # Playwright tests; needs the API on localhost:8000 (see Stubs)
 ```
+
+Before the first `pnpm e2e`, run `pnpm exec playwright install chromium`.
 
 ## Stack
 
@@ -28,6 +31,10 @@ CORS), gets a preview URL per PR from Hosting, and can move to GCS + Cloud CDN u
 ## Stubs
 
 - `src/auth/auth.ts`: fake signed-in user, to be replaced by Firebase Auth.
-- `src/api/jobs.ts`: in-memory Jobs API. A question containing "fail" ends in the error state.
+- Jobs come from the real Jobs API, so `pnpm dev` needs the API on localhost:8000: from the repo
+  root, `podman compose up -d --build api` (starts Postgres and migrates), or uvicorn as in the
+  [root README](../../README.md#setup).
+  The API's solver is still a fake that answers at once; a task with the word "fail" fails.
+  Photos are not supported yet: a task is text only.
 - Test prep features are previews only (`src/components/lab.tsx`); "Notify me" is saved in
   `localStorage` only.

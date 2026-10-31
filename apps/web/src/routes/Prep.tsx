@@ -20,7 +20,7 @@ export default function Prep() {
             Your homework trains this
           </h2>
           <p className="mt-1 text-muted-foreground">
-            Every task you send and every answer you accept shows JustPass what your teachers care about. When test prep lands, it starts from that.
+            When test prep lands, it starts from the tasks you send and the answers you accept.
           </p>
         </div>
         <Button asChild size="lg">

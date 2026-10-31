@@ -4,13 +4,15 @@ import asyncio
 import os
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from api.tables import Base
 
 config = context.config
+# Any fixed number: replicas starting together take turns instead of racing to migrate.
+MIGRATION_LOCK = 727_274
 
 
 def run_migrations(connection: Connection) -> None:
@@ -22,6 +24,7 @@ def run_migrations(connection: Connection) -> None:
         connection=connection, target_metadata=Base.metadata, compare_server_default=True
     )
     with context.begin_transaction():
+        connection.execute(text(f"SELECT pg_advisory_xact_lock({MIGRATION_LOCK})"))
         context.run_migrations()
 
 
