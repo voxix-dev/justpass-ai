@@ -41,6 +41,10 @@ test.describe('signed in', () => {
     await expect(page.locator('#answer')).toBeFocused()
     await expect(page.getByText('Revised after your feedback')).toBeInViewport()
     expect(page.url()).toBe(url)
+
+    await page.waitForTimeout(1100) // past the double-click window
+    await page.getByRole('button', { name: 'Get a revised answer' }).click()
+    await expect(page.getByText('Write what should change first.')).toBeVisible()
   })
 
   test('math is typeset with the CSS of the same KaTeX version', async ({ page }) => {

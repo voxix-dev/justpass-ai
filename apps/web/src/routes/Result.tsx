@@ -11,6 +11,8 @@ const Answer = lazy(() => import('./Answer'))
 
 /** Accept stays off this long after it appears: a double tap on "Do it for me" must not land on it. */
 const ACCEPT_DELAY_MS = 600
+/** A blank submit this soon after sending is the second half of a double click, not a mistake. */
+const DOUBLE_CLICK_MS = 1000
 
 /** Show the job from the route, resetting the detail view's local state when its ID changes. */
 export default function Result() {
@@ -158,6 +160,7 @@ function Actions({ job }: { job: Job }) {
   const [error, setError] = useState('')
   const [armed, setArmed] = useState(false)
   const acceptedLine = useRef<HTMLParagraphElement>(null)
+  const sentAt = useRef(0)
 
   useEffect(() => {
     const timer = setTimeout(() => setArmed(true), ACCEPT_DELAY_MS)
@@ -183,6 +186,7 @@ function Actions({ job }: { job: Job }) {
       qc.setQueryData(['jobs', j.id], j)
       void qc.invalidateQueries({ queryKey: ['jobs'], exact: true })
       setNote('')
+      sentAt.current = Date.now()
       // Take the student to what changed: the revised answer is above this form. focus() alone
       // does not scroll when the bottom of the answer is already on screen.
       const answer = document.getElementById('answer')
@@ -205,8 +209,7 @@ function Actions({ job }: { job: Job }) {
     e.preventDefault()
     if (feedback.isPending) return
     if (!note.trim()) {
-      // A double click lands here too, once the first one has sent the note and cleared the box.
-      if (!feedback.isSuccess) setError('Write what should change first.')
+      if (Date.now() - sentAt.current > DOUBLE_CLICK_MS) setError('Write what should change first.')
       return
     }
     setError('')
