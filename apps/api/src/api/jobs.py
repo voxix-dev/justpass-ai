@@ -5,14 +5,15 @@ fixed answer in the same request. The response shape is what the web app's scree
 """
 
 import re
+import unicodedata
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints
 from pydantic.alias_generators import to_camel
-from sqlalchemy import select
+from sqlalchemy import Select, and_, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,26 +25,46 @@ LIST_LIMIT = 100
 TITLE_LENGTH = 80
 
 
-# Postgres text cannot hold NUL, so refuse it here (422) rather than fail in the database (500).
-NO_NUL = r"^[^\x00]*$"
+def _visible(text: str) -> bool:
+    """Whether the text has a letter, number, punctuation mark or symbol a student can see."""
+    return any(unicodedata.category(c)[0] in "LNPS" for c in text)
+
+
+def _readable(text: str) -> str:
+    """Refuse NUL, which Postgres text cannot hold, and text that would show up blank."""
+    if "\x00" in text or not _visible(text):
+        raise ValueError("Write it out in visible text.")
+    return text
+
+
+TaskText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=20_000),
+    AfterValidator(_readable),
+]
+FeedbackText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=4_000),
+    AfterValidator(_readable),
+]
 
 
 class JobCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    text: Annotated[
-        str,
-        StringConstraints(strip_whitespace=True, min_length=1, max_length=20_000, pattern=NO_NUL),
-    ]
+    text: TaskText
 
 
-class FeedbackCreate(BaseModel):
+class Review(BaseModel):
+    """Accepting an answer. `round` is the one the student saw: a newer answer gets a 409."""
+
     model_config = ConfigDict(extra="forbid")
 
-    text: Annotated[
-        str,
-        StringConstraints(strip_whitespace=True, min_length=1, max_length=4_000, pattern=NO_NUL),
-    ]
+    round: int
+
+
+class FeedbackCreate(Review):
+    text: FeedbackText
 
 
 class Problem(BaseModel):
@@ -54,7 +75,14 @@ class Problem(BaseModel):
 
 Responses = dict[int | str, dict[str, Any]]
 NOT_FOUND: Responses = {404: {"model": Problem, "description": "No such job for this user"}}
-NOT_IN_REVIEW: Responses = {409: {"model": Problem, "description": "The job is not in review"}}
+NOT_IN_REVIEW: Responses = {
+    409: {"model": Problem, "description": "The job is not in review, or its answer has changed"}
+}
+BAD_BODY: Responses = {
+    400: {"model": Problem, "description": "The body cannot be parsed"},
+    413: {"model": Problem, "description": "The body is too large"},
+}
+UNAVAILABLE: Responses = {503: {"model": Problem, "description": "The database cannot be reached"}}
 
 
 class JobOut(BaseModel):
@@ -74,7 +102,7 @@ class JobOut(BaseModel):
     feedback: str | None  # what the student asked to change in this round
 
 
-router = APIRouter(prefix="/jobs", tags=["jobs"])
+router = APIRouter(prefix="/jobs", tags=["jobs"], responses=UNAVAILABLE)
 Session = Annotated[AsyncSession, Depends(get_session)]
 
 # shortcut: no auth yet. Replace with the Firebase user once sign-in lands.
@@ -116,7 +144,7 @@ The sum of the roots is $-\tfrac{b}{a} = 5$ and the product is $\tfrac{c}{a} = 6
 """
 
 
-def fake_solve(session: AsyncSession, job: Job, round_number: int, feedback: str | None) -> None:
+def fake_solve(session: AsyncSession, job: Job, round_number: int) -> None:
     """Stand-in for the dispatcher and agents: finish the round at once with a fixed answer.
 
     The whole word "fail" in the question, ignoring case, fails the job instead.
@@ -126,59 +154,83 @@ def fake_solve(session: AsyncSession, job: Job, round_number: int, feedback: str
     if re.search(r"\bfail\b", job.input_text or "", re.IGNORECASE):
         job.move_to(JobStatus.FAILED, now)
         return
-    answer = (
-        f"_Revised after your feedback: “{feedback}”_\n\n{SAMPLE_ANSWER}"
-        if feedback
-        else SAMPLE_ANSWER
-    )
     session.add(
         Artifact(
             job_id=job.id,
             round=round_number,
             role=Role.WRITER,
             kind=ArtifactKind.FINAL,
-            content=answer,
+            content=SAMPLE_ANSWER,
         )
     )
     job.move_to(JobStatus.AWAITING_REVIEW, now)
 
 
-async def _out(session: AsyncSession, jobs: list[Job]) -> list[JobOut]:
-    """Add each job's newest round and newest final answer, in two queries for all jobs."""
-    ids = [j.id for j in jobs]
-    rounds = {
-        r.job_id: r
-        for r in await session.scalars(
-            select(JobRound).where(JobRound.job_id.in_(ids)).order_by(JobRound.number)
+def _title(text: str) -> str:
+    """The first line with something to see, cut to TITLE_LENGTH."""
+    line = next((line for line in text.splitlines() if _visible(line)), text).strip()
+    return line if len(line) <= TITLE_LENGTH else f"{line[: TITLE_LENGTH - 1].rstrip()}…"
+
+
+def _jobs() -> Select[Job, int, str | None, str | None]:
+    """The dev user's jobs with their newest round and its answer.
+
+    One statement, so a response never mixes two rounds of a job that is being revised.
+    """
+    newest = (
+        select(func.max(JobRound.number))
+        .where(JobRound.job_id == Job.id)
+        .correlate(Job)
+        .scalar_subquery()
+    )
+    return (
+        select(Job, JobRound.number, JobRound.feedback, Artifact.content)
+        .join(JobRound, and_(JobRound.job_id == Job.id, JobRound.number == newest))
+        .outerjoin(
+            Artifact,
+            and_(
+                Artifact.job_id == Job.id,
+                Artifact.round == JobRound.number,
+                Artifact.kind == ArtifactKind.FINAL,
+            ),
         )
-    }
-    finals = {
-        a.job_id: a.content
-        for a in await session.scalars(
-            select(Artifact)
-            .where(Artifact.job_id.in_(ids), Artifact.kind == ArtifactKind.FINAL)
-            .order_by(Artifact.round)
-        )
-    }
-    out: list[JobOut] = []
-    for job in jobs:
-        text = job.input_text or ""
-        shown = _STATUS[job.status]
-        out.append(
-            JobOut(
-                id=job.id,
-                status=shown,
-                created_at=job.created_at,
-                title=(text.splitlines() or [""])[0][:TITLE_LENGTH],
-                text=text,
-                result=finals.get(job.id) if shown == "done" else None,
-                error=FAILED_MESSAGE if shown == "failed" else None,
-                accepted=job.status == JobStatus.ACCEPTED,
-                round=rounds[job.id].number,
-                feedback=rounds[job.id].feedback,
-            )
-        )
-    return out
+        .where(Job.user_id == DEV_USER)
+    )
+
+
+def _out(job: Job, round_number: int, feedback: str | None, answer: str | None) -> JobOut:
+    """A row of _jobs() as the web app shows it."""
+    text = job.input_text or ""
+    shown = _STATUS[job.status]
+    return JobOut(
+        id=job.id,
+        status=shown,
+        created_at=job.created_at,
+        title=_title(text),
+        text=text,
+        result=answer if shown == "done" else None,
+        error=FAILED_MESSAGE if shown == "failed" else None,
+        accepted=job.status == JobStatus.ACCEPTED,
+        round=round_number,
+        feedback=feedback,
+    )
+
+
+async def _read(session: AsyncSession, job_id: uuid.UUID) -> JobOut:
+    """One job as the web app shows it; 404 for a missing job or another user's."""
+    row = (await session.execute(_jobs().where(Job.id == job_id))).one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
+    return _out(*row)
+
+
+async def _newest_round(session: AsyncSession, job_id: uuid.UUID) -> int:
+    """The number of the job's newest round. Every job has at least one."""
+    number = await session.scalar(
+        select(func.max(JobRound.number)).where(JobRound.job_id == job_id)
+    )
+    assert number is not None
+    return number
 
 
 async def _own_job(session: AsyncSession, job_id: uuid.UUID) -> Job:
@@ -197,16 +249,11 @@ async def _own_job(session: AsyncSession, job_id: uuid.UUID) -> Job:
 @router.get("")
 async def list_jobs(session: Session) -> list[JobOut]:
     """The dev user's newest jobs first, at most LIST_LIMIT."""
-    jobs = await session.scalars(
-        select(Job)
-        .where(Job.user_id == DEV_USER)
-        .order_by(Job.created_at.desc(), Job.id)
-        .limit(LIST_LIMIT)
-    )
-    return await _out(session, list(jobs))
+    rows = await session.execute(_jobs().order_by(Job.created_at.desc(), Job.id).limit(LIST_LIMIT))
+    return [_out(*row) for row in rows]
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED, responses=BAD_BODY)
 async def create_job(body: JobCreate, session: Session) -> JobOut:
     """Store a new job with its first round and solve it at once (the dev user is created once)."""
     await session.execute(
@@ -224,49 +271,53 @@ async def create_job(body: JobCreate, session: Session) -> JobOut:
     await session.flush()
     session.add(JobRound(job_id=job.id, number=1))
     await session.flush()
-    fake_solve(session, job, 1, None)
+    fake_solve(session, job, 1)
+    out = await _read(session, job.id)
     await session.commit()
-    return (await _out(session, [job]))[0]
+    return out
 
 
 @router.get("/{job_id}", responses=NOT_FOUND)
 async def get_job(job_id: uuid.UUID, session: Session) -> JobOut:
     """One of the dev user's jobs; 404 for a missing job or another user's."""
-    job = await session.scalar(select(Job).where(Job.id == job_id, Job.user_id == DEV_USER))
-    if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
-    return (await _out(session, [job]))[0]
+    return await _read(session, job_id)
 
 
-@router.post("/{job_id}/accept", responses=NOT_FOUND | NOT_IN_REVIEW)
-async def accept_job(job_id: uuid.UUID, session: Session) -> JobOut:
-    """Accept the answer under review. 409 unless the job is awaiting review."""
-    job = await _own_job(session, job_id)
-    if job.status != JobStatus.AWAITING_REVIEW:
+async def _check_review(session: AsyncSession, job: Job, seen: int, *allowed: JobStatus) -> int:
+    """Return the job's newest round; 409 if its status isn't allowed or the student saw an older
+    answer than the newest (say in a second tab), so nobody accepts an answer they never read."""
+    if job.status not in allowed:
         raise HTTPException(status.HTTP_409_CONFLICT, f"The job is {job.status}, not in review")
+    newest = await _newest_round(session, job.id)
+    if seen != newest:
+        raise HTTPException(status.HTTP_409_CONFLICT, "There is a newer answer. Read that first.")
+    return newest
+
+
+@router.post("/{job_id}/accept", responses=NOT_FOUND | NOT_IN_REVIEW | BAD_BODY)
+async def accept_job(job_id: uuid.UUID, body: Review, session: Session) -> JobOut:
+    """Accept the answer under review. 409 unless the job is awaiting review on that round."""
+    job = await _own_job(session, job_id)
+    await _check_review(session, job, body.round, JobStatus.AWAITING_REVIEW)
     job.move_to(JobStatus.ACCEPTED, datetime.now(UTC))
+    out = await _read(session, job.id)
     await session.commit()
-    return (await _out(session, [job]))[0]
+    return out
 
 
-@router.post("/{job_id}/feedback", responses=NOT_FOUND | NOT_IN_REVIEW)
+@router.post("/{job_id}/feedback", responses=NOT_FOUND | NOT_IN_REVIEW | BAD_BODY)
 async def send_feedback(job_id: uuid.UUID, body: FeedbackCreate, session: Session) -> JobOut:
     """Start the next round of the same job with the student's feedback.
 
-    409 unless the job is awaiting review or expired (accepted and failed are final).
+    409 unless the job is awaiting review or expired on that round (accepted and failed are final).
     """
     job = await _own_job(session, job_id)
-    if job.status not in (JobStatus.AWAITING_REVIEW, JobStatus.EXPIRED):
-        raise HTTPException(status.HTTP_409_CONFLICT, f"The job is {job.status}, not in review")
-    last = await session.scalar(
-        select(JobRound.number)
-        .where(JobRound.job_id == job.id)
-        .order_by(JobRound.number.desc())
-        .limit(1)
+    newest = await _check_review(
+        session, job, body.round, JobStatus.AWAITING_REVIEW, JobStatus.EXPIRED
     )
-    number = (last or 0) + 1
-    session.add(JobRound(job_id=job.id, number=number, feedback=body.text))
+    session.add(JobRound(job_id=job.id, number=newest + 1, feedback=body.text))
     await session.flush()
-    fake_solve(session, job, number, body.text)
+    fake_solve(session, job, newest + 1)
+    out = await _read(session, job.id)
     await session.commit()
-    return (await _out(session, [job]))[0]
+    return out

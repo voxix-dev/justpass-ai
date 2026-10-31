@@ -4,15 +4,19 @@
       "FeedbackCreate": {
         "additionalProperties": false,
         "properties": {
+          "round": {
+            "title": "Round",
+            "type": "integer"
+          },
           "text": {
             "maxLength": 4000,
             "minLength": 1,
-            "pattern": "^[^\\x00]*$",
             "title": "Text",
             "type": "string"
           }
         },
         "required": [
+          "round",
           "text"
         ],
         "title": "FeedbackCreate",
@@ -37,7 +41,6 @@
           "text": {
             "maxLength": 20000,
             "minLength": 1,
-            "pattern": "^[^\\x00]*$",
             "title": "Text",
             "type": "string"
           }
@@ -150,6 +153,21 @@
         "title": "Problem",
         "type": "object"
       },
+      "Review": {
+        "additionalProperties": false,
+        "description": "Accepting an answer. `round` is the one the student saw: a newer answer gets a 409.",
+        "properties": {
+          "round": {
+            "title": "Round",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "round"
+        ],
+        "title": "Review",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -200,6 +218,7 @@
   "paths": {
     "/health": {
       "get": {
+        "description": "Whether the process is up. /ready also checks the database.",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -238,6 +257,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The database cannot be reached"
           }
         },
         "summary": "List Jobs",
@@ -269,6 +298,26 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body cannot be parsed"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body is too large"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -278,6 +327,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The database cannot be reached"
           }
         },
         "summary": "Create Job",
@@ -332,6 +391,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The database cannot be reached"
           }
         },
         "summary": "Get Job",
@@ -342,7 +411,7 @@
     },
     "/jobs/{job_id}/accept": {
       "post": {
-        "description": "Accept the answer under review. 409 unless the job is awaiting review.",
+        "description": "Accept the answer under review. 409 unless the job is awaiting review on that round.",
         "operationId": "accept_job_jobs__job_id__accept_post",
         "parameters": [
           {
@@ -356,6 +425,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Review"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -366,6 +445,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body cannot be parsed"
           },
           "404": {
             "content": {
@@ -385,7 +474,17 @@
                 }
               }
             },
-            "description": "The job is not in review"
+            "description": "The job is not in review, or its answer has changed"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body is too large"
           },
           "422": {
             "content": {
@@ -396,6 +495,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The database cannot be reached"
           }
         },
         "summary": "Accept Job",
@@ -406,7 +515,7 @@
     },
     "/jobs/{job_id}/feedback": {
       "post": {
-        "description": "Start the next round of the same job with the student's feedback.\n\n409 unless the job is awaiting review or expired (accepted and failed are final).",
+        "description": "Start the next round of the same job with the student's feedback.\n\n409 unless the job is awaiting review or expired on that round (accepted and failed are final).",
         "operationId": "send_feedback_jobs__job_id__feedback_post",
         "parameters": [
           {
@@ -441,6 +550,16 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body cannot be parsed"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -459,7 +578,17 @@
                 }
               }
             },
-            "description": "The job is not in review"
+            "description": "The job is not in review, or its answer has changed"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body is too large"
           },
           "422": {
             "content": {
@@ -470,12 +599,55 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The database cannot be reached"
           }
         },
         "summary": "Send Feedback",
         "tags": [
           "jobs"
         ]
+      }
+    },
+    "/ready": {
+      "get": {
+        "description": "Whether the API can reach Postgres.",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Ready Ready Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The database cannot be reached"
+          }
+        },
+        "summary": "Ready"
       }
     }
   }

@@ -13,7 +13,14 @@ def _engine() -> AsyncEngine:
     url = os.environ.get("DATABASE_URL")
     if not url:
         raise RuntimeError("Set DATABASE_URL (postgresql+asyncpg://...), e.g. `--env-file .env`.")
-    return create_async_engine(url, pool_pre_ping=True)  # survives a database restart
+    # pool_pre_ping survives a database restart. The timeouts bound a hung database: without them
+    # a request waits forever and the student sees a spinner.
+    return create_async_engine(
+        url,
+        pool_pre_ping=True,
+        pool_timeout=5,
+        connect_args={"timeout": 5, "command_timeout": 10},
+    )
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

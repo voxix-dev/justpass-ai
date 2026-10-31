@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: app
       POSTGRES_DB: app
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - db-data:/var/lib/postgresql
     healthcheck:
@@ -20,6 +20,7 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+    restart: on-failure  # the first migration can beat a just-started Postgres
     depends_on:
       db:
         condition: service_healthy
@@ -28,7 +29,7 @@ services:
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"  # no auth yet: keep it off the network
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
       interval: 5s
       retries: 10
 

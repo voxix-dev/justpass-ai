@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.db import get_session
 from api.jobs import _STATUS, FAILED_MESSAGE, SAMPLE_ANSWER
-from api.main import app
+from api.main import MAX_BODY, MAX_ERRORS, app
 from api.tables import Artifact, Job, JobRound, User
 from shared.models import ArtifactKind, JobStatus, Level
 
@@ -48,7 +48,7 @@ async def test_create_solves_the_job(client: httpx2.AsyncClient, session: AsyncS
     assert (job["round"], job["feedback"], job["error"], job["accepted"]) == (1, None, None, False)
     assert job["result"] == SAMPLE_ANSWER
     assert job["text"] == f"{'a' * 90}\nsecond line"
-    assert job["title"] == "a" * 80
+    assert job["title"] == "a" * 79 + "…"
     row = await session.get(Job, uuid.UUID(job["id"]), populate_existing=True)
     assert row is not None
     assert row.status == JobStatus.AWAITING_REVIEW
@@ -56,7 +56,15 @@ async def test_create_solves_the_job(client: httpx2.AsyncClient, session: AsyncS
 
 
 @pytest.mark.parametrize(
-    "body", [{"text": ""}, {"text": "   "}, {"text": "a\u0000"}, {"text": "hi", "extra": 1}, {}]
+    "body",
+    [
+        {"text": ""},
+        {"text": "   "},
+        {"text": "a\u0000"},
+        {"text": "\u200b\u2060"},
+        {"text": "hi", "extra": 1},
+        {},
+    ],
 )
 async def test_create_rejects_bad_bodies(client: httpx2.AsyncClient, body: dict):
     assert (await client.post("/jobs", json=body)).status_code == 422
@@ -110,7 +118,7 @@ async def test_list_shows_only_the_dev_users_jobs_newest_first(
     listed = (await client.get("/jobs")).json()
     assert [j["id"] for j in listed] == [second["id"], first["id"]]
     assert (await client.get(f"/jobs/{other.id}")).status_code == 404
-    assert (await client.post(f"/jobs/{other.id}/accept")).status_code == 404
+    assert (await client.post(f"/jobs/{other.id}/accept", json={"round": 1})).status_code == 404
 
 
 async def test_list_behind_api_prefix(client: httpx2.AsyncClient):
@@ -122,29 +130,30 @@ async def test_list_behind_api_prefix(client: httpx2.AsyncClient):
 
 async def test_accept(client: httpx2.AsyncClient, session: AsyncSession):
     job = await create(client)
-    response = await client.post(f"/jobs/{job['id']}/accept")
+    response = await client.post(f"/jobs/{job['id']}/accept", json={"round": 1})
     assert response.status_code == 200
     assert (response.json()["status"], response.json()["accepted"]) == ("done", True)
     row = await session.get(Job, uuid.UUID(job["id"]), populate_existing=True)
     assert row is not None
     assert row.status == JobStatus.ACCEPTED
     assert row.review_deadline is None
-    assert (await client.post(f"/jobs/{job['id']}/accept")).status_code == 409
+    assert (await client.post(f"/jobs/{job['id']}/accept", json={"round": 1})).status_code == 409
 
 
 async def test_accept_failed_job_is_409(client: httpx2.AsyncClient):
     job = await create(client, "fail")
-    assert (await client.post(f"/jobs/{job['id']}/accept")).status_code == 409
+    assert (await client.post(f"/jobs/{job['id']}/accept", json={"round": 1})).status_code == 409
 
 
 async def test_feedback_starts_the_next_round(client: httpx2.AsyncClient, session: AsyncSession):
     job = await create(client)
-    response = await client.post(f"/jobs/{job['id']}/feedback", json={"text": " more steps "})
+    response = await client.post(
+        f"/jobs/{job['id']}/feedback", json={"text": " more steps ", "round": 1}
+    )
     assert response.status_code == 200
     revised = response.json()
     assert (revised["id"], revised["round"], revised["feedback"]) == (job["id"], 2, "more steps")
-    assert revised["result"].startswith("_Revised after your feedback: “more steps”_\n\n")
-    assert revised["result"].endswith(SAMPLE_ANSWER)
+    assert revised["result"] == SAMPLE_ANSWER  # feedback is never pasted into the Markdown
     finals = await session.scalars(
         select(Artifact.round)
         .where(Artifact.job_id == uuid.UUID(job["id"]), Artifact.kind == ArtifactKind.FINAL)
@@ -159,7 +168,7 @@ async def test_feedback_on_an_expired_job(client: httpx2.AsyncClient, session: A
     assert row is not None
     row.move_to(JobStatus.EXPIRED, datetime.now(UTC))
     await session.flush()
-    response = await client.post(f"/jobs/{job['id']}/feedback", json={"text": "again"})
+    response = await client.post(f"/jobs/{job['id']}/feedback", json={"text": "again", "round": 1})
     assert (response.status_code, response.json()["round"]) == (200, 2)
     await session.refresh(row)
     assert row.status == JobStatus.AWAITING_REVIEW
@@ -167,15 +176,102 @@ async def test_feedback_on_an_expired_job(client: httpx2.AsyncClient, session: A
 
 async def test_feedback_conflicts_and_validation(client: httpx2.AsyncClient):
     accepted, failed = await create(client), await create(client, "fail")
-    await client.post(f"/jobs/{accepted['id']}/accept")
+    await client.post(f"/jobs/{accepted['id']}/accept", json={"round": 1})
     for job in (accepted, failed):
-        response = await client.post(f"/jobs/{job['id']}/feedback", json={"text": "x"})
+        response = await client.post(f"/jobs/{job['id']}/feedback", json={"text": "x", "round": 1})
         assert response.status_code == 409
-    response = await client.post(f"/jobs/{accepted['id']}/feedback", json={"text": "  "})
+    response = await client.post(
+        f"/jobs/{accepted['id']}/feedback", json={"text": "  ", "round": 1}
+    )
     assert response.status_code == 422
-    response = await client.post(f"/jobs/{uuid.uuid4()}/feedback", json={"text": "x"})
+    response = await client.post(f"/jobs/{uuid.uuid4()}/feedback", json={"text": "x", "round": 1})
     assert response.status_code == 404
 
 
 async def test_every_status_has_a_web_status():
     assert _STATUS.keys() == set(JobStatus)
+
+
+@pytest.mark.parametrize(
+    ("text", "title"),
+    [
+        ("\n\nSecond line\nThird", "Second line"),
+        ("\u001cHello", "Hello"),  # splitlines() breaks here, strip() does not trim it
+        ("\u200b\nHello", "Hello"),
+        ("word " * 20, ("word " * 16).rstrip() + "…"),
+    ],
+)
+async def test_title_is_the_first_line_with_something_to_see(
+    client: httpx2.AsyncClient, text: str, title: str
+):
+    assert (await create(client, text))["title"] == title
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"text":"\\ud800"}',  # a lone surrogate, which the default 422 cannot encode
+        b'{"text":NaN}',
+        b"[" * 1000 + b"]" * 1000,
+    ],
+)
+async def test_undecodable_input_is_422(client: httpx2.AsyncClient, body: bytes):
+    response = await client.post(
+        "/jobs", content=body, headers={"content-type": "application/json"}
+    )
+    assert response.status_code == 422
+    assert all("input" not in error for error in response.json()["detail"])
+
+
+async def test_validation_errors_are_capped(client: httpx2.AsyncClient):
+    response = await client.post("/jobs", json={f"k{i}": 1 for i in range(50)})
+    assert (response.status_code, len(response.json()["detail"])) == (422, MAX_ERRORS)
+
+
+async def test_body_over_the_limit_is_413(client: httpx2.AsyncClient):
+    response = await client.post("/jobs", json={"text": "a" * (MAX_BODY + 1)})
+    assert response.status_code == 413
+    assert response.json() == {"detail": "The request is too large"}
+
+
+async def test_answer_seen_in_a_stale_tab_cannot_be_accepted(
+    client: httpx2.AsyncClient, session: AsyncSession
+):
+    job = await create(client)
+    await client.post(f"/jobs/{job['id']}/feedback", json={"text": "more", "round": 1})
+
+    stale = await client.post(f"/jobs/{job['id']}/accept", json={"round": 1})
+    assert stale.status_code == 409
+    row = await session.get(Job, uuid.UUID(job["id"]), populate_existing=True)
+    assert row is not None
+    assert row.status == JobStatus.AWAITING_REVIEW
+    current = await client.post(f"/jobs/{job['id']}/accept", json={"round": 2})
+    assert current.status_code == 200
+
+
+async def test_stale_feedback_does_not_start_a_round(client: httpx2.AsyncClient):
+    job = await create(client)
+    await client.post(f"/jobs/{job['id']}/feedback", json={"text": "more", "round": 1})
+
+    stale = await client.post(f"/jobs/{job['id']}/feedback", json={"text": "x", "round": 1})
+    assert stale.status_code == 409
+    assert (await client.get(f"/jobs/{job['id']}")).json()["round"] == 2
+
+
+async def test_ready_checks_the_database(client: httpx2.AsyncClient):
+    assert (await client.get("/ready")).json() == {"status": "ok"}
+
+
+@pytest.mark.parametrize("path", ["/ready", "/jobs"])
+async def test_database_down_is_503(path: str):
+    async def down() -> AsyncIterator[AsyncSession]:
+        raise ConnectionRefusedError("no database")
+        yield
+
+    app.dependency_overrides[get_session] = down
+    transport = httpx2.ASGITransport(app=app)
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(path)
+    app.dependency_overrides.clear()
+    assert response.status_code == 503
+    assert isinstance(response.json()["detail"], str)
