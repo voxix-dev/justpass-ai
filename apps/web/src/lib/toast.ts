@@ -4,6 +4,7 @@ export type Toast = { id: string; tone: 'done' | 'failed'; title: string; to: st
 
 let toasts: Toast[] = []
 const listeners = new Set<() => void>()
+const timers = new Map<string, ReturnType<typeof setTimeout>>()
 /** Notify subscribers that the visible toast list changed. */
 const emit = () => listeners.forEach((l) => l())
 
@@ -19,15 +20,22 @@ export function pushToast(t: Toast) {
 
 /** Check after 10 s and dismiss the toast, waiting another 10 s if it is hovered or contains focus. */
 function expire(id: string) {
-  setTimeout(() => {
+  clearTimeout(timers.get(id))
+  timers.set(id, setTimeout(() => {
     if (document.querySelector(`[data-toast="${id}"]:is(:hover, :focus-within)`)) expire(id)
     else dismissToast(id)
-  }, 10_000)
+  }, 10_000))
 }
 
 /** Remove a toast by ID and notify subscribers, even if no toast matched. */
 export function dismissToast(id: string) {
   toasts = toasts.filter((x) => x.id !== id)
+  emit()
+}
+
+/** Remove every toast, for example on sign-out: they name the previous user's tasks. */
+export function clearToasts() {
+  toasts = []
   emit()
 }
 

@@ -13,7 +13,10 @@ import Result from '@/routes/Result'
 import SignIn from '@/routes/SignIn'
 import './index.css'
 
-const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1 } } })
+// networkMode always: fail with a message when offline, rather than wait silently for a connection.
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: 1, networkMode: 'always' }, mutations: { networkMode: 'always' } },
+})
 
 // Render errors (e.g. the lazy Answer chunk failing to load) show this instead of the router's
 // default screen. The inner one keeps the shell, so navigation and sign-out stay usable.

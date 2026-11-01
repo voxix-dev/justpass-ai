@@ -23,6 +23,9 @@ Details: [wiki](https://github.com/voxix-dev/justpass-ai/wiki).
 
 ## Setup
 
+You need uv, Docker or Podman, and for the web app Node 22 and pnpm. With Podman, write
+`podman compose` for `docker compose` below.
+
 ```
 uv sync
 uv run pre-commit install
@@ -32,6 +35,12 @@ uv run --env-file .env alembic upgrade head   # create or update the tables
 uv run --env-file .env pytest
 uv run --env-file .env uvicorn api.main:app --reload
 ```
+
+Or run the API in a container (migrates on start, then serves on :8000):
+`docker compose up -d --build api`.
+
+Ports taken? `API_PORT` moves the API for both compose and the web app's `pnpm dev`. `DB_PORT` moves
+Postgres; change the port in `.env` too.
 
 Web app: [apps/web/README.md](apps/web/README.md). Local Substrate cluster:
 [wiki: Local development](https://github.com/voxix-dev/justpass-ai/wiki/Local-development). Repo rules: [AGENTS.md](AGENTS.md).

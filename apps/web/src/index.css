@@ -80,6 +80,8 @@
   html {
     @apply font-sans;
     -webkit-text-size-adjust: 100%;
+    /* Keep focused elements clear of the sticky header and the phone nav. */
+    scroll-padding-block: 5rem 6rem;
   }
   body {
     @apply min-h-dvh bg-background text-foreground antialiased;
@@ -148,7 +150,11 @@
 
 /* Worked answers: a clean, high-contrast sheet of paper. */
 @layer components {
-  .answer { @apply rounded-xl bg-paper p-5 leading-relaxed text-paper-ink sm:p-8; }
+  .answer {
+    @apply rounded-xl bg-paper p-5 leading-relaxed text-paper-ink sm:p-8;
+    overflow-wrap: anywhere;
+    overflow-x: auto;
+  }
   .answer > * + * { margin-top: 0.9em; }
   .answer h2, .answer h3 { color: var(--paper-ink); }
   .answer h2 { @apply text-3xl; }

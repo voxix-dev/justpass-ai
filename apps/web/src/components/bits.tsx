@@ -32,14 +32,14 @@ export function StatusBadge({ job, className }: { job: Job; className?: string }
   )
 }
 
-/** Show an error alert and invoke onRetry when the user chooses "Try again". */
-export function ErrorState({ title, onRetry }: { title: string; onRetry: () => void }) {
+/** Show an error alert and invoke onRetry when the user chooses "Try again"; busy spins its icon. */
+export function ErrorState({ title, onRetry, busy }: { title: string; onRetry: () => void; busy?: boolean }) {
   return (
     <div role="alert" className="rounded-2xl border-2 border-coral/70 bg-card p-5">
       <p className="font-bold text-coral">{title}</p>
-      <p className="mt-1 text-muted-foreground">Check your connection, then try again.</p>
+      <p className="mt-1 text-muted-foreground">It could be your connection or us. Try again in a moment.</p>
       <Button variant="outline" className="mt-4" onClick={onRetry}>
-        <RotateCw aria-hidden="true" /> Try again
+        <RotateCw className={cn(busy && 'animate-spin')} aria-hidden="true" /> Try again
       </Button>
     </div>
   )

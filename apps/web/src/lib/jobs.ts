@@ -1,13 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
-import { getJob, listJobs, type Job } from '@/api/jobs'
+import { ApiError, getJob, listJobs, type Job } from '@/api/jobs'
 import { useAuth } from '@/auth/auth'
 
 /** Whether a job is still waiting for a terminal result. */
 export const isPending = (j: Job) => j.status === 'queued' || j.status === 'running'
 const POLL_MS = 1000
+/** Poll more slowly while requests are failing, so a struggling API is not hammered. */
+const pollMs = (failing: boolean) => (failing ? 10_000 : POLL_MS)
 
 /**
- * Query all jobs in the in-memory stub when signed in; they are not filtered by user.
+ * Query the user's jobs, newest first, when signed in.
  * Poll every second while any returned job is queued or running.
  */
 export function useJobs() {
@@ -16,7 +18,7 @@ export function useJobs() {
     queryKey: ['jobs'],
     queryFn: listJobs,
     enabled: !!user,
-    refetchInterval: (q) => (q.state.data?.some(isPending) ? POLL_MS : false),
+    refetchInterval: (q) => (q.state.data?.some(isPending) ? pollMs(!!q.state.error) : false),
   })
 }
 
@@ -29,17 +31,22 @@ export function useJob(id: string) {
   return useQuery({
     queryKey: ['jobs', id],
     queryFn: () => getJob(id),
-    refetchInterval: (q) => (q.state.data && isPending(q.state.data) ? POLL_MS : false),
+    refetchInterval: (q) => (q.state.data && isPending(q.state.data) ? pollMs(!!q.state.error) : false),
     retry: (n, e) => !isNotFound(e) && n < 2,
   })
 }
 
 /** Recognize Error messages containing "not found", ignoring case. */
 export const isNotFound = (e: unknown) => e instanceof Error && /not found/i.test(e.message)
+/** The job changed elsewhere, so what's on screen is out of date. */
+export const isConflict = (e: unknown) => e instanceof ApiError && e.status === 409
+/** The API refused the text itself. */
+export const isBadInput = (e: unknown) => e instanceof ApiError && e.status === 422
 
-const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
+// English like the rest of the app, not the browser's language.
+const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' })
 /**
- * Format an ISO timestamp relative to now in the browser's locale, rounded to minutes,
+ * Format an ISO timestamp relative to now, rounded to minutes,
  * hours, or days. Future times and ages rounding below one minute return "just now".
  * @throws {RangeError} If the timestamp cannot be parsed into a valid date.
  */
