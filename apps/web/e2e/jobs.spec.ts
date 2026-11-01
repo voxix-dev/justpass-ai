@@ -42,9 +42,24 @@ test.describe('signed in', () => {
     await expect(page.getByText('Revised after your feedback')).toBeInViewport()
     expect(page.url()).toBe(url)
 
-    await page.waitForTimeout(1100) // past the double-click window
     await page.getByRole('button', { name: 'Get a revised answer' }).click()
     await expect(page.getByText('Write what should change first.')).toBeVisible()
+  })
+
+  test('a revision that fails keeps the answer and the feedback, and says so', async ({ page }) => {
+    const url = await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
+    await expect(page.getByRole('heading', { name: 'Solution' })).toBeVisible()
+    // The API drops a failed round, so the page sees round 2 running, then round 1 again.
+    await page.route('**/feedback', async (route) => {
+      const job = await (await page.request.get(url.replace('/jobs/', '/api/jobs/'))).json()
+      await route.fulfill({ json: { ...job, status: 'running', round: 2, result: null } })
+    })
+    await page.getByLabel('Something off? Push back').fill('Explain step 2')
+    await page.getByRole('button', { name: 'Get a revised answer' }).click()
+
+    await expect(page.getByText('Could not revise the answer.')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Solution' })).toBeVisible()
+    await expect(page.getByLabel('Something off? Push back')).toHaveValue('Explain step 2')
   })
 
   test('math is typeset with the CSS of the same KaTeX version', async ({ page }) => {

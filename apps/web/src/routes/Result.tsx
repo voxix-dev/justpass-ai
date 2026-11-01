@@ -11,8 +11,6 @@ const Answer = lazy(() => import('./Answer'))
 
 /** Accept stays off this long after it appears: a double tap on "Do it for me" must not land on it. */
 const ACCEPT_DELAY_MS = 600
-/** A blank submit this soon after sending is the second half of a double click, not a mistake. */
-const DOUBLE_CLICK_MS = 1000
 
 /** Show the job from the route, resetting the detail view's local state when its ID changes. */
 export default function Result() {
@@ -86,6 +84,15 @@ function JobDetail({ job }: { job: Job }) {
   if (pending && !waited) setWaited(true)
   // Here, not in Actions: Actions is gone while a revision runs, and the text must survive that.
   const [note, setNote] = useState('')
+  const [revising, setRevising] = useState<number | null>(null)
+  const [revisionFailed, setRevisionFailed] = useState(false)
+
+  // A revision that fails drops its round, so the job comes back on the answer it had.
+  if (revising !== null && !pending) {
+    setRevising(null)
+    if (job.round >= revising) setNote('')
+    else setRevisionFailed(true)
+  }
 
   return (
     <>
@@ -154,7 +161,18 @@ function JobDetail({ job }: { job: Job }) {
           )}
         </div>
 
-        {job.status === 'done' && <Actions job={job} note={note} setNote={setNote} />}
+        {job.status === 'done' && (
+          <Actions
+            job={job}
+            note={note}
+            setNote={setNote}
+            revisionFailed={revisionFailed}
+            onRevising={(round) => {
+              setRevisionFailed(false)
+              setRevising(round)
+            }}
+          />
+        )}
       </Suspense>
     </>
   )
@@ -176,12 +194,17 @@ function GoToAnswer({ onArrived }: { onArrived: () => void }) {
 }
 
 /** Offer acceptance and feedback for a finished answer; feedback revises the same job in a new round. */
-function Actions({ job, note, setNote }: { job: Job; note: string; setNote: (note: string) => void }) {
+function Actions({ job, note, setNote, revisionFailed, onRevising }: {
+  job: Job
+  note: string
+  setNote: (note: string) => void
+  revisionFailed: boolean
+  onRevising: (round: number) => void
+}) {
   const qc = useQueryClient()
   const [error, setError] = useState('')
   const [armed, setArmed] = useState(false)
   const acceptedLine = useRef<HTMLParagraphElement>(null)
-  const sentAt = useRef(0)
 
   useEffect(() => {
     const timer = setTimeout(() => setArmed(true), ACCEPT_DELAY_MS)
@@ -215,8 +238,7 @@ function Actions({ job, note, setNote }: { job: Job; note: string; setNote: (not
     mutationFn: (text: string) => sendFeedback(job.id, job.round, text),
     onSuccess: async (j) => {
       await remember(j)
-      setNote('')
-      sentAt.current = Date.now()
+      onRevising(j.round) // the note stays until the revised answer is here
     },
     onError: (e) => {
       setError(e.message)
@@ -234,7 +256,7 @@ function Actions({ job, note, setNote }: { job: Job; note: string; setNote: (not
     e.preventDefault()
     if (feedback.isPending) return
     if (!note.trim()) {
-      if (Date.now() - sentAt.current > DOUBLE_CLICK_MS) setError('Write what should change first.')
+      setError('Write what should change first.')
       return
     }
     setError('')
@@ -285,7 +307,7 @@ function Actions({ job, note, setNote }: { job: Job; note: string; setNote: (not
           className="mt-2 block w-full resize-y rounded-2xl border-2 border-input bg-card p-4 text-base placeholder:text-muted-foreground aria-invalid:border-coral"
         />
         <p id="feedback-error" role="alert" className="mt-2 min-h-6 font-bold text-coral">
-          {error}
+          {error || (revisionFailed && 'Could not revise the answer. Your feedback is still here, so try again.')}
         </p>
         <Button type="submit" variant="outline" size="lg" className="mt-1 w-full sm:w-auto" aria-disabled={feedback.isPending}>
           {feedback.isPending && <LoaderCircle className="animate-spin" aria-hidden="true" />}

@@ -551,6 +551,31 @@ async def test_lifespan_starts_without_a_database(
         pass
 
 
+async def test_recovery_retries_until_the_database_is_back(
+    client: httpx2.AsyncClient,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    job = (await client.post("/jobs", json={"text": "Solve"})).json()
+    dispatcher.pending.pop().close()
+    monkeypatch.setattr("api.dispatcher.RECOVERY_DELAY", 0)
+    outages = iter([OSError("no database"), OSError("no database")])
+    real_open = dispatcher.open_session
+
+    def flaky() -> AsyncSession:
+        if failure := next(outages, None):
+            raise failure
+        return real_open()
+
+    real = Dispatcher(agents, flaky)
+    await real.recover_at_start_up()
+    await agents.solving.wait()
+    await real.close()
+
+    assert agents.runs[0].job_id == uuid.UUID(job["id"])
+
+
 async def test_recover_restarts_unfinished_rounds(
     client: httpx2.AsyncClient,
     session: AsyncSession,

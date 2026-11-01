@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.agents import Agents
@@ -26,6 +27,7 @@ from shared.models import ArtifactKind, JobStatus
 ATTEMPTS = 2  # one retry, then the job fails
 CLEAN_UP_ATTEMPTS = 3  # a resume in flight makes Substrate refuse a delete for a moment
 CLEAN_UP_DELAY = 1.0
+RECOVERY_DELAY = 5.0
 
 log = logging.getLogger("uvicorn.error")
 
@@ -65,6 +67,25 @@ class Dispatcher:
             unfinished = rounds.all()
         for job_id, number in unfinished:
             self.start(job_id, number)
+
+    async def recover_at_start_up(self) -> None:
+        """Run recover() before any request. If the database is down, keep trying in the background.
+
+        Requests are served meanwhile: /ready reports the database.
+        """
+        try:
+            await self.recover()
+        except OSError, SQLAlchemyError:
+            log.exception("Could not look for unfinished jobs")
+            self._spawn(self._keep_recovering())
+
+    async def _keep_recovering(self) -> None:
+        while True:
+            await asyncio.sleep(RECOVERY_DELAY)
+            try:
+                return await self.recover()
+            except OSError, SQLAlchemyError:
+                log.exception("Could not look for unfinished jobs")
 
     async def close(self) -> None:
         """Stop running rounds. Their jobs stay in `processing` for recover() to pick up."""

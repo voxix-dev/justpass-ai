@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
+from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -48,10 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Make the dispatcher and restart rounds that a previous process left unfinished."""
     dispatcher = Dispatcher(agents_from_env(), open_session)
     app.state.dispatcher = dispatcher
-    try:
-        await dispatcher.recover()
-    except OSError, SQLAlchemyError:
-        log.exception("Could not look for unfinished jobs")  # /ready reports the database
+    await dispatcher.recover_at_start_up()
     yield
     await dispatcher.close()
 
