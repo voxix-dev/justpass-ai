@@ -23,7 +23,12 @@ def _engine() -> AsyncEngine:
     )
 
 
+def open_session() -> AsyncSession:
+    """A new session on the process-wide engine; the caller commits what it changes."""
+    return AsyncSession(_engine(), expire_on_commit=False)
+
+
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """A session for one request; the route commits what it changes."""
-    async with AsyncSession(_engine(), expire_on_commit=False) as session:
+    """A session for one request."""
+    async with open_session() as session:
         yield session

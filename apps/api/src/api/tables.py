@@ -1,7 +1,7 @@
 """Postgres tables. Only the api package touches the database: the agent goes through the Context
 API, and anything that leaves the api is converted to a Pydantic model first.
 
-After changing a table run `uv run --env-file .env alembic revision --autogenerate --rev-id 0004
+After changing a table run `uv run --env-file .env alembic revision --autogenerate --rev-id 0005
 -m "what changed"` (next free number) and read the generated migration. Autogenerate does not see
 changes to computed columns (memory_docs.tsv) or to the values of an enum column: write those by
 hand.
@@ -34,7 +34,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, TSVECTOR
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from shared.models import ArtifactKind, JobStatus, Level, Role, can_transition
+from shared.models import ArtifactKind, JobStatus, Level, can_transition
 
 REVIEW_WINDOW = timedelta(hours=48)
 
@@ -181,7 +181,6 @@ class Artifact(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     job_id: Mapped[uuid.UUID]
     round: Mapped[int]
-    role: Mapped[Role] = mapped_column(str_enum(Role, "role"))
     kind: Mapped[ArtifactKind] = mapped_column(str_enum(ArtifactKind, "kind"))
     content: Mapped[str | None]  # Markdown, math as KaTeX
     storage_key: Mapped[str | None]  # Cloud Storage object key, for files

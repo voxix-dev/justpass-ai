@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
-// Runs against the live API with its fake solver, which answers at once. Every test sends its own
-// task, so jobs already in the database do not matter.
+// Runs against the live API and the fake agent, with AGENT_SOLVE_SECONDS=0 so it answers at once.
+// Every test sends its own task, so jobs already in the database do not matter.
 
 /** Send a task from /new and wait for its result page. Returns the job's URL. */
 async function sendTask(page: Page, text: string) {
@@ -160,7 +160,7 @@ test.describe('signed in', () => {
         await route.fulfill({ response })
       })
       await pushBack(page)
-      await expect.poll(async () => (await (await page.request.get(api)).json()).round).toBe(2)
+      await expect.poll(async () => (await page.request.get(api)).json()).toMatchObject({ round: 2, status: 'done' })
 
       await page.request.post(`${api}/feedback`, { data: { text: 'From another tab', round: 2 } })
       await refetch(page)
@@ -187,9 +187,10 @@ test.describe('signed in', () => {
       await expect.poll(() => answered).toBe(true)
 
       await pushBack(page)
-      await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
+      await expect(page.getByText('Working through the steps…').first()).toBeVisible()
 
       release()
+      await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
       await page.waitForTimeout(300)
       await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
     })

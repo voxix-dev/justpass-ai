@@ -1,16 +1,20 @@
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from api import jobs
+from api.agents import agents_from_env
+from api.db import open_session
+from api.dispatcher import Dispatcher
 
 # 20,000 emoji written as \u escapes still fit.
 MAX_BODY = 256 * 1024
@@ -39,7 +43,20 @@ class BodyLimit:
         await self.app(scope, limited, send)
 
 
-app = FastAPI(title="Homework API", version="0.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Make the dispatcher and restart rounds that a previous process left unfinished."""
+    dispatcher = Dispatcher(agents_from_env(), open_session)
+    app.state.dispatcher = dispatcher
+    try:
+        await dispatcher.recover()
+    except OSError, SQLAlchemyError:
+        log.exception("Could not look for unfinished jobs")  # /ready reports the database
+    yield
+    await dispatcher.close()
+
+
+app = FastAPI(title="Homework API", version="0.0.0", lifespan=lifespan)
 app.add_middleware(BodyLimit)
 app.include_router(jobs.router)
 

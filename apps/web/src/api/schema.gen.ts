@@ -39,7 +39,7 @@ export interface paths {
         put?: never;
         /**
          * Create Job
-         * @description Store a new job with its first round and solve it at once (the dev user is created once).
+         * @description Store a new job with its first round and queue it (the dev user is created once).
          */
         post: operations["create_job_jobs_post"];
         delete?: never;

@@ -81,6 +81,12 @@ class AnswerBoundary extends Component<{ text: string; children: ReactNode }, { 
 
 /** Show the question and current outcome, offering review actions once the answer is on screen. */
 function JobDetail({ job }: { job: Job }) {
+  const pending = isPending(job)
+  const [waited, setWaited] = useState(pending)
+  if (pending && !waited) setWaited(true)
+  // Here, not in Actions: Actions is gone while a revision runs, and the text must survive that.
+  const [note, setNote] = useState('')
+
   return (
     <>
       <header className="mt-2">
@@ -89,7 +95,7 @@ function JobDetail({ job }: { job: Job }) {
           <span>{ago(job.createdAt)}</span>
         </div>
         <h1 dir="auto" className="mt-4 text-4xl break-words sm:text-5xl">{job.title}</h1>
-        {job.round > 1 && <p className="mt-3 text-muted-foreground">Revised answer, round {job.round}.</p>}
+        {job.round > 1 && !pending && <p className="mt-3 text-muted-foreground">Revised answer, round {job.round}.</p>}
       </header>
 
       {job.text !== job.title && (
@@ -105,7 +111,7 @@ function JobDetail({ job }: { job: Job }) {
       {/* Accept lives inside Suspense too: it must not appear before the answer does. */}
       <Suspense fallback={<Skeleton className="mt-8 h-64" />}>
         <div className="mt-8">
-          {isPending(job) ? (
+          {pending ? (
             <div className="rounded-2xl border-2 border-volt/60 bg-card p-6">
               <p className="flex items-center gap-2 font-display text-2xl font-extrabold text-volt">
                 <LoaderCircle className="size-6 animate-spin" aria-hidden="true" />
@@ -136,6 +142,7 @@ function JobDetail({ job }: { job: Job }) {
                   <AnswerBoundary key={job.round} text={job.result}>
                     <Answer markdown={job.result} />
                   </AnswerBoundary>
+                  {waited && job.round > 1 && <GoToAnswer onArrived={() => setWaited(false)} />}
                   {job.accepted && (
                     <span aria-hidden="true" className="stamp pointer-events-none absolute -top-6 right-3 bg-paper text-4xl text-[#1f8a3b]">
                       PASS
@@ -147,16 +154,30 @@ function JobDetail({ job }: { job: Job }) {
           )}
         </div>
 
-        {job.status === 'done' && <Actions job={job} />}
+        {job.status === 'done' && <Actions job={job} note={note} setNote={setNote} />}
       </Suspense>
     </>
   )
 }
 
+/**
+ * Take a student who waited here to what changed, the revised answer, once it is on screen: this
+ * mounts with the answer, inside Suspense. focus() alone does not scroll when the bottom of the
+ * answer is already showing.
+ */
+function GoToAnswer({ onArrived }: { onArrived: () => void }) {
+  useEffect(() => {
+    const answer = document.getElementById('answer')
+    answer?.focus({ preventScroll: true })
+    answer?.scrollIntoView()
+    onArrived()
+  }, [onArrived])
+  return null
+}
+
 /** Offer acceptance and feedback for a finished answer; feedback revises the same job in a new round. */
-function Actions({ job }: { job: Job }) {
+function Actions({ job, note, setNote }: { job: Job; note: string; setNote: (note: string) => void }) {
   const qc = useQueryClient()
-  const [note, setNote] = useState('')
   const [error, setError] = useState('')
   const [armed, setArmed] = useState(false)
   const acceptedLine = useRef<HTMLParagraphElement>(null)
@@ -175,11 +196,13 @@ function Actions({ job }: { job: Job }) {
   /**
    * Cache the job a mutation returned. A read under way may predate it, so drop that first, and
    * await it: a cancelled read restores the old job, which would land on top of this one. A newer
-   * round already cached (from another tab, say) stays.
+   * round already cached (from another tab, say) stays, and so does a round that already finished.
    */
   const remember = async (j: Job) => {
     await qc.cancelQueries({ queryKey: ['jobs', j.id], exact: true })
-    qc.setQueryData<Job>(['jobs', j.id], (old) => (old && old.round > j.round ? old : j))
+    qc.setQueryData<Job>(['jobs', j.id], (old) =>
+      old && (old.round > j.round || (old.round === j.round && !isPending(old) && isPending(j))) ? old : j,
+    )
     void qc.invalidateQueries({ queryKey: ['jobs'], exact: true })
   }
 
@@ -194,11 +217,6 @@ function Actions({ job }: { job: Job }) {
       await remember(j)
       setNote('')
       sentAt.current = Date.now()
-      // Take the student to what changed: the revised answer is above this form. focus() alone
-      // does not scroll when the bottom of the answer is already on screen.
-      const answer = document.getElementById('answer')
-      answer?.focus({ preventScroll: true })
-      answer?.scrollIntoView()
     },
     onError: (e) => {
       setError(e.message)

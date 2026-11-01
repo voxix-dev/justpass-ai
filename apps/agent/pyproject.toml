@@ -1,9 +1,9 @@
 [project]
 name = "agent"
 version = "0.0.0"
-description = "Agent harness: orchestrator, run_agent, role tool lists, playbooks. Runs inside a Substrate actor."
+description = "The agent: the HTTP server that runs inside a Substrate actor."
 requires-python = ">=3.14"
-dependencies = ["pydantic>=2.7", "pyyaml>=6", "shared"]
+dependencies = ["fastapi>=0.115", "shared", "uvicorn>=0.30"]
 
 [tool.uv.sources]
 shared = { workspace = true }
@@ -15,5 +15,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent"]
 
-[tool.deptry.package_module_name_map]
-pyyaml = "yaml"
+[tool.deptry.per_rule_ignores]
+# uvicorn: the server binary, not imported in src.
+DEP002 = ["uvicorn"]

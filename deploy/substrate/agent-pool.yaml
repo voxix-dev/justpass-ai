@@ -1,0 +1,29 @@
+# Worker pool for agent actors: one gVisor worker per running job. The actor template is not a
+# Kubernetes resource; see agent-template.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: justpass-agents
+---
+apiVersion: ate.dev/v1alpha1
+kind: WorkerPool
+metadata:
+  name: agent
+  namespace: justpass-agents
+  labels:
+    workload: justpass-agent
+spec:
+  # One worker per job running at the same time, plus one for building the golden snapshot.
+  replicas: 2
+  workerImage: ${ATEWORKER_GVISOR_IMAGE}
+  sandboxClasses:
+  - name: gvisor
+  template:
+    # Sizes the worker pod. The sandbox itself is sized by the template's resources.
+    resources:
+      limits:
+        cpu: "1"
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 1Gi

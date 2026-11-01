@@ -1,0 +1,37 @@
+// The part of Substrate's Control API (pkg/proto/ateapipb/ateapi.proto in the Substrate repo) that
+// the dispatcher calls. Field numbers match upstream; everything else is left out.
+//
+// After changing this file, from the repo root:
+//   uv run --no-project --python 3.14 --with grpcio-tools==1.85.1 python -m grpc_tools.protoc \
+//     -I apps/api/src/api --python_out=apps/api/src/api --pyi_out=apps/api/src/api \
+//     apps/api/src/api/ate.proto
+syntax = "proto3";
+
+package ateapi;
+
+message ObjectRef {
+  string atespace = 1;
+  string name = 2;
+}
+
+message ResourceMetadata {
+  string atespace = 1;
+  string name = 2;
+}
+
+message Actor {
+  ResourceMetadata metadata = 1;
+  ObjectRef actor_template = 2;
+}
+
+message CreateActorRequest {
+  Actor actor = 1;
+}
+
+message SuspendActorRequest {
+  ObjectRef actor = 1;
+}
+
+message DeleteActorRequest {
+  ObjectRef actor = 1;
+}

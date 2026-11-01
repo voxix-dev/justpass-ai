@@ -1,16 +1,16 @@
 """Jobs API: students send homework, follow it, and accept the answer or ask for changes.
 
-For now there is no auth and no agent: every job belongs to one dev user, and fake_solve() writes a
-fixed answer in the same request. The response shape is what the web app's screens use.
+For now there is no auth: every job belongs to one dev user. The agent works in the background (see
+dispatcher.py), so a new job comes back queued and the web app polls for the answer. The response
+shape is what the web app's screens use.
 """
 
-import re
 import unicodedata
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints
 from pydantic.alias_generators import to_camel
 from sqlalchemy import Select, and_, func, select
@@ -18,8 +18,9 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.db import get_session
+from api.dispatcher import Dispatcher
 from api.tables import Artifact, Job, JobRound, User
-from shared.models import ArtifactKind, JobStatus, Level, Role
+from shared.models import ArtifactKind, JobStatus, Level
 
 LIST_LIMIT = 100
 TITLE_LENGTH = 80
@@ -102,8 +103,14 @@ class JobOut(BaseModel):
     feedback: str | None  # what the student asked to change in this round
 
 
+def get_dispatcher(request: Request) -> Dispatcher:
+    """The dispatcher main.py made at start-up. Tests replace this with their own."""
+    return request.app.state.dispatcher
+
+
 router = APIRouter(prefix="/jobs", tags=["jobs"], responses=UNAVAILABLE)
 Session = Annotated[AsyncSession, Depends(get_session)]
+Dispatch = Annotated[Dispatcher, Depends(get_dispatcher)]
 
 # shortcut: no auth yet. Replace with the Firebase user once sign-in lands.
 DEV_USER = "dev-user"
@@ -117,53 +124,6 @@ _STATUS: dict[JobStatus, Literal["queued", "running", "done", "failed"]] = {
     JobStatus.FAILED: "failed",
 }
 FAILED_MESSAGE = "The solver could not read this question."
-
-SAMPLE_ANSWER = r"""## Solution
-
-We need the roots of $x^2 - 5x + 6 = 0$.
-
-**1. Factor.** Look for two numbers that multiply to $6$ and add to $-5$: those are $-2$ and $-3$.
-
-$$
-x^2 - 5x + 6 = (x - 2)(x - 3)
-$$
-
-**2. Solve.** A product is zero when one factor is zero, so $x = 2$ or $x = 3$.
-
-**3. Check** with the quadratic formula:
-
-$$
-x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a} = \frac{5 \pm \sqrt{25 - 24}}{2} = \frac{5 \pm 1}{2}
-$$
-
-> **Answer:** $x \in \{2, 3\}$
-
-### Why it works
-The sum of the roots is $-\tfrac{b}{a} = 5$ and the product is $\tfrac{c}{a} = 6$
-(Vieta's formulas).
-"""
-
-
-def fake_solve(session: AsyncSession, job: Job, round_number: int) -> None:
-    """Stand-in for the dispatcher and agents: finish the round at once with a fixed answer.
-
-    The whole word "fail" in the question, ignoring case, fails the job instead.
-    """
-    now = datetime.now(UTC)
-    job.move_to(JobStatus.PROCESSING, now)
-    if re.search(r"\bfail\b", job.input_text or "", re.IGNORECASE):
-        job.move_to(JobStatus.FAILED, now)
-        return
-    session.add(
-        Artifact(
-            job_id=job.id,
-            round=round_number,
-            role=Role.WRITER,
-            kind=ArtifactKind.FINAL,
-            content=SAMPLE_ANSWER,
-        )
-    )
-    job.move_to(JobStatus.AWAITING_REVIEW, now)
 
 
 def _title(text: str) -> str:
@@ -254,8 +214,8 @@ async def list_jobs(session: Session) -> list[JobOut]:
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, responses=BAD_BODY)
-async def create_job(body: JobCreate, session: Session) -> JobOut:
-    """Store a new job with its first round and solve it at once (the dev user is created once)."""
+async def create_job(body: JobCreate, session: Session, dispatcher: Dispatch) -> JobOut:
+    """Store a new job with its first round and queue it (the dev user is created once)."""
     await session.execute(
         insert(User).values(id=DEV_USER, is_anonymous=False).on_conflict_do_nothing()
     )
@@ -271,9 +231,9 @@ async def create_job(body: JobCreate, session: Session) -> JobOut:
     await session.flush()
     session.add(JobRound(job_id=job.id, number=1))
     await session.flush()
-    fake_solve(session, job, 1)
     out = await _read(session, job.id)
     await session.commit()
+    dispatcher.start(job.id, 1)
     return out
 
 
@@ -295,18 +255,23 @@ async def _check_review(session: AsyncSession, job: Job, seen: int, *allowed: Jo
 
 
 @router.post("/{job_id}/accept", responses=NOT_FOUND | NOT_IN_REVIEW | BAD_BODY)
-async def accept_job(job_id: uuid.UUID, body: Review, session: Session) -> JobOut:
+async def accept_job(
+    job_id: uuid.UUID, body: Review, session: Session, dispatcher: Dispatch
+) -> JobOut:
     """Accept the answer under review. 409 unless the job is awaiting review on that round."""
     job = await _own_job(session, job_id)
     await _check_review(session, job, body.round, JobStatus.AWAITING_REVIEW)
     job.move_to(JobStatus.ACCEPTED, datetime.now(UTC))
     out = await _read(session, job.id)
     await session.commit()
+    dispatcher.release(job.id)
     return out
 
 
 @router.post("/{job_id}/feedback", responses=NOT_FOUND | NOT_IN_REVIEW | BAD_BODY)
-async def send_feedback(job_id: uuid.UUID, body: FeedbackCreate, session: Session) -> JobOut:
+async def send_feedback(
+    job_id: uuid.UUID, body: FeedbackCreate, session: Session, dispatcher: Dispatch
+) -> JobOut:
     """Start the next round of the same job with the student's feedback.
 
     409 unless the job is awaiting review or expired on that round (accepted and failed are final).
@@ -316,8 +281,9 @@ async def send_feedback(job_id: uuid.UUID, body: FeedbackCreate, session: Sessio
         session, job, body.round, JobStatus.AWAITING_REVIEW, JobStatus.EXPIRED
     )
     session.add(JobRound(job_id=job.id, number=newest + 1, feedback=body.text))
+    job.move_to(JobStatus.PROCESSING, datetime.now(UTC))
     await session.flush()
-    fake_solve(session, job, newest + 1)
     out = await _read(session, job.id)
     await session.commit()
+    dispatcher.start(job.id, newest + 1)
     return out
