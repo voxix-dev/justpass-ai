@@ -1,4 +1,5 @@
-# API image for local testing. Build context: repo root (`docker compose build api`).
+# API image. CI publishes it to ghcr.io/voxix-dev/justpass-ai/api after CI passes on main.
+# Build context: repo root (`docker compose build api`).
 # On start it migrates the database, then serves on :8000. Needs DATABASE_URL.
 
 FROM python:3.14.10-slim-trixie AS builder
