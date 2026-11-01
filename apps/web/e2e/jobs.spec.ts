@@ -141,6 +141,60 @@ test.describe('signed in', () => {
     })
   })
 
+  test.describe('responses arriving out of order', () => {
+    /** What a student returning to the tab triggers: a refetch of what is on screen. */
+    const refetch = (page: Page) => page.evaluate(`window.dispatchEvent(new Event('visibilitychange'))`)
+    const pushBack = async (page: Page) => {
+      await page.getByLabel('Something off? Push back').fill('More detail')
+      await page.getByRole('button', { name: 'Get a revised answer' }).click()
+    }
+
+    test('a slow feedback response does not replace a newer round', async ({ page }) => {
+      const url = await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
+      const api = url.replace('/jobs/', '/api/jobs/')
+      let release = () => {}
+      const held = new Promise<void>((resolve) => (release = resolve))
+      await page.route('**/feedback', async (route) => {
+        const response = await route.fetch()
+        await held
+        await route.fulfill({ response })
+      })
+      await pushBack(page)
+      await expect.poll(async () => (await (await page.request.get(api)).json()).round).toBe(2)
+
+      await page.request.post(`${api}/feedback`, { data: { text: 'From another tab', round: 2 } })
+      await refetch(page)
+      await expect(page.getByText('Revised answer, round 3.')).toBeVisible()
+
+      release()
+      await expect(page.getByLabel('Something off? Push back')).toHaveValue('')
+      await expect(page.getByText('Revised answer, round 3.')).toBeVisible()
+    })
+
+    test('a slow read does not bring back the old round', async ({ page }) => {
+      const url = await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
+      await expect(page.getByRole('heading', { name: 'Solution' })).toBeVisible()
+      let release = () => {}
+      const held = new Promise<void>((resolve) => (release = resolve))
+      let answered = false
+      await page.route(url.replace('/jobs/', '/api/jobs/'), async (route) => {
+        const response = await route.fetch()
+        answered = true
+        await held
+        await route.fulfill({ response })
+      })
+      await refetch(page)
+      await expect.poll(() => answered).toBe(true)
+
+      await pushBack(page)
+      await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
+
+      release()
+      await page.waitForTimeout(300)
+      await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
+    })
+  })
+
   test('signing out goes home and closes the job', async ({ page }) => {
     await sendTask(page, `Private (${Date.now()})`)
     await page.getByRole('button', { name: 'Sign out' }).click()

@@ -172,19 +172,26 @@ function Actions({ job }: { job: Job }) {
     if (isConflict(e)) void qc.invalidateQueries({ queryKey: ['jobs', job.id] })
   }
 
+  /**
+   * Cache the job a mutation returned. A read under way may predate it, so drop that first, and
+   * await it: a cancelled read restores the old job, which would land on top of this one. A newer
+   * round already cached (from another tab, say) stays.
+   */
+  const remember = async (j: Job) => {
+    await qc.cancelQueries({ queryKey: ['jobs', j.id], exact: true })
+    qc.setQueryData<Job>(['jobs', j.id], (old) => (old && old.round > j.round ? old : j))
+    void qc.invalidateQueries({ queryKey: ['jobs'], exact: true })
+  }
+
   const accept = useMutation({
     mutationFn: () => acceptJob(job.id, job.round),
-    onSuccess: (j) => {
-      qc.setQueryData(['jobs', j.id], j)
-      void qc.invalidateQueries({ queryKey: ['jobs'], exact: true })
-    },
+    onSuccess: remember,
     onError: reloadIfStale,
   })
   const feedback = useMutation({
     mutationFn: (text: string) => sendFeedback(job.id, job.round, text),
-    onSuccess: (j) => {
-      qc.setQueryData(['jobs', j.id], j)
-      void qc.invalidateQueries({ queryKey: ['jobs'], exact: true })
+    onSuccess: async (j) => {
+      await remember(j)
       setNote('')
       sentAt.current = Date.now()
       // Take the student to what changed: the revised answer is above this form. focus() alone
