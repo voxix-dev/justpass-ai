@@ -4,7 +4,12 @@ import os
 from collections.abc import AsyncIterator
 from functools import cache
 
+from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+
+# What it looks like when Postgres cannot be reached. Trying again can help; for other errors not.
+DATABASE_DOWN = (OperationalError, InterfaceError, PoolTimeoutError, OSError)
 
 
 @cache

@@ -16,10 +16,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.agents import Agents
+from api.db import DATABASE_DOWN
 from api.tables import Artifact, Job, JobRound
 from shared.agent_run import AgentRun
 from shared.models import ArtifactKind, JobStatus
@@ -27,7 +27,7 @@ from shared.models import ArtifactKind, JobStatus
 ATTEMPTS = 2  # one retry, then the job fails
 CLEAN_UP_ATTEMPTS = 3  # a resume in flight makes Substrate refuse a delete for a moment
 CLEAN_UP_DELAY = 1.0
-RECOVERY_DELAY = 5.0
+DATABASE_DELAY = 5.0
 
 log = logging.getLogger("uvicorn.error")
 
@@ -37,10 +37,13 @@ class Dispatcher:
         self.agents = agents
         self.open_session = open_session
         self._tasks: set[asyncio.Task[None]] = set()
+        self._rounds: set[tuple[uuid.UUID, int]] = set()  # the ones this process is running
 
     def start(self, job_id: uuid.UUID, number: int) -> None:
-        """Run a committed round in the background."""
-        self._spawn(self._run(job_id, number))
+        """Run a committed round in the background, unless this process already is."""
+        if (job_id, number) not in self._rounds:
+            self._rounds.add((job_id, number))
+            self._spawn(self._run(job_id, number))
 
     def release(self, job_id: uuid.UUID) -> None:
         """Drop the agent of a job that is over, in the background."""
@@ -52,10 +55,11 @@ class Dispatcher:
         task.add_done_callback(self._tasks.discard)
 
     async def recover(self) -> None:
-        """Start again every round that no process is running, which is all of them at start-up.
+        """Start every unfinished round that this process is not running.
 
-        shortcut: with two API replicas a new one also repeats rounds the other is running. That
-        wastes an agent run, not an answer: the run that finishes second changes nothing.
+        shortcut: this assumes one API process. A second one would repeat the rounds of the first.
+        The run that finishes second changes nothing, but it wastes an agent run and can leave the
+        actor awake. Claim rounds in the database before running two replicas.
         """
         async with self.open_session() as session:
             rounds = await session.execute(
@@ -75,17 +79,22 @@ class Dispatcher:
         """
         try:
             await self.recover()
-        except OSError, SQLAlchemyError:
+        except DATABASE_DOWN:
             log.exception("Could not look for unfinished jobs")
-            self._spawn(self._keep_recovering())
+            self._spawn(self._keep_trying(self.recover))
 
-    async def _keep_recovering(self) -> None:
+    async def _keep_trying[T](self, step: Callable[[], Awaitable[T]]) -> T:
+        """Run a database step until Postgres answers: a round must not end on a short outage.
+
+        Every step can run again after a commit whose reply was lost: a round already begun is
+        reused, and one already finished is left alone.
+        """
         while True:
-            await asyncio.sleep(RECOVERY_DELAY)
             try:
-                return await self.recover()
-            except OSError, SQLAlchemyError:
-                log.exception("Could not look for unfinished jobs")
+                return await step()
+            except DATABASE_DOWN:
+                log.exception("The database cannot be reached")
+                await asyncio.sleep(DATABASE_DELAY)
 
     async def close(self) -> None:
         """Stop running rounds. Their jobs stay in `processing` for recover() to pick up."""
@@ -95,19 +104,23 @@ class Dispatcher:
 
     async def _run(self, job_id: uuid.UUID, number: int) -> None:
         try:
-            run = await self._begin(job_id, number)
+            run = await self._keep_trying(lambda: self._begin(job_id, number))
             if run is None:
                 return
             answer = await self._solve(run)
-            async with self.open_session() as session:
-                if await self._current(session, job_id, number) is None:
-                    return  # another run of this round finished first
+            if not await self._keep_trying(lambda: self._is_current(job_id, number)):
+                return  # another run of this round finished first
             put_away = self.agents.release if answer is None else self.agents.hibernate
             await self._quietly(put_away, job_id)
-            await self._finish(job_id, number, answer)
+            await self._keep_trying(lambda: self._finish(job_id, number, answer))
         except Exception:
-            # shortcut: if the database is gone the job waits in `processing` for the next restart.
             log.exception("Round %d of job %s stopped", number, job_id)
+        finally:
+            self._rounds.discard((job_id, number))
+
+    async def _is_current(self, job_id: uuid.UUID, number: int) -> bool:
+        async with self.open_session() as session:
+            return await self._current(session, job_id, number) is not None
 
     async def _current(self, session: AsyncSession, job_id: uuid.UUID, number: int) -> Job | None:
         """Lock the job, and return it if this round is the one it is processing."""

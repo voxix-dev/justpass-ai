@@ -78,6 +78,11 @@ class StepDispatcher(Dispatcher):
         while self.pending:
             await self.pending.pop(0)
 
+    def forget(self) -> None:
+        """Drop the round waiting to run, as a process dying before it starts would."""
+        self.pending.pop().close()
+        self._rounds.clear()
+
 
 @pytest.fixture
 def agents() -> FakeAgents:
@@ -405,7 +410,7 @@ async def test_a_job_cannot_be_reviewed_before_it_is_answered(
     client: httpx2.AsyncClient, session: AsyncSession, dispatcher: StepDispatcher, status: JobStatus
 ):
     job = (await client.post("/jobs", json={"text": "Solve"})).json()
-    dispatcher.pending.pop().close()
+    dispatcher.forget()
     if status == JobStatus.PROCESSING:
         row = await session.get(Job, uuid.UUID(job["id"]), populate_existing=True)
         assert row is not None
@@ -496,6 +501,76 @@ async def test_a_stale_run_leaves_a_newer_round_alone(
     assert agents.hibernated == [job_id, job_id]  # the two real answers, not the stale run
 
 
+async def test_a_round_this_process_is_running_is_not_started_twice(
+    client: httpx2.AsyncClient, dispatcher: StepDispatcher, agents: FakeAgents
+):
+    """Recovery that retries after an outage can meet a round that a request just started."""
+    await client.post("/jobs", json={"text": "Solve"})
+    await dispatcher.recover()
+    await dispatcher.drain()
+    assert len(agents.runs) == 1
+
+
+@pytest.mark.parametrize("step", ["_begin", "_is_current", "_finish"])
+async def test_a_short_database_outage_does_not_strand_the_round(
+    create: Create,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    monkeypatch: pytest.MonkeyPatch,
+    step: str,
+):
+    real = getattr(dispatcher, step)
+    outages = iter([OSError("no database")])
+
+    async def flaky(*args: Any) -> Any:
+        if outage := next(outages, None):
+            raise outage
+        return await real(*args)
+
+    monkeypatch.setattr("api.dispatcher.DATABASE_DELAY", 0)
+    monkeypatch.setattr(dispatcher, step, flaky)
+    assert (await create())["result"] == ANSWER
+    assert len(agents.runs) == 1
+
+
+async def test_a_commit_whose_reply_was_lost_is_not_repeated(
+    create: Create,
+    session: AsyncSession,
+    dispatcher: StepDispatcher,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    real = dispatcher._finish
+    calls = 0
+
+    async def lost_reply(*args: Any) -> None:
+        nonlocal calls
+        calls += 1
+        await real(*args)
+        if calls == 1:
+            raise OSError("connection lost after the commit")
+
+    monkeypatch.setattr("api.dispatcher.DATABASE_DELAY", 0)
+    monkeypatch.setattr(dispatcher, "_finish", lost_reply)
+    job = await create()
+
+    assert (calls, job["result"]) == (2, ANSWER)
+    finals = await session.scalars(
+        select(Artifact.id).where(Artifact.job_id == uuid.UUID(job["id"]))
+    )
+    assert len(list(finals)) == 1
+
+
+async def test_other_errors_are_not_tried_forever(
+    create: Create, dispatcher: StepDispatcher, monkeypatch: pytest.MonkeyPatch
+):
+    async def broken(*_: Any) -> None:
+        raise ValueError("a bug, not an outage")
+
+    monkeypatch.setattr(dispatcher, "_finish", broken)
+    assert (await create())["status"] == "running"
+    assert not dispatcher._rounds
+
+
 async def test_a_second_finish_changes_nothing(
     client: httpx2.AsyncClient, create: Create, dispatcher: StepDispatcher
 ):
@@ -508,7 +583,7 @@ async def test_close_stops_running_rounds(
     client: httpx2.AsyncClient, dispatcher: StepDispatcher, agents: FakeAgents
 ):
     job = (await client.post("/jobs", json={"text": "Solve"})).json()
-    dispatcher.pending.pop().close()
+    dispatcher.forget()
     real = Dispatcher(agents, dispatcher.open_session)
 
     async def hang() -> None:
@@ -529,7 +604,7 @@ async def test_lifespan_restarts_unfinished_rounds(
     monkeypatch: pytest.MonkeyPatch,
 ):
     job = (await client.post("/jobs", json={"text": "Solve"})).json()
-    dispatcher.pending.pop().close()
+    dispatcher.forget()
     monkeypatch.setattr("api.main.agents_from_env", lambda: agents)
     monkeypatch.setattr("api.main.open_session", dispatcher.open_session)
 
@@ -558,8 +633,8 @@ async def test_recovery_retries_until_the_database_is_back(
     monkeypatch: pytest.MonkeyPatch,
 ):
     job = (await client.post("/jobs", json={"text": "Solve"})).json()
-    dispatcher.pending.pop().close()
-    monkeypatch.setattr("api.dispatcher.RECOVERY_DELAY", 0)
+    dispatcher.forget()
+    monkeypatch.setattr("api.dispatcher.DATABASE_DELAY", 0)
     outages = iter([OSError("no database"), OSError("no database")])
     real_open = dispatcher.open_session
 
@@ -585,7 +660,7 @@ async def test_recover_restarts_unfinished_rounds(
 ):
     """Both the queued job and the one that was running when the last process died."""
     queued = (await client.post("/jobs", json={"text": "queued"})).json()
-    dispatcher.pending.pop().close()  # the process died before the round started
+    dispatcher.forget()  # the process died before the round started
     running = await create("running")
     finished = await create("finished")
     row = await session.get(Job, uuid.UUID(running["id"]), populate_existing=True)

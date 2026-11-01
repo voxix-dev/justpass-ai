@@ -7,13 +7,11 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from sqlalchemy.exc import InterfaceError, OperationalError
-from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from api import jobs
 from api.agents import agents_from_env
-from api.db import open_session
+from api.db import DATABASE_DOWN, open_session
 from api.dispatcher import Dispatcher
 
 # 20,000 emoji written as \u escapes still fit.
@@ -66,10 +64,6 @@ async def invalid_request(_: Request, error: RequestValidationError) -> Response
     return Response(body, status.HTTP_422_UNPROCESSABLE_CONTENT, media_type="application/json")
 
 
-@app.exception_handler(OperationalError)
-@app.exception_handler(InterfaceError)
-@app.exception_handler(PoolTimeoutError)
-@app.exception_handler(OSError)
 async def database_unavailable(_: Request, error: Exception) -> Response:
     """Answer 503 in the usual error shape when Postgres cannot be reached."""
     log.error("Database unavailable", exc_info=error)
@@ -77,6 +71,10 @@ async def database_unavailable(_: Request, error: Exception) -> Response:
         {"detail": "JustPass is having trouble. Try again in a moment."},
         status.HTTP_503_SERVICE_UNAVAILABLE,
     )
+
+
+for database_error in DATABASE_DOWN:
+    app.add_exception_handler(database_error, database_unavailable)
 
 
 @app.middleware("http")
