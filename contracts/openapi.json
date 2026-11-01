@@ -411,7 +411,7 @@
     },
     "/jobs/{job_id}/accept": {
       "post": {
-        "description": "Accept the answer under review. 409 unless the job is awaiting review on that round.",
+        "description": "Accept the answer and schedule agent release after committing.\n\nRaise 404 for a missing job and 409 unless it is awaiting review on the submitted round.",
         "operationId": "accept_job_jobs__job_id__accept_post",
         "parameters": [
           {
@@ -515,7 +515,7 @@
     },
     "/jobs/{job_id}/feedback": {
       "post": {
-        "description": "Start the next round of the same job with the student's feedback.\n\n409 unless the job is awaiting review or expired on that round (accepted and failed are final).",
+        "description": "Queue the next round with the student's feedback and return the running job.\n\nRaise 404 for a missing job and 409 unless it is awaiting review or expired on the submitted\nround (accepted and failed are final).",
         "operationId": "send_feedback_jobs__job_id__feedback_post",
         "parameters": [
           {

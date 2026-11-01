@@ -79,7 +79,9 @@ export interface paths {
         put?: never;
         /**
          * Accept Job
-         * @description Accept the answer under review. 409 unless the job is awaiting review on that round.
+         * @description Accept the answer and schedule agent release after committing.
+         *
+         *     Raise 404 for a missing job and 409 unless it is awaiting review on the submitted round.
          */
         post: operations["accept_job_jobs__job_id__accept_post"];
         delete?: never;
@@ -99,9 +101,10 @@ export interface paths {
         put?: never;
         /**
          * Send Feedback
-         * @description Start the next round of the same job with the student's feedback.
+         * @description Queue the next round with the student's feedback and return the running job.
          *
-         *     409 unless the job is awaiting review or expired on that round (accepted and failed are final).
+         *     Raise 404 for a missing job and 409 unless it is awaiting review or expired on the submitted
+         *     round (accepted and failed are final).
          */
         post: operations["send_feedback_jobs__job_id__feedback_post"];
         delete?: never;
