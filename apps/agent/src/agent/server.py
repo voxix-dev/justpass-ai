@@ -48,7 +48,11 @@ def ready() -> dict[str, str]:
 
 @app.post("/run")
 async def run(body: AgentRun) -> AgentAnswer:
-    """Pretend to solve the round. The whole word "fail" in the task, ignoring case, fails it."""
+    """Return a fixed answer after AGENT_SOLVE_SECONDS (10 seconds by default).
+
+    The whole word "fail" in the task, ignoring case, returns an answer of None. Feedback does
+    not affect the answer. A nonnumeric AGENT_SOLVE_SECONDS raises ValueError.
+    """
     await asyncio.sleep(float(os.environ.get("AGENT_SOLVE_SECONDS", "10")))
     if re.search(r"\bfail\b", body.text, re.IGNORECASE):
         return AgentAnswer(answer=None)

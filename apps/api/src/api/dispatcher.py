@@ -87,7 +87,7 @@ class Dispatcher:
         """Run a database step until Postgres answers: a round must not end on a short outage.
 
         Every step can run again after a commit whose reply was lost: a round already begun is
-        reused, and one already finished is left alone.
+        reused, and one already finished is left alone. Errors outside DATABASE_DOWN propagate.
         """
         while True:
             try:
@@ -97,12 +97,13 @@ class Dispatcher:
                 await asyncio.sleep(DATABASE_DELAY)
 
     async def close(self) -> None:
-        """Stop running rounds. Their jobs stay in `processing` for recover() to pick up."""
+        """Cancel background work; recover() can pick up unfinished received or processing jobs."""
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def _run(self, job_id: uuid.UUID, number: int) -> None:
+        """Run a round and save its result if still current; unexpected errors stop the run."""
         try:
             run = await self._keep_trying(lambda: self._begin(job_id, number))
             if run is None:
@@ -133,7 +134,10 @@ class Dispatcher:
         return job if newest == number else None
 
     async def _begin(self, job_id: uuid.UUID, number: int) -> AgentRun | None:
-        """Mark the job as processing and return the agent's task; None if it is not waiting."""
+        """Return the agent's task for a received or processing job, marking it processing.
+
+        Return None if the job is missing or has another status.
+        """
         async with self.open_session() as session:
             job = await session.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job is None or job.status not in (JobStatus.RECEIVED, JobStatus.PROCESSING):
@@ -152,7 +156,7 @@ class Dispatcher:
             return run
 
     async def _solve(self, run: AgentRun) -> str | None:
-        """The answer, or None if the agent gave none, or could not be reached twice."""
+        """Return the answer, or None if the agent gives none or both attempts raise an error."""
         for attempt in range(1, ATTEMPTS + 1):
             try:
                 return (await self.agents.solve(run)).answer
@@ -163,7 +167,10 @@ class Dispatcher:
     async def _quietly(
         self, step: Callable[[uuid.UUID], Awaitable[None]], job_id: uuid.UUID
     ) -> None:
-        """Run a clean-up step. A failed one costs an idle actor, never the student's answer."""
+        """Try clean-up up to three times, suppressing errors after the final attempt.
+
+        A failed clean-up can leave an idle actor but does not discard the student's answer.
+        """
         for attempt in range(1, CLEAN_UP_ATTEMPTS + 1):
             try:
                 return await step(job_id)
@@ -175,8 +182,8 @@ class Dispatcher:
     async def _finish(self, job_id: uuid.UUID, number: int, answer: str | None) -> None:
         """Save the result, unless another run of this round already did.
 
-        Failed is final, so a failed revision drops its round instead of failing the job: the
-        student keeps the answer they already have and can accept it or ask again.
+        An absent answer fails the first round. Failed is final, so a failed revision drops its
+        round and returns the job to review. The student can accept the answer or ask again.
         """
         async with self.open_session() as session:
             job = await self._current(session, job_id, number)

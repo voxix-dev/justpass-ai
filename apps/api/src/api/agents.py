@@ -28,7 +28,10 @@ BUSY_RETRY_DELAY = 2.0
 
 class Agents(Protocol):
     async def solve(self, run: AgentRun) -> AgentAnswer:
-        """Run one round; raises if no answer came back, whether or not the agent got the task."""
+        """Run one round; an answer may contain None if the agent could not solve it.
+
+        Raises if no valid reply came back, whether or not the agent got the task.
+        """
         ...
 
     async def hibernate(self, job_id: uuid.UUID) -> None:
@@ -43,6 +46,7 @@ class Agents(Protocol):
 async def _post_run(
     client: httpx2.AsyncClient, url: str, run: AgentRun, headers: dict[str, str] | None = None
 ) -> AgentAnswer:
+    """Post a round and validate the reply, propagating HTTP, transport, and validation errors."""
     response = await client.post(
         f"{url}/run",
         content=run.model_dump_json(),
@@ -82,6 +86,7 @@ class Control:
     token_file: Path
 
     async def _call(self, method: str, request: Message) -> None:
+        """Call ate-api with the current token; file and gRPC errors propagate."""
         token = self.token_file.read_text().strip()
         async with self.open_channel() as channel:
             call = channel.unary_unary(
@@ -128,6 +133,12 @@ class SubstrateAgents:
     busy_wait: float = BUSY_WAIT
 
     async def solve(self, run: AgentRun) -> AgentAnswer:
+        """Create or reuse the job's actor and send it a round through the router.
+
+        Retry router 503 responses until busy_wait seconds have elapsed; other HTTP errors and
+        actor creation errors other than ALREADY_EXISTS propagate, as do transport and reply
+        validation errors. A 503 at or after the deadline also propagates.
+        """
         actor = _actor_name(run.job_id)
         try:
             await self.control.create_actor(self.atespace, actor, self.template)
@@ -151,6 +162,7 @@ class SubstrateAgents:
         await self.control.suspend_actor(self.atespace, _actor_name(job_id))
 
     async def release(self, job_id: uuid.UUID) -> None:
+        """Delete the actor, ignoring NOT_FOUND and propagating other gRPC errors."""
         try:
             await self.control.delete_actor(self.atespace, _actor_name(job_id))
         except grpc.aio.AioRpcError as error:
@@ -181,7 +193,10 @@ def _substrate_from_env(router_url: str) -> SubstrateAgents:
 
 
 def agents_from_env() -> Agents:
-    """AGENT_URL for one plain agent, ATE_ROUTER_URL and the other ATE_* for Substrate."""
+    """Select the plain agent when AGENT_URL is set, otherwise configure Substrate.
+
+    Raises RuntimeError if neither URL is set and KeyError if a required ATE_* setting is missing.
+    """
     if url := os.environ.get("AGENT_URL"):
         return SingleAgent(url)
     if router_url := os.environ.get("ATE_ROUTER_URL"):

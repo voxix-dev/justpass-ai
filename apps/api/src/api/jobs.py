@@ -258,7 +258,10 @@ async def _check_review(session: AsyncSession, job: Job, seen: int, *allowed: Jo
 async def accept_job(
     job_id: uuid.UUID, body: Review, session: Session, dispatcher: Dispatch
 ) -> JobOut:
-    """Accept the answer under review. 409 unless the job is awaiting review on that round."""
+    """Accept the answer and schedule agent release after committing.
+
+    Raise 404 for a missing job and 409 unless it is awaiting review on the submitted round.
+    """
     job = await _own_job(session, job_id)
     await _check_review(session, job, body.round, JobStatus.AWAITING_REVIEW)
     job.move_to(JobStatus.ACCEPTED, datetime.now(UTC))
@@ -272,9 +275,10 @@ async def accept_job(
 async def send_feedback(
     job_id: uuid.UUID, body: FeedbackCreate, session: Session, dispatcher: Dispatch
 ) -> JobOut:
-    """Start the next round of the same job with the student's feedback.
+    """Queue the next round with the student's feedback and return the running job.
 
-    409 unless the job is awaiting review or expired on that round (accepted and failed are final).
+    Raise 404 for a missing job and 409 unless it is awaiting review or expired on the submitted
+    round (accepted and failed are final).
     """
     job = await _own_job(session, job_id)
     newest = await _check_review(
