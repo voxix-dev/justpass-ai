@@ -91,6 +91,23 @@ async def test_solve_creates_the_actor_and_asks_it(substrate: SubstrateAgents, a
     assert (actor.actor_template.atespace, actor.actor_template.name) == ("homework", "agent-v1")
 
 
+async def test_solve_accepts_heartbeat_newlines_before_the_answer(substrate: SubstrateAgents):
+    substrate.router = lambda: httpx2.AsyncClient(
+        transport=httpx2.MockTransport(
+            lambda _: httpx2.Response(200, content=b'\n\n\n{"answer": "x = 2"}')
+        )
+    )
+    assert await substrate.solve(RUN) == AgentAnswer(answer="x = 2")
+
+
+async def test_solve_fails_when_the_stream_ends_without_an_answer(substrate: SubstrateAgents):
+    substrate.router = lambda: httpx2.AsyncClient(
+        transport=httpx2.MockTransport(lambda _: httpx2.Response(200, content=b"\n\n"))
+    )
+    with pytest.raises(ValidationError):
+        await substrate.solve(RUN)
+
+
 async def test_solve_waits_for_a_free_worker(
     substrate: SubstrateAgents, monkeypatch: pytest.MonkeyPatch
 ):

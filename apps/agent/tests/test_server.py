@@ -5,6 +5,7 @@ import httpx2
 import pytest
 
 from agent.server import SAMPLE_ANSWER, app
+from shared.agent_run import AgentAnswer
 
 pytestmark = pytest.mark.anyio
 
@@ -16,7 +17,7 @@ def anyio_backend() -> str:
 
 @pytest.fixture
 async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[httpx2.AsyncClient]:
-    monkeypatch.setenv("AGENT_SOLVE_SECONDS", "0")
+    monkeypatch.setattr("agent.server.SOLVE_SECONDS", 0)
     transport = httpx2.ASGITransport(app=app)
     async with httpx2.AsyncClient(transport=transport, base_url="http://agent") as client:
         yield client
@@ -59,9 +60,26 @@ async def test_run_waits_before_answering(
         waited.append(seconds)
 
     monkeypatch.setattr("agent.server.asyncio.sleep", sleep)
-    monkeypatch.delenv("AGENT_SOLVE_SECONDS")
+    monkeypatch.setattr("agent.server.SOLVE_SECONDS", 10)
     await client.post("/run", json=body("Solve"))
-    assert waited == [10.0]
+    assert waited == [10]
+
+
+async def test_run_sends_a_heartbeat_while_working(
+    client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("agent.server.SOLVE_SECONDS", 0.35)
+    monkeypatch.setattr("agent.server.HEARTBEAT_SECONDS", 0.1)
+    response = await client.post("/run", json=body("Solve"))
+    assert response.headers["content-type"] == "application/json"
+    assert response.content.startswith(b"\n\n")
+    assert response.content.lstrip() == AgentAnswer(answer=SAMPLE_ANSWER).model_dump_json().encode()
+    assert AgentAnswer.model_validate_json(response.content).answer == SAMPLE_ANSWER
+
+
+async def test_run_without_a_wait_sends_no_heartbeat(client: httpx2.AsyncClient):
+    response = await client.post("/run", json=body("Solve"))
+    assert response.content.startswith(b"{")
 
 
 async def test_run_refuses_unknown_fields(client: httpx2.AsyncClient):

@@ -5,10 +5,11 @@ the API through Substrate and back can be built and tested before any model is i
 """
 
 import asyncio
-import os
 import re
+from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 
 from shared.agent_run import AgentAnswer, AgentRun
 
@@ -37,6 +38,9 @@ The sum of the roots is $-\tfrac{b}{a} = 5$ and the product is $\tfrac{c}{a} = 6
 (Vieta's formulas).
 """
 
+SOLVE_SECONDS = 10  # the fake's pretend work; goes away with the fake
+HEARTBEAT_SECONDS = 5  # how often /run writes a byte while working, so the API sees it is alive
+
 app = FastAPI(title="Agent", version="0.0.0")
 
 
@@ -46,14 +50,34 @@ def ready() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/run")
-async def run(body: AgentRun) -> AgentAnswer:
-    """Return a fixed answer after AGENT_SOLVE_SECONDS (10 seconds by default).
-
-    The whole word "fail" in the task, ignoring case, returns an answer of None. Feedback does
-    not affect the answer. A nonnumeric AGENT_SOLVE_SECONDS raises ValueError.
-    """
-    await asyncio.sleep(float(os.environ.get("AGENT_SOLVE_SECONDS", "10")))
+async def _solve(body: AgentRun) -> AgentAnswer:
+    await asyncio.sleep(SOLVE_SECONDS)
     if re.search(r"\bfail\b", body.text, re.IGNORECASE):
         return AgentAnswer(answer=None)
     return AgentAnswer(answer=SAMPLE_ANSWER)
+
+
+async def _stream(body: AgentRun) -> AsyncIterator[bytes]:
+    """Write a newline every HEARTBEAT_SECONDS while solving, then the answer as JSON."""
+    work = asyncio.create_task(_solve(body))
+    try:
+        while not (await asyncio.wait({work}, timeout=HEARTBEAT_SECONDS))[0]:
+            yield b"\n"
+        yield work.result().model_dump_json().encode()  # an error here ends the stream without JSON
+    finally:
+        work.cancel()  # the caller hung up
+
+
+@app.post("/run", response_class=StreamingResponse)
+async def run(body: AgentRun) -> StreamingResponse:
+    """Stream a fixed answer after SOLVE_SECONDS, with a heartbeat while it works.
+
+    The reply is 200 application/json whose body is whitespace (one newline per HEARTBEAT_SECONDS)
+    followed by an AgentAnswer. Leading whitespace is valid JSON, so a client that reads the whole
+    body and parses it works unchanged, while one that watches the stream can tell the agent is
+    alive. If the work raises, the stream ends without JSON and the caller counts a failed attempt.
+
+    The whole word "fail" in the task, ignoring case, returns an answer of None. Feedback does
+    not affect the answer.
+    """
+    return StreamingResponse(_stream(body), media_type="application/json")

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
-// Runs against the live API and the fake agent, with AGENT_SOLVE_SECONDS=0 so it answers at once.
+// Runs against the live API and the fake agent, which takes 10 seconds per round: see the timeouts in
+// playwright.config.ts. Tests run in parallel, so each must stay within its own jobs.
 // Every test sends its own task, so jobs already in the database do not matter.
 
 /** Send a task from /new and wait for its result page. Returns the job's URL. */
@@ -242,8 +243,10 @@ test.describe('signed in', () => {
       await expect(page.getByText('Revised answer, round 3.')).toBeVisible()
 
       release()
-      await expect(page.getByLabel('Something off? Push back')).toHaveValue('')
       await expect(page.getByText('Revised answer, round 3.')).toBeVisible()
+      // The job only shows round 3's feedback, so this tab cannot tell whether its own round 2
+      // succeeded or failed and was replaced. It keeps the text rather than risk losing it.
+      await expect(page.getByLabel('Something off? Push back')).toHaveValue('More detail')
     })
 
     test('a slow read does not bring back the old round', async ({ page }) => {

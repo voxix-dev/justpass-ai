@@ -22,8 +22,6 @@ services:
       dockerfile: apps/agent/Dockerfile
     sysctls:
       net.ipv4.ip_unprivileged_port_start: 0  # the image serves on :80 as a non-root user
-    environment:
-      AGENT_SOLVE_SECONDS: ${AGENT_SOLVE_SECONDS:-10}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost/readyz')"]
       interval: 2s

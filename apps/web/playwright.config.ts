@@ -7,6 +7,12 @@ const CI = !!process.env.CI
 
 export default defineConfig({
   testDir: 'e2e',
+  // The fake agent takes 10 s per round, so a test that waits for a round or two needs patience.
+  // Tests make their own jobs and share no state, so they can run side by side.
+  fullyParallel: true,
+  workers: 4,
+  timeout: 90_000,
+  expect: { timeout: 25_000 },
   retries: CI ? 1 : 0,
   reporter: CI ? [['list'], ['github']] : 'list',
   use: { baseURL: 'http://localhost:5173', trace: 'on-first-retry' },

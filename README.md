@@ -43,7 +43,7 @@ Or run the API and the agent in containers (migrates on start, then serves on :8
 Ports taken? `API_PORT` moves the API for both compose and the web app's `pnpm dev`. `DB_PORT` moves
 Postgres; change the port in `.env` too.
 
-The agent is a fake for now: it waits 10 seconds (`AGENT_SOLVE_SECONDS`) and sends back a fixed
+The agent is a fake for now: it waits 10 seconds and sends back a fixed
 answer. A task with the word "fail" fails.
 
 Web app: [apps/web/README.md](apps/web/README.md). Local Substrate cluster:

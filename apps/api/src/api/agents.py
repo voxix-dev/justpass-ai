@@ -20,8 +20,13 @@ from google.protobuf.message import Message
 from api import ate_pb2
 from shared.agent_run import AgentAnswer, AgentRun
 
-SOLVE_TIMEOUT = 120.0  # covers waking the actor; retune with the real agent
 CONTROL_TIMEOUT = 30.0
+# A run has no overall limit, because a real agent takes as long as it takes. Instead /run writes a
+# byte every few seconds while it works, and no byte for IDLE_TIMEOUT seconds means it is dead. The
+# same wait covers the router waking a suspended actor before the first byte.
+IDLE_TIMEOUT = 60.0
+# httpx's read timeout is the gap between bytes, not the whole reply.
+RUN_TIMEOUT = httpx2.Timeout(CONTROL_TIMEOUT, read=IDLE_TIMEOUT)
 BUSY_WAIT = 60.0  # how long a job waits for a free worker before it counts as a failure
 BUSY_RETRY_DELAY = 2.0
 
@@ -46,7 +51,12 @@ class Agents(Protocol):
 async def _post_run(
     client: httpx2.AsyncClient, url: str, run: AgentRun, headers: dict[str, str] | None = None
 ) -> AgentAnswer:
-    """Post a round and validate the reply, propagating HTTP, transport, and validation errors."""
+    """Post a round and validate the reply, propagating HTTP, transport, and validation errors.
+
+    The agent's reply starts with heartbeat newlines, which JSON allows before its value. If the
+    agent fails mid-run the stream ends without an answer: that is a transport or validation error
+    here, which the dispatcher counts as a failed attempt.
+    """
     response = await client.post(
         f"{url}/run",
         content=run.model_dump_json(),
@@ -64,7 +74,7 @@ class SingleAgent:
     transport: httpx2.AsyncBaseTransport | None = None  # tests only
 
     async def solve(self, run: AgentRun) -> AgentAnswer:
-        async with httpx2.AsyncClient(timeout=SOLVE_TIMEOUT, transport=self.transport) as client:
+        async with httpx2.AsyncClient(timeout=RUN_TIMEOUT, transport=self.transport) as client:
             return await _post_run(client, self.url, run)
 
     async def hibernate(self, job_id: uuid.UUID) -> None:
@@ -181,7 +191,7 @@ def _substrate_from_env(router_url: str) -> SubstrateAgents:
     def router() -> httpx2.AsyncClient:
         tls = ssl.create_default_context(cafile=ca_file)
         tls.load_cert_chain(client_cert)
-        return httpx2.AsyncClient(verify=tls, timeout=SOLVE_TIMEOUT)
+        return httpx2.AsyncClient(verify=tls, timeout=RUN_TIMEOUT)
 
     return SubstrateAgents(
         control=Control(open_channel, Path(os.environ["ATE_TOKEN_FILE"])),
