@@ -17,6 +17,8 @@ change, and update it when your PR changes a design decision.
 - Never call a paid model in tests. Use recorded responses.
 - Never commit secrets. Put them in `.env` (git-ignored); `.env.example` lists the names.
 - Add dependencies to the package that uses them: `uv add --package api <pkg>`. No new dependency without a reason.
+- Until production exists, change the existing migrations instead of adding new ones. Reset your local database
+  after pulling such a change: `docker compose down -v`, then start it again.
 
 ## Pull requests
 - One PR is one feature or one fix. Keep it small. Avoid big PRs.
