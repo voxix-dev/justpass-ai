@@ -1,6 +1,6 @@
 # ActorTemplate for the agent (protojson ateapipb.ActorTemplate, created through the ate API with
 # `kubectl ate create actor-template -f -`, not a Kubernetes resource). deploy/local/deploy.sh fills
-# in the ${...} placeholders. Templates are immutable, so every image gets a template of its own.
+# in the ${...} placeholders. Templates are immutable, so every change gets a template of its own.
 metadata:
   atespace: justpass-agents
   name: ${ATE_TEMPLATE}

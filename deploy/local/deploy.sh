@@ -32,12 +32,14 @@ publish() {
 }
 
 AGENT_IMAGE=$(publish justpass-agent apps/agent/Dockerfile)
-ATE_TEMPLATE=agent-${AGENT_IMAGE: -12} # templates are immutable: one per image
 worker_digest=$(digest ateworker-gvisor latest)
 [[ -n $worker_digest ]] || { echo "No ateworker-gvisor in $registry" >&2; exit 1; }
 ATEWORKER_GVISOR_IMAGE=$registry/ateworker-gvisor@$worker_digest
 source deploy/substrate/agent-size.sh
-export AGENT_IMAGE ATE_TEMPLATE ATEWORKER_GVISOR_IMAGE
+export AGENT_IMAGE ATEWORKER_GVISOR_IMAGE
+# Templates are immutable, so the name comes from everything in one: image, size and settings.
+ATE_TEMPLATE=agent-$(ATE_TEMPLATE='' envsubst < deploy/substrate/agent-template.yaml | sha256sum | cut -c1-12)
+export ATE_TEMPLATE
 
 envsubst < deploy/substrate/agent-pool.yaml | kubectl apply -f -
 kubectl -n justpass-agents wait --for=create deploy/agent --timeout=60s # the controller makes it
