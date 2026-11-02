@@ -8,7 +8,7 @@ change, and update it when your PR changes a design decision.
 - `apps/agent/` the agent: the HTTP server inside a Substrate actor (fake for now).
 - `apps/web/` frontend. Talks to the API only through `contracts/openapi.json`.
 - `packages/shared/` Pydantic models used by both api and agent.
-- `deploy/` local cluster, k8s and Substrate manifests. `evals/` homework samples and scoring.
+- `deploy/` local cluster and Substrate manifests. `evals/` homework samples and scoring.
 
 ## Rules
 - Every boundary (HTTP, agent tool input/output, DB row) uses a Pydantic model. Shared ones live in `packages/shared`.

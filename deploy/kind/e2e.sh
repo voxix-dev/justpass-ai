@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
-# Sends jobs through the API on the local cluster and checks each job's actor along the way.
+# Sends jobs through the local API to the cluster's actors, and checks each actor along the way.
 # Run deploy.sh first. Needs kubectl ate, curl and jq.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 source deploy/kind/env.sh
 
-port=${E2E_PORT:-18000}
-api=http://localhost:$port
-kubectl -n homework port-forward svc/api "$port:80" > /dev/null &
-forward=$!
-trap 'kill "$forward"' EXIT
+api=http://localhost:${API_PORT:-8000}
 fail() { echo "FAILED: $*" >&2; exit 1; }
 for _ in {1..60}; do
   curl -fs "$api/ready" > /dev/null && break
-  kill -0 "$forward" 2> /dev/null || fail "port-forward to the API died"
   sleep 0.5
 done
 post() { curl -fsS -X POST "$api$1" -H 'content-type: application/json' -d "$2"; }

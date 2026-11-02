@@ -83,8 +83,9 @@ function JobDetail({ job }: { job: Job }) {
   const [waited, setWaited] = useState(pending)
   if (pending && !waited) setWaited(true)
   // Here, not in Actions: Actions is gone while a revision runs, and the text must survive that.
-  const [note, setNote] = useState('')
-  const [revising, setRevising] = useState<number | null>(null)
+  // A reload during a revision starts here too, so it picks the revision up from the job.
+  const [note, setNote] = useState(pending ? (job.feedback ?? '') : '')
+  const [revising, setRevising] = useState<number | null>(pending && job.round > 1 ? job.round : null)
   const [revisionFailed, setRevisionFailed] = useState(false)
 
   // A revision that fails drops its round, so the job comes back on the answer it had.

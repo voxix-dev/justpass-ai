@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Builds the API and the agent and runs them on the local Substrate cluster. Safe to run again.
-# Needs the cluster up, kubectl ate, envsubst, and CONTAINER_TOOL (default docker; set it to podman
-# in env.local.sh for rootless podman).
+# Builds the agent and runs it on the local Substrate cluster, and the API next to the cluster in a
+# container, as production has it on Cloud Run. Safe to run again.
+# Needs the cluster up, kubectl ate, envsubst, openssl, and CONTAINER_TOOL (default docker; set it to
+# podman in env.local.sh for rootless podman).
 set -euo pipefail
 shopt -s inherit_errexit # stop on failures inside $(...) too
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -30,13 +31,12 @@ publish() {
   echo "$registry/$1@$pinned"
 }
 
-API_IMAGE=$(publish justpass-api apps/api/Dockerfile)
 AGENT_IMAGE=$(publish justpass-agent apps/agent/Dockerfile)
 ATE_TEMPLATE=agent-${AGENT_IMAGE: -12} # templates are immutable: one per image
 worker_digest=$(digest ateworker-gvisor latest)
 [[ -n $worker_digest ]] || { echo "No ateworker-gvisor in $registry" >&2; exit 1; }
 ATEWORKER_GVISOR_IMAGE=$registry/ateworker-gvisor@$worker_digest
-export API_IMAGE AGENT_IMAGE ATE_TEMPLATE ATEWORKER_GVISOR_IMAGE
+export AGENT_IMAGE ATE_TEMPLATE ATEWORKER_GVISOR_IMAGE
 
 envsubst < deploy/substrate/agent-pool.yaml | kubectl apply -f -
 kubectl -n justpass-agents wait --for=create deploy/agent --timeout=60s # the controller makes it
@@ -60,6 +60,18 @@ for _ in {1..120}; do
 done
 [[ -n ${tag:-} ]] || { echo "No golden snapshot for $ATE_TEMPLATE" >&2; exit 1; }
 
-envsubst < deploy/kind/api.yaml | kubectl apply -f -
-kubectl -n homework rollout status deploy/db --timeout=120s
-kubectl -n homework rollout status deploy/api --timeout=120s
+deploy/kind/identity.sh
+
+# Exits at once if the port-forwards already run. setsid: they outlive this script.
+log=deploy/kind/.identity/forward.log
+setsid deploy/kind/forward.sh >> "$log" 2>&1 < /dev/null &
+for port in "$ATE_API_PORT" "$ATE_ROUTER_PORT"; do
+  for _ in {1..60}; do
+    if (: < "/dev/tcp/127.0.0.1/$port") 2> /dev/null; then continue 2; fi
+    sleep 0.5
+  done
+  echo "Nothing listens on 127.0.0.1:$port, see $log" >&2
+  exit 1
+done
+
+"$tool" compose -f compose.yaml -f deploy/kind/compose.yaml up -d --build --wait api
