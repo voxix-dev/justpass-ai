@@ -86,8 +86,8 @@ function JobDetail({ job }: { job: Job }) {
   const [note, setNote] = useState('')
   const [revising, setRevising] = useState<number | null>(null)
   const [revisionFailed, setRevisionFailed] = useState(false)
-  // Whether the note is the revision's text. If not, it's an unsent draft, which is not ours to clear.
-  const [noteSent, setNoteSent] = useState(false)
+  // The revision's text. A note that differs is an unsent draft, which is not ours to clear.
+  const [sentNote, setSentNote] = useState<string | null>(null)
 
   // The job says when a revision runs, whoever sent it: this page, another tab, or a page reloaded.
   if (pending && job.round > 1 && revising !== job.round) {
@@ -95,15 +95,15 @@ function JobDetail({ job }: { job: Job }) {
     setRevisionFailed(false)
     if (!note) {
       setNote(job.feedback ?? '')
-      setNoteSent(true)
+      setSentNote(job.feedback)
     }
   }
   // A revision that fails drops its round, so the job comes back on the answer it had.
   if (revising !== null && !pending) {
     setRevising(null)
-    setNoteSent(false)
+    setSentNote(null)
     if (job.round < revising) setRevisionFailed(true)
-    else if (noteSent) setNote('')
+    else if (note === sentNote) setNote('')
   }
 
   return (
@@ -179,10 +179,10 @@ function JobDetail({ job }: { job: Job }) {
             note={note}
             setNote={setNote}
             revisionFailed={revisionFailed}
-            onRevising={(round) => {
+            onRevising={(round, text) => {
               setRevisionFailed(false)
               setRevising(round)
-              setNoteSent(true)
+              setSentNote(text)
             }}
           />
         )}
@@ -212,7 +212,7 @@ function Actions({ job, note, setNote, revisionFailed, onRevising }: {
   note: string
   setNote: (note: string) => void
   revisionFailed: boolean
-  onRevising: (round: number) => void
+  onRevising: (round: number, text: string) => void
 }) {
   const qc = useQueryClient()
   const [error, setError] = useState('')
@@ -249,9 +249,9 @@ function Actions({ job, note, setNote, revisionFailed, onRevising }: {
   })
   const feedback = useMutation({
     mutationFn: (text: string) => sendFeedback(job.id, job.round, text),
-    onSuccess: async (j) => {
+    onSuccess: async (j, text) => {
       await remember(j)
-      onRevising(j.round) // the note stays until the revised answer is here
+      onRevising(j.round, text) // the note stays until the revised answer is here
     },
     onError: (e) => {
       setError(e.message)

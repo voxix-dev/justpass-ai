@@ -143,6 +143,26 @@ test.describe('signed in', () => {
     await expect(page.getByLabel('Something off? Push back')).toHaveValue('My draft')
   })
 
+  test('text typed while feedback is sending stays', async ({ page }) => {
+    const url = await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
+    await expect(page.getByRole('heading', { name: 'Solution' })).toBeVisible()
+    let release = () => {}
+    const held = new Promise<void>((resolve) => (release = resolve))
+    await page.route('**/feedback', async (route) => {
+      const response = await route.fetch()
+      await held
+      await route.fulfill({ response })
+    })
+    await page.getByLabel('Something off? Push back').fill('Explain step 2')
+    await page.getByRole('button', { name: 'Get a revised answer' }).click()
+    await page.getByLabel('Something off? Push back').fill('And step 3')
+    release()
+
+    await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
+    await expect(page.getByLabel('Something off? Push back')).toHaveValue('And step 3')
+    expect(page.url()).toBe(url)
+  })
+
   test('a lost connection keeps the answer and the typed feedback', async ({ page }) => {
     await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
     await page.getByLabel('Something off? Push back').fill('Keep this text')
