@@ -86,18 +86,24 @@ function JobDetail({ job }: { job: Job }) {
   const [note, setNote] = useState('')
   const [revising, setRevising] = useState<number | null>(null)
   const [revisionFailed, setRevisionFailed] = useState(false)
+  // Whether the note is the revision's text. If not, it's an unsent draft, which is not ours to clear.
+  const [noteSent, setNoteSent] = useState(false)
 
   // The job says when a revision runs, whoever sent it: this page, another tab, or a page reloaded.
   if (pending && job.round > 1 && revising !== job.round) {
     setRevising(job.round)
     setRevisionFailed(false)
-    if (!note) setNote(job.feedback ?? '')
+    if (!note) {
+      setNote(job.feedback ?? '')
+      setNoteSent(true)
+    }
   }
   // A revision that fails drops its round, so the job comes back on the answer it had.
   if (revising !== null && !pending) {
     setRevising(null)
-    if (job.round >= revising) setNote('')
-    else setRevisionFailed(true)
+    setNoteSent(false)
+    if (job.round < revising) setRevisionFailed(true)
+    else if (noteSent) setNote('')
   }
 
   return (
@@ -176,6 +182,7 @@ function JobDetail({ job }: { job: Job }) {
             onRevising={(round) => {
               setRevisionFailed(false)
               setRevising(round)
+              setNoteSent(true)
             }}
           />
         )}

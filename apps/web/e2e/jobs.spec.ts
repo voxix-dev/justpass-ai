@@ -125,6 +125,24 @@ test.describe('signed in', () => {
     })
   }
 
+  test('a revision from another tab leaves an unsent draft alone', async ({ page }) => {
+    const url = await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
+    await expect(page.getByRole('heading', { name: 'Solution' })).toBeVisible()
+    await page.getByLabel('Something off? Push back').fill('My draft')
+    let reads = 0
+    await page.route(url.replace('/jobs/', '/api/jobs/'), async (route) => {
+      const response = await route.fetch()
+      const job = await response.json()
+      const revised = { ...job, round: 2, feedback: 'From another tab' }
+      const running = { ...revised, status: 'running', result: null }
+      await route.fulfill({ response, json: reads++ ? revised : running })
+    })
+    await page.evaluate(`window.dispatchEvent(new Event('visibilitychange'))`)
+
+    await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
+    await expect(page.getByLabel('Something off? Push back')).toHaveValue('My draft')
+  })
+
   test('a lost connection keeps the answer and the typed feedback', async ({ page }) => {
     await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
     await page.getByLabel('Something off? Push back').fill('Keep this text')
