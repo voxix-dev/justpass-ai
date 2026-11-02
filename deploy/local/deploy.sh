@@ -6,7 +6,7 @@
 set -euo pipefail
 shopt -s inherit_errexit # stop on failures inside $(...) too
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
-source deploy/kind/env.sh
+source deploy/local/env.sh
 
 registry=localhost:5001
 tool=${CONTAINER_TOOL:-docker}
@@ -36,6 +36,7 @@ ATE_TEMPLATE=agent-${AGENT_IMAGE: -12} # templates are immutable: one per image
 worker_digest=$(digest ateworker-gvisor latest)
 [[ -n $worker_digest ]] || { echo "No ateworker-gvisor in $registry" >&2; exit 1; }
 ATEWORKER_GVISOR_IMAGE=$registry/ateworker-gvisor@$worker_digest
+source deploy/substrate/agent-size.sh
 export AGENT_IMAGE ATE_TEMPLATE ATEWORKER_GVISOR_IMAGE
 
 envsubst < deploy/substrate/agent-pool.yaml | kubectl apply -f -
@@ -60,11 +61,11 @@ for _ in {1..120}; do
 done
 [[ -n ${tag:-} ]] || { echo "No golden snapshot for $ATE_TEMPLATE" >&2; exit 1; }
 
-deploy/kind/identity.sh
+deploy/local/identity.sh
 
 # Exits at once if the port-forwards already run. setsid: they outlive this script.
-log=deploy/kind/.identity/forward.log
-setsid deploy/kind/forward.sh >> "$log" 2>&1 < /dev/null &
+log=deploy/local/.identity/forward.log
+setsid deploy/local/forward.sh >> "$log" 2>&1 < /dev/null &
 for port in "$ATE_API_PORT" "$ATE_ROUTER_PORT"; do
   for _ in {1..60}; do
     if (: < "/dev/tcp/127.0.0.1/$port") 2> /dev/null; then continue 2; fi
@@ -74,4 +75,4 @@ for port in "$ATE_API_PORT" "$ATE_ROUTER_PORT"; do
   exit 1
 done
 
-"$tool" compose -f compose.yaml -f deploy/kind/compose.yaml up -d --build --wait api
+"$tool" compose -f compose.yaml -f deploy/local/compose.yaml up -d --build --wait api

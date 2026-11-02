@@ -3,7 +3,7 @@
 # Run deploy.sh first. Needs kubectl ate, curl and jq.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
-source deploy/kind/env.sh
+source deploy/local/env.sh
 
 api=http://localhost:${API_PORT:-8000}
 fail() { echo "FAILED: $*" >&2; exit 1; }

@@ -3,17 +3,17 @@
 # reach the LAN. A port-forward ends when its pod or connection goes, so each one restarts in a loop.
 # Ports: ATE_API_PORT and ATE_ROUTER_PORT, see env.sh.
 # deploy.sh starts this in the background. Only one copy runs: another start exits at once.
-# To stop it: kill "$(cat deploy/kind/.identity/forward.pid)"
+# To stop it: kill "$(cat deploy/local/.identity/forward.pid)"
 set -euo pipefail
 shopt -s inherit_errexit # stop on failures inside $(...) too
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
-source deploy/kind/env.sh
+source deploy/local/env.sh
 
 # Stopping sends a signal to the whole process group, so this script must lead its own.
 [[ $(ps -o pgid= -p $$ | tr -d ' ') == "$$" ]] || exec setsid "$0" "$@"
 
-install -d -m 700 deploy/kind/.identity
-pid_file=deploy/kind/.identity/forward.pid
+install -d -m 700 deploy/local/.identity
+pid_file=deploy/local/.identity/forward.pid
 exec 9>> "$pid_file" # holding this lock is what "running" means, so a stale pid can't fool it
 flock -n 9 || { echo "Already running as pid $(< "$pid_file")"; exit 0; }
 echo $$ > "$pid_file"

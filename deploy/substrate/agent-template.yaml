@@ -1,5 +1,5 @@
 # ActorTemplate for the agent (protojson ateapipb.ActorTemplate, created through the ate API with
-# `kubectl ate create actor-template -f -`, not a Kubernetes resource). deploy/kind/deploy.sh fills
+# `kubectl ate create actor-template -f -`, not a Kubernetes resource). deploy/local/deploy.sh fills
 # in the ${...} placeholders. Templates are immutable, so every image gets a template of its own.
 metadata:
   atespace: justpass-agents
@@ -16,8 +16,8 @@ containers:
       port: 80
 resources:
   limits:
-    cpuMillicores: 1000
-    memoryBytes: 536870912 # 512Mi
+    cpuMillicores: ${AGENT_CPU_MILLICORES}
+    memoryBytes: ${AGENT_MEMORY_BYTES}
 snapshotConfig:
   # MEMORY: a suspend keeps the running process, so a job's conversation comes back for its feedback
   # rounds without code to save it. Postgres stays the source of truth.

@@ -19,11 +19,11 @@ spec:
   sandboxClasses:
   - name: gvisor
   template:
-    # Sizes the worker pod. The sandbox itself is sized by the template's resources.
+    # Sizes the worker pod; see agent-size.sh.
     resources:
       limits:
-        cpu: "1"
-        memory: 1Gi
+        cpu: ${AGENT_CPU_MILLICORES}m
+        memory: ${WORKER_MEMORY_MIB}Mi
       requests:
-        cpu: 250m
-        memory: 1Gi
+        cpu: ${WORKER_CPU_REQUEST_MILLICORES}m
+        memory: ${WORKER_MEMORY_MIB}Mi

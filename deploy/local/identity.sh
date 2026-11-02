@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Gives the API on this machine the identity it would have in the cluster, with no pod: keeps the
-# namespace and service account, and writes these files to deploy/kind/.identity/mounted/ (git-ignored):
+# namespace and service account, and writes these files to deploy/local/.identity/mounted/ (git-ignored):
 #   trust-bundle.pem       CA that signs the router's and ate-api's serving certificates
 #   credential-bundle.pem  private key and client certificate for the router's mTLS
 #   token                  service account token for ate-api
@@ -10,12 +10,12 @@
 set -euo pipefail
 shopt -s inherit_errexit # stop on failures inside $(...) too
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
-source deploy/kind/env.sh
+source deploy/local/env.sh
 
 namespace=homework
 service_account=api
 audience=api.ate-system.svc
-dir=deploy/kind/.identity/mounted
+dir=deploy/local/.identity/mounted
 
 fail() { echo "FAILED: $*" >&2; exit 1; }
 
@@ -94,7 +94,7 @@ chain=$(issue_certificate <<< "$key")
 # Rootless podman runs the image's uid 10001 as an unrelated host uid, which is "other" to these files:
 # with 0600 the container could not read them, so they are world-readable. The private parent keeps
 # other host users out, and the bind mount of the subdirectory doesn't need to pass through it.
-install -d -m 700 deploy/kind/.identity
+install -d -m 700 deploy/local/.identity
 install -d -m 755 "$dir"
 publish trust-bundle.pem <<< "$ca"
 publish token <<< "$token"
