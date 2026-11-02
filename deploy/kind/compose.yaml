@@ -1,6 +1,8 @@
 # Points the API from the root compose.yaml at the local Substrate cluster, instead of its one agent:
-#   podman compose -f compose.yaml -f deploy/kind/compose.yaml up -d --build api
+#   podman compose -f compose.yaml -f deploy/kind/compose.yaml up -d --build --wait api
 # deploy.sh does this, after identity.sh and forward.sh. Relative paths start at the repo root.
+# Every compose command with this file needs ATE_TEMPLATE, which deploy.sh sets. Any value will do for
+# `logs` or `down`.
 services:
   api:
     # Host network to reach the port-forwards, which listen on 127.0.0.1 only, and the published Postgres.

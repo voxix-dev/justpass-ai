@@ -9,6 +9,9 @@ shopt -s inherit_errexit # stop on failures inside $(...) too
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 source deploy/kind/env.sh
 
+# Stopping sends a signal to the whole process group, so this script must lead its own.
+[[ $(ps -o pgid= -p $$ | tr -d ' ') == "$$" ]] || exec setsid "$0" "$@"
+
 install -d -m 700 deploy/kind/.identity
 pid_file=deploy/kind/.identity/forward.pid
 exec 9>> "$pid_file" # holding this lock is what "running" means, so a stale pid can't fool it
@@ -24,7 +27,8 @@ forward() { # service, local port
   done
 }
 
-trap 'trap - TERM; kill 0' TERM # also stops the loops and their kubectl: deploy.sh gives us our own group
+# Also stops the loops and their kubectl, which would otherwise ignore Ctrl-C and keep the lock.
+trap 'trap - INT TERM; kill 0' INT TERM
 forward api "$ATE_API_PORT" &
 forward atenet-router "$ATE_ROUTER_PORT" &
 wait

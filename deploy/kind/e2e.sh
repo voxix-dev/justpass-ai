@@ -7,8 +7,9 @@ source deploy/kind/env.sh
 
 api=http://localhost:${API_PORT:-8000}
 fail() { echo "FAILED: $*" >&2; exit 1; }
-for _ in {1..60}; do
+for attempt in {1..60}; do
   curl -fs "$api/ready" > /dev/null && break
+  ((attempt < 60)) || fail "no API on $api: run deploy.sh, and set API_PORT if it moved"
   sleep 0.5
 done
 post() { curl -fsS -X POST "$api$1" -H 'content-type: application/json' -d "$2"; }
