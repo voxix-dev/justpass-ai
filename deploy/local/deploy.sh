@@ -35,14 +35,20 @@ AGENT_IMAGE=$(publish justpass-agent apps/agent/Dockerfile)
 worker_digest=$(digest ateworker-gvisor latest)
 [[ -n $worker_digest ]] || { echo "No ateworker-gvisor in $registry" >&2; exit 1; }
 ATEWORKER_GVISOR_IMAGE=$registry/ateworker-gvisor@$worker_digest
-# Prints one value of the agent-size ConfigMap, the only place that sizes an agent.
+# Prints one value of the agent-size ConfigMap, the only place that sizes an agent. Stops the
+# deploy unless it is a whole number, so a missing key can't become an empty limit.
 size() {
-  kubectl create --dry-run=client -f deploy/substrate/agent-size.yaml -o "jsonpath={.data.$1}"
+  local value
+  value=$(kubectl create --dry-run=client -f deploy/substrate/agent-size.yaml -o "jsonpath={.data.$1}")
+  [[ $value =~ ^[0-9]+$ ]] || { echo "agent-size.yaml: $1 is '$value', not a number" >&2; exit 1; }
+  echo "$value"
 }
 AGENT_CPU_MILLICORES=$(size cpuMillicores)
-AGENT_MEMORY_BYTES=$(($(size memoryMiB) * 1024 * 1024))
-WORKER_MEMORY_MIB=$(($(size memoryMiB) + $(size workerOverheadMiB)))
+memory_mib=$(size memoryMiB)
+overhead_mib=$(size workerOverheadMiB)
 WORKER_CPU_REQUEST_MILLICORES=$(size workerCpuRequestMillicores)
+AGENT_MEMORY_BYTES=$((memory_mib * 1024 * 1024))
+WORKER_MEMORY_MIB=$((memory_mib + overhead_mib))
 export AGENT_IMAGE ATEWORKER_GVISOR_IMAGE AGENT_CPU_MILLICORES AGENT_MEMORY_BYTES WORKER_MEMORY_MIB \
   WORKER_CPU_REQUEST_MILLICORES
 # Templates are immutable, so the name comes from everything in one: image, size and settings.
