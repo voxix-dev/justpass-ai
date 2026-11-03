@@ -19,7 +19,7 @@ spec:
   sandboxClasses:
   - name: gvisor
   template:
-    # Sizes the worker pod; see agent-size.sh.
+    # Sizes the worker pod; see agent-size.yaml.
     resources:
       limits:
         cpu: ${AGENT_CPU_MILLICORES}m

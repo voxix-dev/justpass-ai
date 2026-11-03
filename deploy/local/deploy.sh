@@ -35,13 +35,22 @@ AGENT_IMAGE=$(publish justpass-agent apps/agent/Dockerfile)
 worker_digest=$(digest ateworker-gvisor latest)
 [[ -n $worker_digest ]] || { echo "No ateworker-gvisor in $registry" >&2; exit 1; }
 ATEWORKER_GVISOR_IMAGE=$registry/ateworker-gvisor@$worker_digest
-source deploy/substrate/agent-size.sh
-export AGENT_IMAGE ATEWORKER_GVISOR_IMAGE
+# Prints one value of the agent-size ConfigMap, the only place that sizes an agent.
+size() {
+  kubectl create --dry-run=client -f deploy/substrate/agent-size.yaml -o "jsonpath={.data.$1}"
+}
+AGENT_CPU_MILLICORES=$(size cpuMillicores)
+AGENT_MEMORY_BYTES=$(($(size memoryMiB) * 1024 * 1024))
+WORKER_MEMORY_MIB=$(($(size memoryMiB) + $(size workerOverheadMiB)))
+WORKER_CPU_REQUEST_MILLICORES=$(size workerCpuRequestMillicores)
+export AGENT_IMAGE ATEWORKER_GVISOR_IMAGE AGENT_CPU_MILLICORES AGENT_MEMORY_BYTES WORKER_MEMORY_MIB \
+  WORKER_CPU_REQUEST_MILLICORES
 # Templates are immutable, so the name comes from everything in one: image, size and settings.
 ATE_TEMPLATE=agent-$(ATE_TEMPLATE='' envsubst < deploy/substrate/agent-template.yaml | sha256sum | cut -c1-12)
 export ATE_TEMPLATE
 
 envsubst < deploy/substrate/agent-pool.yaml | kubectl apply -f -
+kubectl apply -f deploy/substrate/agent-size.yaml # so the cluster shows the size too
 kubectl -n justpass-agents wait --for=create deploy/agent --timeout=60s # the controller makes it
 kubectl -n justpass-agents rollout status deploy/agent --timeout=180s
 
