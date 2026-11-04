@@ -12,6 +12,7 @@ dependencies = [
     "protobuf>=7.36.2",
     "pydantic>=2.7",
     "pyjwt[crypto]>=2.15",
+    "pyyaml>=6.0.3",
     "shared",
     "sqlalchemy[asyncio]>=2.1.6,<2.2",
     "starlette>=1.9.0",

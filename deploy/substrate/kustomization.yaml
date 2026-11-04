@@ -1,0 +1,6 @@
+# Base for the agent worker pool: `kubectl apply -k deploy/<target>`, where the target's overlay sets
+# the worker image (deploy/local for the kind cluster).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- agent-pool.yaml

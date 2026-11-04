@@ -1,5 +1,5 @@
 # Worker pool for agent actors: one gVisor worker per running job. The actor template is not a
-# Kubernetes resource; see agent-template.yaml.
+# Kubernetes resource; see agents.yaml, whose sandbox size must fit inside this worker.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -15,15 +15,16 @@ metadata:
 spec:
   # One worker per job running at the same time, plus one for building the golden snapshot.
   replicas: 2
-  workerImage: ${ATEWORKER_GVISOR_IMAGE}
+  # An overlay points this at the registry that holds the worker image, see deploy/local.
+  workerImage: ateworker-gvisor:latest
   sandboxClasses:
   - name: gvisor
   template:
-    # Sizes the worker pod; see agent-size.yaml.
+    # The worker is the sandbox (1 CPU, 512Mi in agents.yaml) plus gVisor and the worker itself.
     resources:
       limits:
-        cpu: ${AGENT_CPU_MILLICORES}m
-        memory: ${WORKER_MEMORY_MIB}Mi
+        cpu: 1000m
+        memory: 1Gi
       requests:
-        cpu: ${WORKER_CPU_REQUEST_MILLICORES}m
-        memory: ${WORKER_MEMORY_MIB}Mi
+        cpu: 250m
+        memory: 1Gi

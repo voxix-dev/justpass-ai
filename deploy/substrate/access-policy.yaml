@@ -1,8 +1,0 @@
-# Lets the API create, suspend and delete actors in this atespace, and nothing outside it:
-#   kubectl ate create access-policy -a justpass-agents -f access-policy.yaml
-metadata:
-  name: default
-bindings:
-- role: editor
-  members:
-  - user:system:serviceaccount:homework:api

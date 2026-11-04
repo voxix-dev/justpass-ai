@@ -1,0 +1,15 @@
+# The kind cluster's worker pool: the base plus the worker image from the local registry
+# (`kubectl apply -k deploy/local`, which deploy.sh runs). A tag is enough: Substrate checks the
+# workerImage only for being non-empty, and the kubelet pulls a :latest tag every time.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../substrate
+patches:
+- target:
+    kind: WorkerPool
+    name: agent
+  patch: |-
+    - op: replace
+      path: /spec/workerImage
+      value: localhost:5001/ateworker-gvisor:latest

@@ -1,5 +1,5 @@
 // The part of Substrate's Control API (pkg/proto/ateapipb/ateapi.proto in the Substrate repo) that
-// the dispatcher calls. Field numbers match upstream; everything else is left out.
+// this repo calls. Field numbers and names match upstream; everything else is left out.
 //
 // After changing this file, from the repo root:
 //   uv run --no-project --python 3.14 --with grpcio-tools==1.85.1 python -m grpc_tools.protoc \
@@ -17,6 +17,8 @@ message ObjectRef {
 message ResourceMetadata {
   string atespace = 1;
   string name = 2;
+  string uid = 3;
+  int64 version = 4;
 }
 
 message Actor {
@@ -34,4 +36,104 @@ message SuspendActorRequest {
 
 message DeleteActorRequest {
   ObjectRef actor = 1;
+}
+
+message Atespace {
+  ResourceMetadata metadata = 1;
+}
+
+message CreateAtespaceRequest {
+  Atespace atespace = 1;
+}
+
+// SnapshotFidelity orders the state layers a snapshot can hold, lowest to highest.
+enum SnapshotFidelity {
+  SNAPSHOT_FIDELITY_UNSPECIFIED = 0;
+  SNAPSHOT_FIDELITY_VOLUMES = 1;
+  SNAPSHOT_FIDELITY_ROOTFS = 2;
+  SNAPSHOT_FIDELITY_MEMORY = 3;
+}
+
+message Selector {
+  map<string, string> match_labels = 1;
+}
+
+message HttpGetAction {
+  string path = 1;
+  int32 port = 2;
+}
+
+message WakeupProbe {
+  HttpGetAction http_get = 1;
+  int32 timeout_seconds = 2;
+}
+
+message Container {
+  string name = 1;
+  string image = 2;
+  WakeupProbe wakeup_probe = 6;
+}
+
+message Resources {
+  int64 cpu_millicores = 1;
+  int64 memory_bytes = 2;
+}
+
+message ResourceRequirements {
+  Resources limits = 1;
+}
+
+message SnapshotConfig {
+  SnapshotFidelity preferred_fidelity = 2;
+}
+
+message GoldenSnapshotStatus {
+  ObjectRef golden_tag = 1;
+  string error_message = 3;
+}
+
+message ActorTemplateStatus {
+  GoldenSnapshotStatus golden_snapshot_status = 1;
+}
+
+message ActorTemplate {
+  ResourceMetadata metadata = 1;
+  Selector worker_selector = 2;
+  repeated Container containers = 3;
+  SnapshotConfig snapshot_config = 5;
+  ResourceRequirements resources = 6;
+  ActorTemplateStatus status = 7;
+}
+
+message CreateActorTemplateRequest {
+  ActorTemplate actor_template = 1;
+}
+
+message GetActorTemplateRequest {
+  ObjectRef actor_template = 1;
+}
+
+message AccessPolicy {
+  ResourceMetadata metadata = 1;
+  repeated Binding bindings = 2;
+}
+
+message Binding {
+  string role = 1;
+  repeated string members = 2;
+}
+
+message GetAtespaceAccessPolicyRequest {
+  ObjectRef atespace = 1;
+  string name = 2;
+}
+
+message CreateAtespaceAccessPolicyRequest {
+  ObjectRef atespace = 1;
+  AccessPolicy access_policy = 2;
+}
+
+message UpdateAtespaceAccessPolicyRequest {
+  ObjectRef atespace = 1;
+  AccessPolicy access_policy = 2;
 }

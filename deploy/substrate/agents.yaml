@@ -1,0 +1,35 @@
+# What the ate-api holds for the agents: the atespace, who may use it, and the actor template. These
+# are not Kubernetes resources (the worker pool is: see agent-pool.yaml), so `kubectl apply` can't
+# create them. Create them with:
+#   uv run python -m api.substrate_sync deploy/substrate/agents.yaml \
+#     --agent-image <image@sha256:...>
+# The command adds what is missing, names the template after this file plus the image, and prints
+# that name. Templates are immutable, so every change gets a template of its own.
+atespace: justpass-agents
+
+# Lets the API create, suspend and delete actors in this atespace, and nothing outside it.
+accessPolicy:
+  bindings:
+  - role: editor
+    members:
+    - user:system:serviceaccount:homework:api
+
+template:
+  workerSelector:
+    matchLabels:
+      workload: justpass-agent
+  container:
+    name: agent
+    wakeupProbe:
+      httpGet:
+        path: /readyz
+        port: 80
+  # What the sandbox may use. Must fit inside the worker in agent-pool.yaml: a test checks it.
+  resources:
+    limits:
+      cpuMillicores: 1000
+      memoryBytes: 536870912 # 512Mi
+  snapshotConfig:
+    # MEMORY: a suspend keeps the running process, so a job's conversation comes back for its feedback
+    # rounds without code to save it. Postgres stays the source of truth.
+    preferredFidelity: SNAPSHOT_FIDELITY_MEMORY

@@ -24,23 +24,67 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\tate.proto\x12\x06\x61teapi\"+\n\tObjectRef\x12\x10\n\x08\x61tespace\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\"2\n\x10ResourceMetadata\x12\x10\n\x08\x61tespace\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\"^\n\x05\x41\x63tor\x12*\n\x08metadata\x18\x01 \x01(\x0b\x32\x18.ateapi.ResourceMetadata\x12)\n\x0e\x61\x63tor_template\x18\x02 \x01(\x0b\x32\x11.ateapi.ObjectRef\"2\n\x12\x43reateActorRequest\x12\x1c\n\x05\x61\x63tor\x18\x01 \x01(\x0b\x32\r.ateapi.Actor\"7\n\x13SuspendActorRequest\x12 \n\x05\x61\x63tor\x18\x01 \x01(\x0b\x32\x11.ateapi.ObjectRef\"6\n\x12\x44\x65leteActorRequest\x12 \n\x05\x61\x63tor\x18\x01 \x01(\x0b\x32\x11.ateapi.ObjectRefb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\tate.proto\x12\x06\x61teapi\"+\n\tObjectRef\x12\x10\n\x08\x61tespace\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\"P\n\x10ResourceMetadata\x12\x10\n\x08\x61tespace\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\x12\x0b\n\x03uid\x18\x03 \x01(\t\x12\x0f\n\x07version\x18\x04 \x01(\x03\"^\n\x05\x41\x63tor\x12*\n\x08metadata\x18\x01 \x01(\x0b\x32\x18.ateapi.ResourceMetadata\x12)\n\x0e\x61\x63tor_template\x18\x02 \x01(\x0b\x32\x11.ateapi.ObjectRef\"2\n\x12\x43reateActorRequest\x12\x1c\n\x05\x61\x63tor\x18\x01 \x01(\x0b\x32\r.ateapi.Actor\"7\n\x13SuspendActorRequest\x12 \n\x05\x61\x63tor\x18\x01 \x01(\x0b\x32\x11.ateapi.ObjectRef\"6\n\x12\x44\x65leteActorRequest\x12 \n\x05\x61\x63tor\x18\x01 \x01(\x0b\x32\x11.ateapi.ObjectRef\"6\n\x08\x41tespace\x12*\n\x08metadata\x18\x01 \x01(\x0b\x32\x18.ateapi.ResourceMetadata\";\n\x15\x43reateAtespaceRequest\x12\"\n\x08\x61tespace\x18\x01 \x01(\x0b\x32\x10.ateapi.Atespace\"w\n\x08Selector\x12\x37\n\x0cmatch_labels\x18\x01 \x03(\x0b\x32!.ateapi.Selector.MatchLabelsEntry\x1a\x32\n\x10MatchLabelsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"+\n\rHttpGetAction\x12\x0c\n\x04path\x18\x01 \x01(\t\x12\x0c\n\x04port\x18\x02 \x01(\x05\"O\n\x0bWakeupProbe\x12\'\n\x08http_get\x18\x01 \x01(\x0b\x32\x15.ateapi.HttpGetAction\x12\x17\n\x0ftimeout_seconds\x18\x02 \x01(\x05\"S\n\tContainer\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\r\n\x05image\x18\x02 \x01(\t\x12)\n\x0cwakeup_probe\x18\x06 \x01(\x0b\x32\x13.ateapi.WakeupProbe\"9\n\tResources\x12\x16\n\x0e\x63pu_millicores\x18\x01 \x01(\x03\x12\x14\n\x0cmemory_bytes\x18\x02 \x01(\x03\"9\n\x14ResourceRequirements\x12!\n\x06limits\x18\x01 \x01(\x0b\x32\x11.ateapi.Resources\"F\n\x0eSnapshotConfig\x12\x34\n\x12preferred_fidelity\x18\x02 \x01(\x0e\x32\x18.ateapi.SnapshotFidelity\"T\n\x14GoldenSnapshotStatus\x12%\n\ngolden_tag\x18\x01 \x01(\x0b\x32\x11.ateapi.ObjectRef\x12\x15\n\rerror_message\x18\x03 \x01(\t\"S\n\x13\x41\x63torTemplateStatus\x12<\n\x16golden_snapshot_status\x18\x01 \x01(\x0b\x32\x1c.ateapi.GoldenSnapshotStatus\"\x9c\x02\n\rActorTemplate\x12*\n\x08metadata\x18\x01 \x01(\x0b\x32\x18.ateapi.ResourceMetadata\x12)\n\x0fworker_selector\x18\x02 \x01(\x0b\x32\x10.ateapi.Selector\x12%\n\ncontainers\x18\x03 \x03(\x0b\x32\x11.ateapi.Container\x12/\n\x0fsnapshot_config\x18\x05 \x01(\x0b\x32\x16.ateapi.SnapshotConfig\x12/\n\tresources\x18\x06 \x01(\x0b\x32\x1c.ateapi.ResourceRequirements\x12+\n\x06status\x18\x07 \x01(\x0b\x32\x1b.ateapi.ActorTemplateStatus\"K\n\x1a\x43reateActorTemplateRequest\x12-\n\x0e\x61\x63tor_template\x18\x01 \x01(\x0b\x32\x15.ateapi.ActorTemplate\"D\n\x17GetActorTemplateRequest\x12)\n\x0e\x61\x63tor_template\x18\x01 \x01(\x0b\x32\x11.ateapi.ObjectRef\"]\n\x0c\x41\x63\x63\x65ssPolicy\x12*\n\x08metadata\x18\x01 \x01(\x0b\x32\x18.ateapi.ResourceMetadata\x12!\n\x08\x62indings\x18\x02 \x03(\x0b\x32\x0f.ateapi.Binding\"(\n\x07\x42inding\x12\x0c\n\x04role\x18\x01 \x01(\t\x12\x0f\n\x07members\x18\x02 \x03(\t\"S\n\x1eGetAtespaceAccessPolicyRequest\x12#\n\x08\x61tespace\x18\x01 \x01(\x0b\x32\x11.ateapi.ObjectRef\x12\x0c\n\x04name\x18\x02 \x01(\t\"u\n!CreateAtespaceAccessPolicyRequest\x12#\n\x08\x61tespace\x18\x01 \x01(\x0b\x32\x11.ateapi.ObjectRef\x12+\n\raccess_policy\x18\x02 \x01(\x0b\x32\x14.ateapi.AccessPolicy\"u\n!UpdateAtespaceAccessPolicyRequest\x12#\n\x08\x61tespace\x18\x01 \x01(\x0b\x32\x11.ateapi.ObjectRef\x12+\n\raccess_policy\x18\x02 \x01(\x0b\x32\x14.ateapi.AccessPolicy*\x90\x01\n\x10SnapshotFidelity\x12!\n\x1dSNAPSHOT_FIDELITY_UNSPECIFIED\x10\x00\x12\x1d\n\x19SNAPSHOT_FIDELITY_VOLUMES\x10\x01\x12\x1c\n\x18SNAPSHOT_FIDELITY_ROOTFS\x10\x02\x12\x1c\n\x18SNAPSHOT_FIDELITY_MEMORY\x10\x03\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'ate_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
+  _globals['_SELECTOR_MATCHLABELSENTRY']._loaded_options = None
+  _globals['_SELECTOR_MATCHLABELSENTRY']._serialized_options = b'8\001'
+  _globals['_SNAPSHOTFIDELITY']._serialized_start=2114
+  _globals['_SNAPSHOTFIDELITY']._serialized_end=2258
   _globals['_OBJECTREF']._serialized_start=21
   _globals['_OBJECTREF']._serialized_end=64
   _globals['_RESOURCEMETADATA']._serialized_start=66
-  _globals['_RESOURCEMETADATA']._serialized_end=116
-  _globals['_ACTOR']._serialized_start=118
-  _globals['_ACTOR']._serialized_end=212
-  _globals['_CREATEACTORREQUEST']._serialized_start=214
-  _globals['_CREATEACTORREQUEST']._serialized_end=264
-  _globals['_SUSPENDACTORREQUEST']._serialized_start=266
-  _globals['_SUSPENDACTORREQUEST']._serialized_end=321
-  _globals['_DELETEACTORREQUEST']._serialized_start=323
-  _globals['_DELETEACTORREQUEST']._serialized_end=377
+  _globals['_RESOURCEMETADATA']._serialized_end=146
+  _globals['_ACTOR']._serialized_start=148
+  _globals['_ACTOR']._serialized_end=242
+  _globals['_CREATEACTORREQUEST']._serialized_start=244
+  _globals['_CREATEACTORREQUEST']._serialized_end=294
+  _globals['_SUSPENDACTORREQUEST']._serialized_start=296
+  _globals['_SUSPENDACTORREQUEST']._serialized_end=351
+  _globals['_DELETEACTORREQUEST']._serialized_start=353
+  _globals['_DELETEACTORREQUEST']._serialized_end=407
+  _globals['_ATESPACE']._serialized_start=409
+  _globals['_ATESPACE']._serialized_end=463
+  _globals['_CREATEATESPACEREQUEST']._serialized_start=465
+  _globals['_CREATEATESPACEREQUEST']._serialized_end=524
+  _globals['_SELECTOR']._serialized_start=526
+  _globals['_SELECTOR']._serialized_end=645
+  _globals['_SELECTOR_MATCHLABELSENTRY']._serialized_start=595
+  _globals['_SELECTOR_MATCHLABELSENTRY']._serialized_end=645
+  _globals['_HTTPGETACTION']._serialized_start=647
+  _globals['_HTTPGETACTION']._serialized_end=690
+  _globals['_WAKEUPPROBE']._serialized_start=692
+  _globals['_WAKEUPPROBE']._serialized_end=771
+  _globals['_CONTAINER']._serialized_start=773
+  _globals['_CONTAINER']._serialized_end=856
+  _globals['_RESOURCES']._serialized_start=858
+  _globals['_RESOURCES']._serialized_end=915
+  _globals['_RESOURCEREQUIREMENTS']._serialized_start=917
+  _globals['_RESOURCEREQUIREMENTS']._serialized_end=974
+  _globals['_SNAPSHOTCONFIG']._serialized_start=976
+  _globals['_SNAPSHOTCONFIG']._serialized_end=1046
+  _globals['_GOLDENSNAPSHOTSTATUS']._serialized_start=1048
+  _globals['_GOLDENSNAPSHOTSTATUS']._serialized_end=1132
+  _globals['_ACTORTEMPLATESTATUS']._serialized_start=1134
+  _globals['_ACTORTEMPLATESTATUS']._serialized_end=1217
+  _globals['_ACTORTEMPLATE']._serialized_start=1220
+  _globals['_ACTORTEMPLATE']._serialized_end=1504
+  _globals['_CREATEACTORTEMPLATEREQUEST']._serialized_start=1506
+  _globals['_CREATEACTORTEMPLATEREQUEST']._serialized_end=1581
+  _globals['_GETACTORTEMPLATEREQUEST']._serialized_start=1583
+  _globals['_GETACTORTEMPLATEREQUEST']._serialized_end=1651
+  _globals['_ACCESSPOLICY']._serialized_start=1653
+  _globals['_ACCESSPOLICY']._serialized_end=1746
+  _globals['_BINDING']._serialized_start=1748
+  _globals['_BINDING']._serialized_end=1788
+  _globals['_GETATESPACEACCESSPOLICYREQUEST']._serialized_start=1790
+  _globals['_GETATESPACEACCESSPOLICYREQUEST']._serialized_end=1873
+  _globals['_CREATEATESPACEACCESSPOLICYREQUEST']._serialized_start=1875
+  _globals['_CREATEATESPACEACCESSPOLICYREQUEST']._serialized_end=1992
+  _globals['_UPDATEATESPACEACCESSPOLICYREQUEST']._serialized_start=1994
+  _globals['_UPDATEATESPACEACCESSPOLICYREQUEST']._serialized_end=2111
 # @@protoc_insertion_point(module_scope)

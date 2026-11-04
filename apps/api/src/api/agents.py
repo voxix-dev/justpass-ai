@@ -15,6 +15,7 @@ from typing import Protocol
 
 import grpc
 import httpx2
+from google.protobuf import empty_pb2
 from google.protobuf.message import Message
 
 from api import ate_pb2
@@ -29,6 +30,7 @@ IDLE_TIMEOUT = 60.0
 RUN_TIMEOUT = httpx2.Timeout(CONTROL_TIMEOUT, read=IDLE_TIMEOUT)
 BUSY_WAIT = 60.0  # how long a job waits for a free worker before it counts as a failure
 BUSY_RETRY_DELAY = 2.0
+ACCESS_POLICY_NAME = "default"  # every atespace has one policy, and Substrate fixes its name
 
 
 class Agents(Protocol):
@@ -95,18 +97,22 @@ class Control:
     open_channel: Callable[[], grpc.aio.Channel]
     token_file: Path
 
-    async def _call(self, method: str, request: Message) -> None:
+    async def call[R: Message](self, method: str, request: Message, reply: type[R]) -> R:
         """Call ate-api with the current token; file and gRPC errors propagate."""
         token = self.token_file.read_text().strip()
         async with self.open_channel() as channel:
             call = channel.unary_unary(
                 f"/ateapi.Control/{method}",
                 request_serializer=type(request).SerializeToString,
-                response_deserializer=lambda _: None,  # nothing in the reply is used
+                response_deserializer=reply.FromString,
             )
-            await call(
+            return await call(
                 request, metadata=[("authorization", f"Bearer {token}")], timeout=CONTROL_TIMEOUT
             )
+
+    async def _call(self, method: str, request: Message) -> None:
+        """Call and drop the reply: the dispatcher uses nothing in it."""
+        await self.call(method, request, empty_pb2.Empty)
 
     async def create_actor(self, atespace: str, name: str, template: str) -> None:
         actor = ate_pb2.Actor(
@@ -122,6 +128,40 @@ class Control:
     async def delete_actor(self, atespace: str, name: str) -> None:
         ref = ate_pb2.ObjectRef(atespace=atespace, name=name)
         await self._call("DeleteActor", ate_pb2.DeleteActorRequest(actor=ref))
+
+    # Setup calls for substrate_sync.py. Unlike the dispatcher's, they need an owner identity.
+
+    async def create_atespace(self, name: str) -> None:
+        atespace = ate_pb2.Atespace(metadata=ate_pb2.ResourceMetadata(name=name))
+        await self._call("CreateAtespace", ate_pb2.CreateAtespaceRequest(atespace=atespace))
+
+    async def get_access_policy(self, atespace: str) -> ate_pb2.AccessPolicy:
+        """Raise NOT_FOUND if the atespace has no policy (or no atespace)."""
+        request = ate_pb2.GetAtespaceAccessPolicyRequest(
+            atespace=ate_pb2.ObjectRef(name=atespace), name=ACCESS_POLICY_NAME
+        )
+        return await self.call("GetAtespaceAccessPolicy", request, ate_pb2.AccessPolicy)
+
+    async def create_access_policy(self, atespace: str, policy: ate_pb2.AccessPolicy) -> None:
+        request = ate_pb2.CreateAtespaceAccessPolicyRequest(
+            atespace=ate_pb2.ObjectRef(name=atespace), access_policy=policy
+        )
+        await self._call("CreateAtespaceAccessPolicy", request)
+
+    async def update_access_policy(self, atespace: str, policy: ate_pb2.AccessPolicy) -> None:
+        request = ate_pb2.UpdateAtespaceAccessPolicyRequest(
+            atespace=ate_pb2.ObjectRef(name=atespace), access_policy=policy
+        )
+        await self._call("UpdateAtespaceAccessPolicy", request)
+
+    async def create_actor_template(self, template: ate_pb2.ActorTemplate) -> None:
+        request = ate_pb2.CreateActorTemplateRequest(actor_template=template)
+        await self._call("CreateActorTemplate", request)
+
+    async def get_actor_template(self, atespace: str, name: str) -> ate_pb2.ActorTemplate:
+        ref = ate_pb2.ObjectRef(atespace=atespace, name=name)
+        request = ate_pb2.GetActorTemplateRequest(actor_template=ref)
+        return await self.call("GetActorTemplate", request, ate_pb2.ActorTemplate)
 
 
 def _actor_name(job_id: uuid.UUID) -> str:

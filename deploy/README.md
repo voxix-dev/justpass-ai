@@ -5,7 +5,9 @@
   SQL; `e2e.sh` tests them. `identity.sh` gives the API its cluster identity, which lasts 24 hours: rerun it after that.
   `forward.sh` keeps the port-forwards to ate-api and the router up, on 127.0.0.1 only.
   See [wiki: Local development](https://github.com/voxix-dev/justpass-ai/wiki/Local-development).
-- `substrate/`: the agent's worker pool, actor template and access policy.
+- `substrate/`: what the agents need on Substrate. `agent-pool.yaml` (a kustomize base) is the worker pool;
+  `agents.yaml` is the atespace, access policy and actor template, which `api.substrate_sync` creates in
+  ate-api (they are not Kubernetes resources). The sandbox size in `agents.yaml` must fit the worker.
 
 Cloud targets: [wiki: Architecture](https://github.com/voxix-dev/justpass-ai/wiki/Architecture#hosting).
 
