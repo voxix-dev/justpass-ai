@@ -6,11 +6,12 @@ from typing import Any
 
 import httpx2
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.context_token import InvalidToken, verify_token
 from api.db import get_session
-from api.dispatcher import Dispatcher
+from api.dispatcher import MAX_CLAIMS, Dispatcher
 from api.jobs import _STATUS, FAILED_MESSAGE, get_dispatcher
 from api.main import MAX_BODY, MAX_ERRORS, app, lifespan
 from api.tables import Artifact, Job, JobRound, User
@@ -81,7 +82,11 @@ class StepDispatcher(Dispatcher):
     def forget(self) -> None:
         """Drop the round waiting to run, as a process dying before it starts would."""
         self.pending.pop().close()
-        self._rounds.clear()
+
+
+@pytest.fixture(autouse=True)
+def no_context_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTEXT_API_URL", "")
 
 
 @pytest.fixture
@@ -149,6 +154,20 @@ async def feedback(
 
 
 Create = Callable[..., Coroutine[Any, Any, dict]]
+
+
+async def expire_lease(dispatcher: Dispatcher, job_id: uuid.UUID, number: int) -> None:
+    async with dispatcher.open_session() as session:
+        await session.execute(
+            update(JobRound)
+            .where(JobRound.job_id == job_id, JobRound.number == number)
+            .values(lease_until=func.clock_timestamp() - text("interval '1 second'"))
+        )
+        await session.commit()
+
+
+async def round_row(session: AsyncSession, job_id: str, number: int = 1) -> JobRound:
+    return await session.get_one(JobRound, (uuid.UUID(job_id), number), populate_existing=True)
 
 
 async def test_a_new_job_is_queued_until_the_agent_answers(
@@ -462,31 +481,56 @@ async def test_a_refused_clean_up_is_tried_again(
     assert len(agents.hibernated) == 2
 
 
-async def test_a_failed_revision_keeps_the_last_answer(
+async def test_a_failed_revision_keeps_the_last_answer_and_its_own_row(
+    client: httpx2.AsyncClient,
+    session: AsyncSession,
+    create: Create,
+    feedback: Create,
+    agents: FakeAgents,
+):
+    job = await create()
+    agents.unreachable = 2
+    after = await feedback(job, "lost note")
+    assert (after["status"], after["result"], after["round"]) == ("done", ANSWER, 1)
+    assert after["feedback"] is None
+    assert agents.released == [uuid.UUID(job["id"])]  # the next try gets a fresh actor
+    failed = await session.get_one(JobRound, (uuid.UUID(job["id"]), 2), populate_existing=True)
+    assert (failed.feedback, failed.failed_at is not None) == ("lost note", True)
+    assert (failed.lease_id, failed.lease_until) == (None, None)
+
+    # The student still reads round 1, and can accept it.
+    stale = await client.post(f"/jobs/{job['id']}/accept", json={"round": 2})
+    assert stale.status_code == 409
+
+    retried = await feedback(after, "try again", seen=1)
+    assert (retried["round"], retried["feedback"]) == (3, "try again")  # no reuse of number 2
+    assert retried["result"] == ANSWER
+    accepted = await client.post(f"/jobs/{job['id']}/accept", json={"round": 3})
+    assert accepted.status_code == 200
+
+
+async def test_a_failed_revision_can_be_left_as_it_is_and_accepted(
     client: httpx2.AsyncClient, create: Create, feedback: Create, agents: FakeAgents
 ):
     job = await create()
     agents.unreachable = 2
-    after = await feedback(job)
-    assert (after["status"], after["result"], after["round"]) == ("done", ANSWER, 1)
-    assert after["feedback"] is None
-    assert agents.released == [uuid.UUID(job["id"])]  # the next try gets a fresh actor
-
-    assert (await feedback(after, "try again"))["round"] == 2
-    accepted = await client.post(f"/jobs/{job['id']}/accept", json={"round": 2})
+    await feedback(job)
+    accepted = await client.post(f"/jobs/{job['id']}/accept", json={"round": 1})
     assert accepted.status_code == 200
+    assert (accepted.json()["accepted"], accepted.json()["round"]) == (True, 1)
 
 
 async def test_a_stale_run_leaves_a_newer_round_alone(
     client: httpx2.AsyncClient, dispatcher: StepDispatcher, agents: FakeAgents
 ):
-    """A second run of round 1 fails while the first one's answer is already under feedback."""
+    """A run that lost its lease fails while the run that took over is already under feedback."""
     job = (await client.post("/jobs", json={"text": "Solve"})).json()
     job_id = uuid.UUID(job["id"])
     agents.unreachable = 2
 
     async def overtake() -> None:
         unreachable, agents.unreachable = agents.unreachable, 0
+        await expire_lease(dispatcher, job_id, 1)  # as if this run had stopped renewing
         await dispatcher._run(job_id, 1)
         response = await client.post(f"/jobs/{job_id}/feedback", json={"text": "x", "round": 1})
         assert response.status_code == 200
@@ -568,14 +612,13 @@ async def test_other_errors_are_not_tried_forever(
 
     monkeypatch.setattr(dispatcher, "_finish", broken)
     assert (await create())["status"] == "running"
-    assert not dispatcher._rounds
 
 
 async def test_a_second_finish_changes_nothing(
     client: httpx2.AsyncClient, create: Create, dispatcher: StepDispatcher
 ):
     job = await create()
-    await dispatcher._finish(uuid.UUID(job["id"]), 1, "another answer")
+    await dispatcher._finish(uuid.UUID(job["id"]), 1, uuid.uuid4(), "another answer")
     assert (await client.get(f"/jobs/{job['id']}")).json() == job
 
 
@@ -721,3 +764,220 @@ async def test_database_down_is_503(path: str):
     app.dependency_overrides.clear()
     assert response.status_code == 503
     assert isinstance(response.json()["detail"], str)
+
+
+async def queue(client: httpx2.AsyncClient, dispatcher: StepDispatcher) -> uuid.UUID:
+    """A new job whose round 1 nobody has started, as after a crash before the run began."""
+    job = (await client.post("/jobs", json={"text": "Solve"})).json()
+    dispatcher.forget()
+    return uuid.UUID(job["id"])
+
+
+async def test_a_round_held_by_another_run_is_not_started(
+    client: httpx2.AsyncClient,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    session: AsyncSession,
+):
+    job_id = await queue(client, dispatcher)
+    assert await dispatcher._begin(job_id, 1, uuid.uuid4()) is not None  # another process
+    dispatcher.start(job_id, 1)
+    await dispatcher.recover()
+    await dispatcher.drain()
+
+    assert agents.runs == []
+    assert (await client.get(f"/jobs/{job_id}")).json()["status"] == "running"
+    assert (await round_row(session, str(job_id))).claims == 1
+
+
+async def test_a_round_whose_lease_ran_out_is_taken_over_by_the_sweep(
+    client: httpx2.AsyncClient,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    session: AsyncSession,
+):
+    job_id = await queue(client, dispatcher)
+    await dispatcher._begin(job_id, 1, uuid.uuid4())  # a process that then died
+    await expire_lease(dispatcher, job_id, 1)
+    await dispatcher.recover()
+    await dispatcher.drain()
+
+    assert len(agents.runs) == 1
+    assert (await client.get(f"/jobs/{job_id}")).json()["result"] == ANSWER
+    row = await round_row(session, str(job_id))
+    assert (row.claims, row.lease_id, row.lease_until) == (2, None, None)
+
+
+async def test_a_claim_whose_reply_was_lost_is_the_same_claim(
+    client: httpx2.AsyncClient,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    job_id = await queue(client, dispatcher)
+    real = dispatcher._begin
+    calls = 0
+
+    async def lost_reply(*args: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        run = await real(*args)
+        if calls == 1:
+            raise OSError("connection lost after the commit")
+        return run
+
+    monkeypatch.setattr("api.dispatcher.DATABASE_DELAY", 0)
+    monkeypatch.setattr(dispatcher, "_begin", lost_reply)
+    dispatcher.start(job_id, 1)
+    await dispatcher.drain()
+
+    assert (calls, len(agents.runs)) == (2, 1)
+    assert (await round_row(session, str(job_id))).claims == 1
+    assert (await client.get(f"/jobs/{job_id}")).json()["result"] == ANSWER
+
+
+async def test_a_run_that_lost_its_lease_neither_puts_away_nor_finishes(
+    client: httpx2.AsyncClient, dispatcher: StepDispatcher, agents: FakeAgents
+):
+    job_id = await queue(client, dispatcher)
+
+    async def taken_over() -> None:
+        await expire_lease(dispatcher, job_id, 1)
+        assert await dispatcher._begin(job_id, 1, uuid.uuid4()) is not None
+
+    agents.during_solve = taken_over
+    dispatcher.start(job_id, 1)
+    await dispatcher.drain()
+
+    assert (agents.hibernated, agents.released) == ([], [])
+    assert (await client.get(f"/jobs/{job_id}")).json()["status"] == "running"
+
+
+async def test_a_round_claimed_too_often_is_left_alone(
+    client: httpx2.AsyncClient,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    caplog: pytest.LogCaptureFixture,
+):
+    job_id = await queue(client, dispatcher)
+    for _ in range(MAX_CLAIMS):
+        assert await dispatcher._begin(job_id, 1, uuid.uuid4()) is not None
+        await expire_lease(dispatcher, job_id, 1)
+
+    await dispatcher.recover()
+    dispatcher.start(job_id, 1)
+    await dispatcher.drain()
+
+    assert agents.runs == []
+    assert f"was claimed {MAX_CLAIMS} times" in caplog.text
+    assert (await client.get(f"/jobs/{job_id}")).json()["status"] == "running"
+
+
+async def test_the_lease_is_renewed_while_the_agent_works(
+    client: httpx2.AsyncClient,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    job_id = await queue(client, dispatcher)
+    monkeypatch.setattr("api.dispatcher.RENEW_SECONDS", 0.2)
+    renewed: list[bool] = []
+
+    async def wait_for_a_renewal() -> None:
+        await expire_lease(dispatcher, job_id, 1)
+        await asyncio.sleep(0.25)
+        row = await round_row(session, str(job_id))
+        renewed.append(row.lease_until is not None and row.lease_until > datetime.now(UTC))
+
+    agents.during_solve = wait_for_a_renewal
+    dispatcher.start(job_id, 1)
+    await dispatcher.drain()
+    assert renewed == [True]
+
+
+async def test_the_sweep_runs_until_close(
+    client: httpx2.AsyncClient,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    job_id = await queue(client, dispatcher)
+    await dispatcher._begin(job_id, 1, uuid.uuid4())
+    await expire_lease(dispatcher, job_id, 1)
+    real = Dispatcher(agents, dispatcher.open_session)
+
+    async def hang() -> None:
+        await asyncio.Event().wait()
+
+    agents.during_solve = hang
+    monkeypatch.setattr("api.dispatcher.SWEEP_SECONDS", 0.01)
+    real.start_sweeping()
+    await asyncio.wait_for(agents.solving.wait(), 5)
+    await real.close()
+
+    assert not [task for task in real._tasks if not task.done()]
+    assert agents.runs[0].job_id == job_id
+
+
+async def test_the_sweep_survives_an_error(
+    dispatcher: StepDispatcher, monkeypatch: pytest.MonkeyPatch
+):
+    calls = 0
+    done = asyncio.Event()
+
+    async def flaky() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("a bug")
+        done.set()
+
+    monkeypatch.setattr("api.dispatcher.SWEEP_SECONDS", 0)
+    monkeypatch.setattr(dispatcher, "recover", flaky)
+    sweeping = asyncio.create_task(dispatcher._sweep_forever())
+    await asyncio.wait_for(done.wait(), 5)
+    sweeping.cancel()
+    await asyncio.gather(sweeping, return_exceptions=True)
+    assert calls == 2
+
+
+async def test_the_agent_gets_a_token_for_the_context_api(
+    client: httpx2.AsyncClient,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("CONTEXT_API_URL", "http://api:8000")
+    monkeypatch.setenv("CONTEXT_TOKEN_SECRET", "s" * 32)
+    job = (await client.post("/jobs", json={"text": "Solve"})).json()
+    await dispatcher.drain()
+
+    context = agents.runs[0].context
+    assert context is not None
+    assert context.url == "http://api:8000"
+    claims = verify_token(context.token)
+    assert (claims.job_id, claims.user_id, claims.round) == (uuid.UUID(job["id"]), "dev-user", 1)
+    assert context.token not in repr(agents.runs[0])
+
+
+async def test_the_agent_gets_no_context_api_without_a_url(create: Create, agents: FakeAgents):
+    await create()
+    assert agents.runs[0].context is None
+
+
+@pytest.mark.parametrize("secret", [None, "", "short"])
+async def test_lifespan_refuses_a_context_api_without_a_good_secret(
+    agents: FakeAgents, monkeypatch: pytest.MonkeyPatch, secret: str | None
+):
+    monkeypatch.setenv("CONTEXT_API_URL", "http://api:8000")
+    if secret is None:
+        monkeypatch.delenv("CONTEXT_TOKEN_SECRET", raising=False)
+    else:
+        monkeypatch.setenv("CONTEXT_TOKEN_SECRET", secret)
+    monkeypatch.setattr("api.main.agents_from_env", lambda: agents)
+    with pytest.raises(InvalidToken, match="CONTEXT_TOKEN_SECRET"):
+        async with lifespan(app):
+            pass

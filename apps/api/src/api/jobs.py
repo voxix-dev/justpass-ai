@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints
 from pydantic.alias_generators import to_camel
-from sqlalchemy import Select, and_, func, select
+from sqlalchemy import ScalarSelect, Select, and_, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -99,7 +99,7 @@ class JobOut(BaseModel):
     result: str | None  # Markdown with $inline$ and $$display$$ math, set when done
     error: str | None
     accepted: bool
-    round: int  # 1 for the first answer, +1 for each feedback
+    round: int  # the round shown; each feedback starts a new one
     feedback: str | None  # what the student asked to change in this round
 
 
@@ -132,20 +132,29 @@ def _title(text: str) -> str:
     return line if len(line) <= TITLE_LENGTH else f"{line[: TITLE_LENGTH - 1].rstrip()}…"
 
 
-def _jobs() -> Select[Job, int, str | None, str | None]:
-    """The dev user's jobs with their newest round and its answer.
+def _shown_round(job_id: Any) -> ScalarSelect[int]:
+    """The round the student reads: the newest one that did not fail, or round 1 if none did.
 
-    One statement, so a response never mixes two rounds of a job that is being revised.
+    A revision that failed keeps its row (with what the agent wrote in it), but the student goes on
+    reading the earlier answer. Round numbers can have gaps after such a failure.
     """
-    newest = (
-        select(func.max(JobRound.number))
-        .where(JobRound.job_id == Job.id)
+    return (
+        select(func.coalesce(func.max(JobRound.number).filter(JobRound.failed_at.is_(None)), 1))
+        .where(JobRound.job_id == job_id)
         .correlate(Job)
         .scalar_subquery()
     )
+
+
+def _jobs() -> Select[Job, int, str | None, str | None]:
+    """The dev user's jobs with their shown round and its answer.
+
+    One statement, so a response never mixes two rounds of a job that is being revised.
+    """
+    shown = _shown_round(Job.id)
     return (
         select(Job, JobRound.number, JobRound.feedback, Artifact.content)
-        .join(JobRound, and_(JobRound.job_id == Job.id, JobRound.number == newest))
+        .join(JobRound, and_(JobRound.job_id == Job.id, JobRound.number == shown))
         .outerjoin(
             Artifact,
             and_(
@@ -243,15 +252,13 @@ async def get_job(job_id: uuid.UUID, session: Session) -> JobOut:
     return await _read(session, job_id)
 
 
-async def _check_review(session: AsyncSession, job: Job, seen: int, *allowed: JobStatus) -> int:
-    """Return the job's newest round; 409 if its status isn't allowed or the student saw an older
-    answer than the newest (say in a second tab), so nobody accepts an answer they never read."""
+async def _check_review(session: AsyncSession, job: Job, seen: int, *allowed: JobStatus) -> None:
+    """409 if the job's status isn't allowed or the student saw an older answer than the shown
+    one (say in a second tab), so nobody accepts an answer they never read."""
     if job.status not in allowed:
         raise HTTPException(status.HTTP_409_CONFLICT, f"The job is {job.status}, not in review")
-    newest = await _newest_round(session, job.id)
-    if seen != newest:
+    if seen != await session.scalar(select(_shown_round(job.id))):
         raise HTTPException(status.HTTP_409_CONFLICT, "There is a newer answer. Read that first.")
-    return newest
 
 
 @router.post("/{job_id}/accept", responses=NOT_FOUND | NOT_IN_REVIEW | BAD_BODY)
@@ -281,13 +288,12 @@ async def send_feedback(
     round (accepted and failed are final).
     """
     job = await _own_job(session, job_id)
-    newest = await _check_review(
-        session, job, body.round, JobStatus.AWAITING_REVIEW, JobStatus.EXPIRED
-    )
-    session.add(JobRound(job_id=job.id, number=newest + 1, feedback=body.text))
+    await _check_review(session, job, body.round, JobStatus.AWAITING_REVIEW, JobStatus.EXPIRED)
+    number = await _newest_round(session, job.id) + 1  # after a failed revision, not shown + 1
+    session.add(JobRound(job_id=job.id, number=number, feedback=body.text))
     job.move_to(JobStatus.PROCESSING, datetime.now(UTC))
     await session.flush()
     out = await _read(session, job.id)
     await session.commit()
-    dispatcher.start(job.id, newest + 1)
+    dispatcher.start(job.id, number)
     return out
