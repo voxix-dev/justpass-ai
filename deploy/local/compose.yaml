@@ -1,0 +1,35 @@
+# Points the API from the root compose.yaml at the local Substrate cluster, instead of its one agent:
+#   podman compose -f compose.yaml -f deploy/local/compose.yaml up -d --build --wait api
+# deploy.sh does this, after identity.sh and forward.sh. Relative paths start at the repo root.
+# Every compose command with this file needs ATE_TEMPLATE, which deploy.sh sets. Any value will do for
+# `logs` or `down`.
+services:
+  api:
+    # Host network to reach the port-forwards, which listen on 127.0.0.1 only, and the published Postgres.
+    network_mode: host
+    ports: !reset []
+    depends_on: !override
+      db:
+        condition: service_healthy
+    # Same as the image's command, on 127.0.0.1: no auth yet, and the host network has no port mapping.
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn api.main:app --host 127.0.0.1 --port ${API_PORT:-8000}"]
+    # The names on the serving certificates, which are the ones to verify through a port-forward too.
+    extra_hosts:
+      - api.ate-system.svc:127.0.0.1
+      - atenet-router.ate-system.svc:127.0.0.1
+    environment:
+      DATABASE_URL: postgresql+asyncpg://app:app@127.0.0.1:${DB_PORT:-5432}/app
+      AGENT_URL: ""
+      ATE_ROUTER_URL: https://atenet-router.ate-system.svc:${ATE_ROUTER_PORT:-9443}
+      ATE_API_TARGET: api.ate-system.svc:${ATE_API_PORT:-8443}
+      ATE_ATESPACE: justpass-agents
+      ATE_TEMPLATE: ${ATE_TEMPLATE:?deploy.sh sets it}
+      ATE_CA_FILE: /run/ate/trust-bundle.pem
+      ATE_CLIENT_CERT_FILE: /run/ate/credential-bundle.pem
+      ATE_TOKEN_FILE: /run/ate/token
+    volumes:
+      # The directory, not each file: identity.sh replaces files, and a file mount would keep the old one.
+      # z: SELinux would refuse the container otherwise.
+      - ./deploy/local/.identity/mounted:/run/ate:ro,z
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${API_PORT:-8000}/ready')"]

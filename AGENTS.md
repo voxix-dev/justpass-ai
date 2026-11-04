@@ -5,20 +5,20 @@ change, and update it when your PR changes a design decision.
 
 ## Layout
 - `apps/api/` FastAPI: Jobs API, Context API, dispatcher.
-- `apps/agent/` agent harness, role tool lists (`roles.py`), playbooks (`playbooks/*.yaml`).
+- `apps/agent/` the agent: the HTTP server inside a Substrate actor (fake for now).
 - `apps/web/` frontend. Talks to the API only through `contracts/openapi.json`.
 - `packages/shared/` Pydantic models used by both api and agent.
-- `deploy/` local cluster, k8s and Substrate manifests. `evals/` homework samples and scoring.
+- `deploy/` local cluster and Substrate manifests. `evals/` homework samples and scoring.
 
 ## Rules
 - Every boundary (HTTP, agent tool input/output, DB row) uses a Pydantic model. Shared ones live in `packages/shared`.
 - `api` and `agent` never import each other. They talk over HTTP. `lint-imports` enforces this.
 - The agent never touches the database or object storage directly. It reads and writes only through Context API tools.
-- `apps/agent/src/agent/roles.py` is the permission system. Giving a role new tools needs an explicit review in the PR.
-  `tests/test_roles.py` must keep passing: no role may have both private-data tools and outbound tools.
 - Never call a paid model in tests. Use recorded responses.
 - Never commit secrets. Put them in `.env` (git-ignored); `.env.example` lists the names.
 - Add dependencies to the package that uses them: `uv add --package api <pkg>`. No new dependency without a reason.
+- Until production exists, change the existing migrations instead of adding new ones. Reset your local database
+  after pulling such a change: `docker compose down -v`, then start it again.
 
 ## Pull requests
 - One PR is one feature or one fix. Keep it small. Avoid big PRs.
@@ -26,6 +26,7 @@ change, and update it when your PR changes a design decision.
 - No stacked PRs. Every PR targets `main` and stands on its own. Don't split one change into a chain of PRs.
 - If a change depends on another open PR, wait until that PR is merged before opening it.
 - Only when waiting would block work for too long, put both changes in one bigger PR instead. Avoid this too.
+- Leave the PR description empty. CodeRabbit writes the summary.
 - To add docstrings with CodeRabbit, pick "Commit on current branch" under "Generate docstrings". Never "Create a new
   PR": that opens a stacked PR.
 

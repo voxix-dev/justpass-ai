@@ -1,6 +1,7 @@
 # API image. CI publishes it to ghcr.io/voxix-dev/justpass-ai/api after CI passes on main.
 # Build context: repo root (`docker compose build api`).
-# On start it migrates the database, then serves on :8000. Needs DATABASE_URL.
+# On start it migrates the database, then serves on :8000. Needs DATABASE_URL, and AGENT_URL or the
+# ATE_* settings (see .env.example).
 
 FROM python:3.14.10-slim-trixie AS builder
 COPY --from=ghcr.io/astral-sh/uv:0.11.33 /uv /bin/uv

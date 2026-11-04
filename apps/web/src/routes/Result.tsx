@@ -11,8 +11,6 @@ const Answer = lazy(() => import('./Answer'))
 
 /** Accept stays off this long after it appears: a double tap on "Do it for me" must not land on it. */
 const ACCEPT_DELAY_MS = 600
-/** A blank submit this soon after sending is the second half of a double click, not a mistake. */
-const DOUBLE_CLICK_MS = 1000
 
 /** Show the job from the route, resetting the detail view's local state when its ID changes. */
 export default function Result() {
@@ -81,6 +79,29 @@ class AnswerBoundary extends Component<{ text: string; children: ReactNode }, { 
 
 /** Show the question and current outcome, offering review actions once the answer is on screen. */
 function JobDetail({ job }: { job: Job }) {
+  const pending = isPending(job)
+  const [waited, setWaited] = useState(pending)
+  if (pending && !waited) setWaited(true)
+  // Here, not in Actions: Actions is gone while a revision runs, and the text must survive that.
+  const [note, setNote] = useState('')
+  const [revising, setRevising] = useState<number | null>(null)
+  const [revisionFailed, setRevisionFailed] = useState(false)
+
+  // The job says when a revision runs, whoever sent it: this page, another tab, or a page reloaded.
+  if (pending && job.round > 1 && revising !== job.round) {
+    setRevising(job.round)
+    setRevisionFailed(false)
+    if (!note) setNote(job.feedback ?? '')
+  }
+  // A revision that fails drops its round, so the job comes back on the answer it had.
+  if (revising !== null && !pending) {
+    setRevising(null)
+    if (job.round < revising) setRevisionFailed(true)
+    // Only the feedback that was revised is done. Any other text is an unsent draft, so it stays.
+    // The API stores feedback trimmed.
+    else if (note.trim() === job.feedback) setNote('')
+  }
+
   return (
     <>
       <header className="mt-2">
@@ -89,7 +110,7 @@ function JobDetail({ job }: { job: Job }) {
           <span>{ago(job.createdAt)}</span>
         </div>
         <h1 dir="auto" className="mt-4 text-4xl break-words sm:text-5xl">{job.title}</h1>
-        {job.round > 1 && <p className="mt-3 text-muted-foreground">Revised answer, round {job.round}.</p>}
+        {job.round > 1 && !pending && <p className="mt-3 text-muted-foreground">Revised answer, round {job.round}.</p>}
       </header>
 
       {job.text !== job.title && (
@@ -105,7 +126,7 @@ function JobDetail({ job }: { job: Job }) {
       {/* Accept lives inside Suspense too: it must not appear before the answer does. */}
       <Suspense fallback={<Skeleton className="mt-8 h-64" />}>
         <div className="mt-8">
-          {isPending(job) ? (
+          {pending ? (
             <div className="rounded-2xl border-2 border-volt/60 bg-card p-6">
               <p className="flex items-center gap-2 font-display text-2xl font-extrabold text-volt">
                 <LoaderCircle className="size-6 animate-spin" aria-hidden="true" />
@@ -136,6 +157,7 @@ function JobDetail({ job }: { job: Job }) {
                   <AnswerBoundary key={job.round} text={job.result}>
                     <Answer markdown={job.result} />
                   </AnswerBoundary>
+                  {waited && job.round > 1 && <GoToAnswer onArrived={() => setWaited(false)} />}
                   {job.accepted && (
                     <span aria-hidden="true" className="stamp pointer-events-none absolute -top-6 right-3 bg-paper text-4xl text-[#1f8a3b]">
                       PASS
@@ -147,20 +169,50 @@ function JobDetail({ job }: { job: Job }) {
           )}
         </div>
 
-        {job.status === 'done' && <Actions job={job} />}
+        {job.status === 'done' && (
+          <Actions
+            job={job}
+            note={note}
+            setNote={setNote}
+            revisionFailed={revisionFailed}
+            onRevising={(round) => {
+              setRevisionFailed(false)
+              setRevising(round)
+            }}
+          />
+        )}
       </Suspense>
     </>
   )
 }
 
+/**
+ * Take a student who waited here to what changed, the revised answer, once it is on screen: this
+ * mounts with the answer, inside Suspense. focus() alone does not scroll when the bottom of the
+ * answer is already showing.
+ */
+function GoToAnswer({ onArrived }: { onArrived: () => void }) {
+  useEffect(() => {
+    const answer = document.getElementById('answer')
+    answer?.focus({ preventScroll: true })
+    answer?.scrollIntoView()
+    onArrived()
+  }, [onArrived])
+  return null
+}
+
 /** Offer acceptance and feedback for a finished answer; feedback revises the same job in a new round. */
-function Actions({ job }: { job: Job }) {
+function Actions({ job, note, setNote, revisionFailed, onRevising }: {
+  job: Job
+  note: string
+  setNote: (note: string) => void
+  revisionFailed: boolean
+  onRevising: (round: number) => void
+}) {
   const qc = useQueryClient()
-  const [note, setNote] = useState('')
   const [error, setError] = useState('')
   const [armed, setArmed] = useState(false)
   const acceptedLine = useRef<HTMLParagraphElement>(null)
-  const sentAt = useRef(0)
 
   useEffect(() => {
     const timer = setTimeout(() => setArmed(true), ACCEPT_DELAY_MS)
@@ -175,11 +227,13 @@ function Actions({ job }: { job: Job }) {
   /**
    * Cache the job a mutation returned. A read under way may predate it, so drop that first, and
    * await it: a cancelled read restores the old job, which would land on top of this one. A newer
-   * round already cached (from another tab, say) stays.
+   * round already cached (from another tab, say) stays, and so does a round that already finished.
    */
   const remember = async (j: Job) => {
     await qc.cancelQueries({ queryKey: ['jobs', j.id], exact: true })
-    qc.setQueryData<Job>(['jobs', j.id], (old) => (old && old.round > j.round ? old : j))
+    qc.setQueryData<Job>(['jobs', j.id], (old) =>
+      old && (old.round > j.round || (old.round === j.round && !isPending(old) && isPending(j))) ? old : j,
+    )
     void qc.invalidateQueries({ queryKey: ['jobs'], exact: true })
   }
 
@@ -192,13 +246,7 @@ function Actions({ job }: { job: Job }) {
     mutationFn: (text: string) => sendFeedback(job.id, job.round, text),
     onSuccess: async (j) => {
       await remember(j)
-      setNote('')
-      sentAt.current = Date.now()
-      // Take the student to what changed: the revised answer is above this form. focus() alone
-      // does not scroll when the bottom of the answer is already on screen.
-      const answer = document.getElementById('answer')
-      answer?.focus({ preventScroll: true })
-      answer?.scrollIntoView()
+      onRevising(j.round) // the note stays until the revised answer is here
     },
     onError: (e) => {
       setError(e.message)
@@ -216,7 +264,7 @@ function Actions({ job }: { job: Job }) {
     e.preventDefault()
     if (feedback.isPending) return
     if (!note.trim()) {
-      if (Date.now() - sentAt.current > DOUBLE_CLICK_MS) setError('Write what should change first.')
+      setError('Write what should change first.')
       return
     }
     setError('')
@@ -267,7 +315,7 @@ function Actions({ job }: { job: Job }) {
           className="mt-2 block w-full resize-y rounded-2xl border-2 border-input bg-card p-4 text-base placeholder:text-muted-foreground aria-invalid:border-coral"
         />
         <p id="feedback-error" role="alert" className="mt-2 min-h-6 font-bold text-coral">
-          {error}
+          {error || (revisionFailed && 'Could not revise the answer. Your feedback is still here, so try again.')}
         </p>
         <Button type="submit" variant="outline" size="lg" className="mt-1 w-full sm:w-auto" aria-disabled={feedback.isPending}>
           {feedback.isPending && <LoaderCircle className="animate-spin" aria-hidden="true" />}

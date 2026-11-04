@@ -72,7 +72,7 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@v4
-      - name: Start Postgres and the API
+      - name: Start Postgres, the agent and the API
         run: docker compose up -d --build --wait api
         working-directory: .
       - uses: pnpm/action-setup@v4

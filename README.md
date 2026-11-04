@@ -8,7 +8,7 @@ accepts the result or sends feedback, which starts a new agent run.
 ```
 web (SPA) ──/api/** + Firebase ID token──▶ API (FastAPI) ──▶ Postgres, object storage
                                             │      ▲
-                              start/resume  │      │ Context API (per-job, per-role token)
+                              start/resume  │      │ Context API (per-job token)
                                             ▼      │
                                   agent actor (Substrate, gVisor) ──egress gateway──▶ OpenRouter, search API
                                             │
@@ -33,14 +33,18 @@ cp .env.example .env
 docker compose up -d --wait db                # Postgres for development and tests
 uv run --env-file .env alembic upgrade head   # create or update the tables
 uv run --env-file .env pytest
+uv run --env-file .env uvicorn agent.server:app --port 8001 &   # the fake agent
 uv run --env-file .env uvicorn api.main:app --reload
 ```
 
-Or run the API in a container (migrates on start, then serves on :8000):
+Or run the API and the agent in containers (migrates on start, then serves on :8000):
 `docker compose up -d --build api`.
 
 Ports taken? `API_PORT` moves the API for both compose and the web app's `pnpm dev`. `DB_PORT` moves
 Postgres; change the port in `.env` too.
+
+The agent is a fake for now: it waits 10 seconds and sends back a fixed
+answer. A task with the word "fail" fails.
 
 Web app: [apps/web/README.md](apps/web/README.md). Local Substrate cluster:
 [wiki: Local development](https://github.com/voxix-dev/justpass-ai/wiki/Local-development). Repo rules: [AGENTS.md](AGENTS.md).

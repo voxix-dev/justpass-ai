@@ -16,7 +16,7 @@ from api.tables import (
     User,
     search_memory,
 )
-from shared.models import ArtifactKind, JobStatus, Level, Role
+from shared.models import ArtifactKind, JobStatus, Level
 
 NOW = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
 
@@ -105,7 +105,7 @@ async def test_only_later_rounds_have_feedback(session: AsyncSession):
 @pytest.mark.anyio
 async def test_a_round_has_at_most_one_final_artifact(session: AsyncSession):
     job = await add_job_with_round(session)
-    final = {"job_id": job.id, "round": 1, "role": Role.WRITER, "kind": ArtifactKind.FINAL}
+    final = {"job_id": job.id, "round": 1, "kind": ArtifactKind.FINAL}
     session.add(Artifact(**final, content="# Answer"))
     await session.flush()
     session.add(Artifact(**final, storage_key="runs/x/final.md"))
@@ -116,7 +116,7 @@ async def test_a_round_has_at_most_one_final_artifact(session: AsyncSession):
 @pytest.mark.anyio
 async def test_artifact_has_content_or_a_storage_key_not_both(session: AsyncSession):
     job = await add_job_with_round(session)
-    notes = {"job_id": job.id, "round": 1, "role": Role.RESEARCH, "kind": ArtifactKind.DRAFT}
+    notes = {"job_id": job.id, "round": 1, "kind": ArtifactKind.DRAFT}
     session.add(Artifact(**notes, content="notes", storage_key="runs/x/notes.md"))
     with pytest.raises(IntegrityError, match="ck_artifacts_content_xor_storage_key"):
         await session.flush()
@@ -127,9 +127,7 @@ async def test_deleting_a_user_deletes_all_their_data(session: AsyncSession):
     job = await add_job_with_round(session)
     session.add_all(
         [
-            Artifact(
-                job_id=job.id, round=1, role=Role.WRITER, kind=ArtifactKind.FINAL, content="x"
-            ),
+            Artifact(job_id=job.id, round=1, kind=ArtifactKind.FINAL, content="x"),
             MemoryDoc(user_id=job.user_id, body="profile"),
         ]
     )

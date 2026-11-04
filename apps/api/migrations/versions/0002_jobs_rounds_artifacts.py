@@ -19,7 +19,6 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 STATUSES = "'received', 'processing', 'awaiting_review', 'accepted', 'expired', 'failed'"
-ROLES = "'orchestrator', 'research', 'writer', 'solver', 'review', 'curator'"
 KINDS = "'research_notes', 'outline', 'draft', 'review', 'final', 'test_summary'"
 
 
@@ -86,7 +85,6 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("job_id", sa.Uuid(), nullable=False),
         sa.Column("round", sa.Integer(), nullable=False),
-        sa.Column("role", sa.String(32), nullable=False),
         sa.Column("kind", sa.String(32), nullable=False),
         sa.Column("content", sa.String()),
         sa.Column("storage_key", sa.String()),
@@ -94,7 +92,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["job_id", "round"], ["job_rounds.job_id", "job_rounds.number"], ondelete="CASCADE"
         ),
-        sa.CheckConstraint(f"role IN ({ROLES})", name="role"),
         sa.CheckConstraint(f"kind IN ({KINDS})", name="kind"),
         sa.CheckConstraint(
             "num_nonnulls(content, storage_key) = 1", name="content_xor_storage_key"

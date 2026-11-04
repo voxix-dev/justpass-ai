@@ -26,12 +26,12 @@ dev = [
     "pytest",
     "pytest-cov",
     "ruff",
-    "types-pyyaml",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py314"
+extend-exclude = ["*_pb2.py", "*_pb2.pyi"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
