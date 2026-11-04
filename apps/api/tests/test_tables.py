@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.tables import (
@@ -99,6 +99,24 @@ async def test_only_later_rounds_have_feedback(session: AsyncSession):
     job = await add_job_with_round(session)
     session.add(JobRound(job_id=job.id, number=2))
     with pytest.raises(IntegrityError, match="ck_job_rounds_feedback_iff_not_first"):
+        await session.flush()
+
+
+@pytest.mark.anyio
+async def test_a_new_round_is_unclaimed_and_has_not_failed(session: AsyncSession):
+    job = await add_job_with_round(session)
+    row = await session.get_one(JobRound, (job.id, 1), populate_existing=True)
+    assert (row.claims, row.lease_id, row.lease_until, row.failed_at) == (0, None, None, None)
+
+
+@pytest.mark.anyio
+async def test_an_artifact_can_have_a_title_up_to_200_characters(session: AsyncSession):
+    job = await add_job_with_round(session)
+    draft = {"job_id": job.id, "round": 1, "kind": ArtifactKind.DRAFT, "content": "x"}
+    session.add(Artifact(**draft, title="t" * 200))
+    await session.flush()
+    session.add(Artifact(**draft, title="t" * 201))
+    with pytest.raises(DBAPIError, match="too long"):
         await session.flush()
 
 
