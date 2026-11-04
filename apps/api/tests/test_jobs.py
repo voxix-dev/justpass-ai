@@ -190,10 +190,11 @@ async def test_create_solves_the_job(create: Create, session: AsyncSession):
     job = await create(f"  {'a' * 90}\nsecond line  ")
     assert job.keys() == {
         "id", "status", "createdAt", "title", "text", "result", "error", "accepted", "round",
-        "feedback",
+        "feedback", "failedFeedback",
     }  # fmt: skip
     assert job["status"] == "done"
     assert (job["round"], job["feedback"], job["error"], job["accepted"]) == (1, None, None, False)
+    assert job["failedFeedback"] is None
     assert job["result"] == ANSWER
     assert job["text"] == f"{'a' * 90}\nsecond line"
     assert job["title"] == "a" * 79 + "…"
@@ -492,7 +493,8 @@ async def test_a_failed_revision_keeps_the_last_answer_and_its_own_row(
     agents.unreachable = 2
     after = await feedback(job, "lost note")
     assert (after["status"], after["result"], after["round"]) == ("done", ANSWER, 1)
-    assert after["feedback"] is None
+    assert (after["feedback"], after["failedFeedback"]) == (None, "lost note")
+    assert (await client.get("/jobs")).json() == [after]
     assert agents.released == [uuid.UUID(job["id"])]  # the next try gets a fresh actor
     failed = await session.get_one(JobRound, (uuid.UUID(job["id"]), 2), populate_existing=True)
     assert (failed.feedback, failed.failed_at is not None) == ("lost note", True)
@@ -504,9 +506,14 @@ async def test_a_failed_revision_keeps_the_last_answer_and_its_own_row(
 
     retried = await feedback(after, "try again", seen=1)
     assert (retried["round"], retried["feedback"]) == (3, "try again")  # no reuse of number 2
-    assert retried["result"] == ANSWER
+    assert (retried["result"], retried["failedFeedback"]) == (ANSWER, None)
     accepted = await client.post(f"/jobs/{job['id']}/accept", json={"round": 3})
     assert accepted.status_code == 200
+
+
+async def test_a_failed_first_round_has_no_failed_feedback(create: Create):
+    job = await create("fail")
+    assert (job["status"], job["round"], job["failedFeedback"]) == ("failed", 1, None)
 
 
 async def test_a_failed_revision_can_be_left_as_it_is_and_accepted(

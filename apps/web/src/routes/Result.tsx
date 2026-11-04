@@ -61,7 +61,7 @@ function announcement(job: Job) {
   if (job.status === 'queued') return 'Waiting for a solver.'
   if (job.status === 'running') return 'Working through the steps.'
   if (job.status === 'failed') return ''
-  return job.round > 1 ? `Revised answer ready, round ${job.round}.` : 'The answer is ready.'
+  return job.round > 1 ? 'Revised answer ready.' : 'The answer is ready.'
 }
 
 /** If an answer cannot be rendered, show its raw text so the student can still read and review it. */
@@ -85,21 +85,27 @@ function JobDetail({ job }: { job: Job }) {
   // Here, not in Actions: Actions is gone while a revision runs, and the text must survive that.
   const [note, setNote] = useState('')
   const [revising, setRevising] = useState<number | null>(null)
-  const [revisionFailed, setRevisionFailed] = useState(false)
+  // The feedback of a failed revision that was already put back in the note, so it is put back once.
+  const [restored, setRestored] = useState<string | null>(null)
+  // A failed revision keeps its feedback on the job, so this holds after a reload or in another tab too.
+  const revisionFailed = !pending && !!job.failedFeedback
 
   // The job says when a revision runs, whoever sent it: this page, another tab, or a page reloaded.
   if (pending && job.round > 1 && revising !== job.round) {
     setRevising(job.round)
-    setRevisionFailed(false)
     if (!note) setNote(job.feedback ?? '')
   }
-  // A revision that fails drops its round, so the job comes back on the answer it had.
   if (revising !== null && !pending) {
     setRevising(null)
-    if (job.round < revising) setRevisionFailed(true)
     // Only the feedback that was revised is done. Any other text is an unsent draft, so it stays.
     // The API stores feedback trimmed.
-    else if (note.trim() === job.feedback) setNote('')
+    if (!job.failedFeedback && note.trim() === job.feedback) setNote('')
+  }
+  if (!job.failedFeedback && restored !== null) setRestored(null)
+  // A revision that failed leaves the answer it had: give the student their feedback back.
+  if (!pending && job.failedFeedback && restored !== job.failedFeedback) {
+    setRestored(job.failedFeedback)
+    if (!note) setNote(job.failedFeedback)
   }
 
   return (
@@ -110,7 +116,7 @@ function JobDetail({ job }: { job: Job }) {
           <span>{ago(job.createdAt)}</span>
         </div>
         <h1 dir="auto" className="mt-4 text-4xl break-words sm:text-5xl">{job.title}</h1>
-        {job.round > 1 && !pending && <p className="mt-3 text-muted-foreground">Revised answer, round {job.round}.</p>}
+        {job.round > 1 && !pending && <p className="mt-3 text-muted-foreground">Revised answer.</p>}
       </header>
 
       {job.text !== job.title && (
@@ -175,10 +181,7 @@ function JobDetail({ job }: { job: Job }) {
             note={note}
             setNote={setNote}
             revisionFailed={revisionFailed}
-            onRevising={(round) => {
-              setRevisionFailed(false)
-              setRevising(round)
-            }}
+            onRevising={setRevising}
           />
         )}
       </Suspense>
