@@ -36,4 +36,5 @@ uv run ruff format . && uv run ruff check --fix .
 uv run pyright && uv run lint-imports
 uv run --env-file .env pytest   # once: cp .env.example .env && docker compose up -d db
 uv run python -m api.export_openapi   # if you changed the API; commit contracts/openapi.json
+uv run python -m grpc_tools.protoc -I apps/api/src/api --python_out=apps/api/src/api --pyi_out=apps/api/src/api apps/api/src/api/ate.proto   # if you changed ate.proto; commit ate_pb2.py(i)
 ```

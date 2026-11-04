@@ -41,6 +41,22 @@ jobs:
         run: |
           uv run python -m api.export_openapi
           test -z "$(git status --porcelain contracts/)" || { git status contracts/; exit 1; }
+      - name: Generated protobuf code is up to date
+        run: |
+          uv run python -m grpc_tools.protoc -I apps/api/src/api --python_out=apps/api/src/api \
+            --pyi_out=apps/api/src/api apps/api/src/api/ate.proto
+          test -z "$(git status --porcelain "apps/api/src/api/*_pb2.py*")" || { git diff apps/api/src/api; exit 1; }
+
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+          version: 1.75.0
+      - run: buf lint
+      - run: buf format --diff --exit-code
 
   web:
     runs-on: ubuntu-latest

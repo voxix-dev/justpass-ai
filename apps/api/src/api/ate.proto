@@ -1,10 +1,11 @@
 // The part of Substrate's Control API (pkg/proto/ateapipb/ateapi.proto in the Substrate repo) that
 // this repo calls. Field numbers and names match upstream; everything else is left out.
 //
-// After changing this file, from the repo root:
-//   uv run --no-project --python 3.14 --with grpcio-tools==1.85.1 python -m grpc_tools.protoc \
-//     -I apps/api/src/api --python_out=apps/api/src/api --pyi_out=apps/api/src/api \
-//     apps/api/src/api/ate.proto
+// After changing this file, from the repo root (grpcio-tools is pinned in uv.lock):
+//   uv run python -m grpc_tools.protoc -I apps/api/src/api --python_out=apps/api/src/api \
+//     --pyi_out=apps/api/src/api apps/api/src/api/ate.proto
+// CI checks that the generated ate_pb2.py and ate_pb2.pyi are up to date, that `buf lint` and
+// `buf format` pass, and that tests/test_ate_proto.py still finds every field in upstream.
 syntax = "proto3";
 
 package ateapi;
