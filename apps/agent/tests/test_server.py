@@ -311,6 +311,23 @@ async def test_a_context_api_error_gives_no_answer(
     assert "get_profile returned 409: the round is not current" in str(error.value)
 
 
+async def test_a_redirect_from_the_context_api_is_an_error(
+    client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    def redirect(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(307, headers={"location": "http://elsewhere/get_task"}, text="moved")
+
+    real = ContextClient
+
+    def client_with(url: str, token: str) -> ContextClient:
+        return real(url, token, httpx2.MockTransport(redirect))
+
+    monkeypatch.setattr(server, "ContextClient", client_with)
+    with pytest.raises(httpx2.HTTPStatusError) as error:
+        await client.post("/run", json=with_context())
+    assert "get_task returned 307 (location: http://elsewhere/get_task): moved" in str(error.value)
+
+
 async def test_the_word_fail_in_the_task_from_the_context_api_fails_the_run(
     client: httpx2.AsyncClient, context_calls: Callable[..., list[httpx2.Request]]
 ):

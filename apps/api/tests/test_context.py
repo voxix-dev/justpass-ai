@@ -16,6 +16,8 @@ from shared.models import ArtifactKind, JobStatus, Level
 
 pytestmark = pytest.mark.anyio
 
+LEASE = uuid.uuid4()  # the lease every test round is held under
+
 BODIES: dict[str, dict[str, Any]] = {
     "get_task": {},
     "get_profile": {},
@@ -57,7 +59,7 @@ async def add_job(
     job = Job(user_id=user_id, status=JobStatus.RECEIVED, **values)
     session.add(job)
     await session.flush()
-    session.add(JobRound(job_id=job.id, number=1))
+    session.add(JobRound(job_id=job.id, number=1, lease_id=LEASE))
     await session.flush()
     if status != JobStatus.RECEIVED:
         job.move_to(JobStatus.PROCESSING, job.created_at)
@@ -76,8 +78,8 @@ async def add_artifact(
     return artifact
 
 
-def auth(job: Job, round: int = 1, **kwargs: Any) -> dict[str, str]:
-    return {"Authorization": f"Bearer {mint_token(job.id, job.user_id, round, **kwargs)}"}
+def auth(job: Job, round: int = 1, lease: uuid.UUID = LEASE, **kwargs: Any) -> dict[str, str]:
+    return {"Authorization": f"Bearer {mint_token(job.id, job.user_id, round, lease, **kwargs)}"}
 
 
 async def call(
@@ -113,7 +115,7 @@ async def test_a_token_for_a_deleted_job_or_another_user_is_refused(
 ):
     job = await add_job(session, "alice")
     await add_job(session, "bob")
-    wrong_user = {"Authorization": f"Bearer {mint_token(job.id, 'bob', 1)}"}
+    wrong_user = {"Authorization": f"Bearer {mint_token(job.id, 'bob', 1, LEASE)}"}
     assert (await call(client, tool, wrong_user)).status_code == 401
     deleted = auth(job)
     await session.delete(job)
@@ -234,11 +236,29 @@ async def test_writes_are_refused_for_a_round_that_is_not_the_newest(
     client: httpx2.AsyncClient, session: AsyncSession, tool: str
 ):
     job = await add_job(session, "alice")
-    session.add(JobRound(job_id=job.id, number=2, feedback="again"))
+    session.add(JobRound(job_id=job.id, number=2, feedback="again", lease_id=LEASE))
     await session.flush()
     assert (await call(client, tool, auth(job, 1))).status_code == 409
     assert (await call(client, tool, auth(job, 2))).status_code == 200
     assert (await call(client, tool, auth(job, 3))).status_code == 409
+
+
+@pytest.mark.parametrize("tool", ["write_artifact", "update_memory"])
+async def test_writes_are_refused_for_a_lease_that_was_taken_over(
+    client: httpx2.AsyncClient, session: AsyncSession, tool: str
+):
+    job = await add_job(session, "alice")
+    old = auth(job)
+    assert (await call(client, tool, old)).status_code == 200
+    new_lease = uuid.uuid4()  # another dispatcher took the round over: same number, new lease
+    round_row = await session.get_one(JobRound, (job.id, 1))
+    round_row.lease_id = new_lease
+    await session.flush()
+
+    assert (await call(client, tool, old)).status_code == 409
+    assert (await call(client, tool, auth(job, lease=new_lease))).status_code == 200
+    # Reads only show the job's own data, so the old run may still make them.
+    assert (await call(client, "get_task", old)).status_code == 200
 
 
 async def test_get_profile(client: httpx2.AsyncClient, session: AsyncSession):

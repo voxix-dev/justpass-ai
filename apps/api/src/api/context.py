@@ -5,6 +5,7 @@ data the agent sees, so it never sees another student's, and it reads artifacts 
 The API is for agents: it is left out of the OpenAPI contract, and the web app never calls it.
 """
 
+import uuid
 from dataclasses import dataclass
 from typing import Annotated
 
@@ -44,10 +45,11 @@ _bearer = HTTPBearer(auto_error=False)
 
 @dataclass(frozen=True)
 class Agent:
-    """Who is calling: the job (and so the student) and the round the token is for."""
+    """Who is calling: the job (and so the student), the round and the lease the token is for."""
 
     job: Job
     round: int
+    lease: uuid.UUID
 
 
 async def _agent(
@@ -69,16 +71,18 @@ async def _agent(
     )
     if job is None:
         raise unauthorized
-    return Agent(job=job, round=claims.round)
+    return Agent(job=job, round=claims.round, lease=claims.lease)
 
 
 Caller = Annotated[Agent, Depends(_agent)]
 
 
 async def _lock_current(session: AsyncSession, agent: Agent) -> Job:
-    """Lock the job and return it, or 409 unless the token's round is the one it is processing.
+    """Lock the job and return it, or 409 unless the token's run still holds the current round.
 
-    The dispatcher locks the job to finish a round, so a write cannot land after the answer.
+    The dispatcher locks the job to finish a round, so a write cannot land after the answer. A
+    run that lost its lease to another dispatcher keeps the round number, so the token carries the
+    lease too. Reads are not checked: they only show the job's own data.
     """
     job = await session.scalar(
         select(Job)
@@ -89,7 +93,17 @@ async def _lock_current(session: AsyncSession, agent: Agent) -> Job:
     newest = await session.scalar(
         select(func.max(JobRound.number)).where(JobRound.job_id == agent.job.id)
     )
-    if job is None or job.status != JobStatus.PROCESSING or newest != agent.round:
+    holder = await session.scalar(
+        select(JobRound.lease_id).where(
+            JobRound.job_id == agent.job.id, JobRound.number == agent.round
+        )
+    )
+    if (
+        job is None
+        or job.status != JobStatus.PROCESSING
+        or newest != agent.round
+        or holder != agent.lease
+    ):
         raise HTTPException(status.HTTP_409_CONFLICT, "This round is no longer being worked on")
     return job
 

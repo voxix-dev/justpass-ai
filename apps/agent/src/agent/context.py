@@ -42,9 +42,15 @@ class ContextClient:
 
     async def _call(self, tool: str, arguments: GetTask | GetProfile | WriteArtifact) -> bytes:
         response = await self._http.post(tool, content=arguments.model_dump_json().encode())
-        if response.is_error:  # keep the Context API's reason, which raise_for_status() drops
+        if not response.is_success:  # also a redirect: its body is not tool output
+            # Keep the Context API's reason, which raise_for_status() drops.
+            where = (
+                f" (location: {response.headers['location']})"
+                if "location" in response.headers
+                else ""
+            )
             raise httpx2.HTTPStatusError(
-                f"{tool} returned {response.status_code}: {response.text[:500]}",
+                f"{tool} returned {response.status_code}{where}: {response.text[:500]}",
                 request=response.request,
                 response=response,
             )

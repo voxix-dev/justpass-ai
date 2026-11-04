@@ -24,6 +24,7 @@ class ContextClaims(BaseModel):
     job_id: uuid.UUID
     user_id: str
     round: int
+    lease: uuid.UUID  # the run that holds the round: a run that lost it can no longer write
     expires_at: int  # Unix time, seconds
 
 
@@ -48,13 +49,18 @@ def _decode(text: str) -> bytes:
 
 
 def mint_token(
-    job_id: uuid.UUID, user_id: str, round_number: int, ttl: timedelta = TOKEN_TTL
+    job_id: uuid.UUID,
+    user_id: str,
+    round_number: int,
+    lease: uuid.UUID,
+    ttl: timedelta = TOKEN_TTL,
 ) -> str:
-    """Sign a token for one round of one job, valid for ttl."""
+    """Sign a token for one round of one job and the lease that runs it, valid for ttl."""
     claims = ContextClaims(
         job_id=job_id,
         user_id=user_id,
         round=round_number,
+        lease=lease,
         expires_at=int(time.time() + ttl.total_seconds()),
     )
     payload = claims.model_dump_json().encode()

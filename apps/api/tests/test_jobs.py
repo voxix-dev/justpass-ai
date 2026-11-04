@@ -1016,6 +1016,20 @@ async def test_every_attempt_gets_a_token_of_its_own(
     assert tokens == ["first", "second"]
 
 
+async def test_the_token_names_the_lease_that_runs_the_round(
+    dispatcher: StepDispatcher, agents: FakeAgents, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("CONTEXT_API_URL", "http://api:8000")
+    monkeypatch.setenv("CONTEXT_TOKEN_SECRET", "s" * 32)
+    lease = uuid.uuid4()
+    run = AgentRun(job_id=uuid.uuid4(), round=2, text="Solve", feedback=None)
+    await dispatcher._solve(run, "alice", lease)
+
+    context = agents.runs[0].context
+    assert context is not None
+    assert verify_token(context.token).lease == lease
+
+
 async def test_the_sweep_runs_until_close(
     client: httpx2.AsyncClient,
     dispatcher: StepDispatcher,

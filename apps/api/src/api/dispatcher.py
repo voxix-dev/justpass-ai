@@ -159,7 +159,7 @@ class Dispatcher:
                 return
             run, user_id = claim
             lost = asyncio.Event()
-            solving = asyncio.create_task(self._solve(run, user_id))
+            solving = asyncio.create_task(self._solve(run, user_id, lease))
             # The lease is renewed until the result is about to be saved: putting the actor away
             # can take longer than a lease.
             renewing = asyncio.create_task(self._renew(job_id, number, lease, solving, lost))
@@ -323,12 +323,16 @@ class Dispatcher:
             return run, job.user_id
 
     @staticmethod
-    def _grant(job_id: uuid.UUID, user_id: str, number: int) -> ContextGrant | None:
+    def _grant(
+        job_id: uuid.UUID, user_id: str, number: int, lease: uuid.UUID
+    ) -> ContextGrant | None:
         """The agent's way into the Context API for this round, or None when there is none."""
         url = os.environ.get("CONTEXT_API_URL", "")
-        return ContextGrant(url=url, token=mint_token(job_id, user_id, number)) if url else None
+        return (
+            ContextGrant(url=url, token=mint_token(job_id, user_id, number, lease)) if url else None
+        )
 
-    async def _solve(self, run: AgentRun, user_id: str) -> str | None:
+    async def _solve(self, run: AgentRun, user_id: str, lease: uuid.UUID) -> str | None:
         """Return the answer, or None if the agent gives none or both attempts raise an error.
 
         Each attempt gets a token of its own, so a retry long after the first never holds one that
@@ -336,7 +340,7 @@ class Dispatcher:
         """
         for attempt in range(1, ATTEMPTS + 1):
             try:
-                grant = self._grant(run.job_id, user_id, run.round)
+                grant = self._grant(run.job_id, user_id, run.round, lease)
                 return (await self.agents.solve(run.model_copy(update={"context": grant}))).answer
             except Exception:
                 log.exception("Attempt %d of job %s failed", attempt, run.job_id)
