@@ -904,6 +904,109 @@ async def test_the_lease_is_renewed_while_the_agent_works(
     assert renewed == [True]
 
 
+async def test_the_lease_is_renewed_while_the_actor_is_put_away(
+    client: httpx2.AsyncClient,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    job_id = await queue(client, dispatcher)
+    monkeypatch.setattr("api.dispatcher.RENEW_SECONDS", 0.2)
+    renewed: list[bool] = []
+
+    async def slow_hibernate(_: uuid.UUID) -> None:
+        await expire_lease(dispatcher, job_id, 1)
+        await asyncio.sleep(0.25)
+        row = await round_row(session, str(job_id))
+        renewed.append(row.lease_until is not None and row.lease_until > datetime.now(UTC))
+
+    monkeypatch.setattr(agents, "hibernate", slow_hibernate)
+    dispatcher.start(job_id, 1)
+    await dispatcher.drain()
+    assert renewed == [True]
+    row = await round_row(session, str(job_id))
+    assert (row.lease_id, row.lease_until) == (None, None)  # finished, and the lease given up
+
+
+async def test_a_renewal_that_fails_for_any_reason_is_tried_again(
+    client: httpx2.AsyncClient,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    job_id = await queue(client, dispatcher)
+    monkeypatch.setattr("api.dispatcher.RENEW_SECONDS", 0.2)
+    renewed: list[bool] = []
+
+    async def break_the_first_renewal() -> None:
+        await expire_lease(dispatcher, job_id, 1)
+        real = dispatcher.open_session
+        failed = False
+
+        def flaky() -> AsyncSession:
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise ValueError("not a database outage")
+            return real()
+
+        monkeypatch.setattr(dispatcher, "open_session", flaky)
+        await asyncio.sleep(0.5)  # the first renewal fails at 0.2 s, the second works at 0.4 s
+        row = await round_row(session, str(job_id))
+        renewed.append(row.lease_until is not None and row.lease_until > datetime.now(UTC))
+
+    agents.during_solve = break_the_first_renewal
+    dispatcher.start(job_id, 1)
+    await dispatcher.drain()
+    assert renewed == [True]
+
+
+async def test_a_run_that_lost_its_lease_stops_the_agent_and_saves_nothing(
+    client: httpx2.AsyncClient,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    job_id = await queue(client, dispatcher)
+    monkeypatch.setattr("api.dispatcher.RENEW_SECONDS", 0.1)
+
+    async def lose_the_lease_and_hang() -> None:
+        async with dispatcher.open_session() as other:
+            await other.execute(
+                update(JobRound).where(JobRound.job_id == job_id).values(lease_id=uuid.uuid4())
+            )
+            await other.commit()
+        await asyncio.Event().wait()
+
+    agents.during_solve = lose_the_lease_and_hang
+    dispatcher.start(job_id, 1)
+    await asyncio.wait_for(dispatcher.drain(), 5)
+
+    assert "Lost the lease" in caplog.text
+    assert (agents.hibernated, agents.released) == ([], [])
+    assert (await client.get(f"/jobs/{job_id}")).json()["status"] == "running"
+
+
+async def test_every_attempt_gets_a_token_of_its_own(
+    client: httpx2.AsyncClient,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("CONTEXT_API_URL", "http://api:8000")
+    minted = iter(["first", "second", "third"])
+    monkeypatch.setattr("api.dispatcher.mint_token", lambda *args: next(minted))
+    agents.unreachable = 1
+    await client.post("/jobs", json={"text": "Solve"})
+    await dispatcher.drain()
+
+    tokens = [run.context.token for run in agents.runs if run.context]
+    assert tokens == ["first", "second"]
+
+
 async def test_the_sweep_runs_until_close(
     client: httpx2.AsyncClient,
     dispatcher: StepDispatcher,

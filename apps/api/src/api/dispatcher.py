@@ -150,25 +150,46 @@ class Dispatcher:
         """Claim a round, run it and save its result if still current; unexpected errors stop it."""
         lease = uuid.uuid4()  # one per run, so a claim whose reply was lost is recognised as ours
         try:
-            run = await self._keep_trying(lambda: self._begin(job_id, number, lease))
-            if run is None:
+            claim = await self._keep_trying(lambda: self._begin(job_id, number, lease))
+            if claim is None:
                 return
-            renewing = asyncio.create_task(self._renew(job_id, number, lease))
+            run, user_id = claim
+            lost = asyncio.Event()
+            solving = asyncio.create_task(self._solve(run, user_id))
+            # The lease is renewed until the result is about to be saved: putting the actor away
+            # can take longer than a lease.
+            renewing = asyncio.create_task(self._renew(job_id, number, lease, solving, lost))
             try:
-                answer = await self._solve(run)
+                try:
+                    answer = await solving
+                except asyncio.CancelledError:
+                    if lost.is_set():  # the renewal found another run holding the round
+                        return
+                    raise
+                if not await self._keep_trying(lambda: self._is_current(job_id, number, lease)):
+                    return  # another run of this round took over, or finished first
+                put_away = self.agents.release if answer is None else self.agents.hibernate
+                await self._quietly(put_away, job_id)
             finally:
+                solving.cancel()
                 renewing.cancel()
-                await asyncio.gather(renewing, return_exceptions=True)
-            if not await self._keep_trying(lambda: self._is_current(job_id, number, lease)):
-                return  # another run of this round took over, or finished first
-            put_away = self.agents.release if answer is None else self.agents.hibernate
-            await self._quietly(put_away, job_id)
+                await asyncio.gather(solving, renewing, return_exceptions=True)
             await self._keep_trying(lambda: self._finish(job_id, number, lease, answer))
         except Exception:
             log.exception("Round %d of job %s stopped", number, job_id)
 
-    async def _renew(self, job_id: uuid.UUID, number: int, lease: uuid.UUID) -> None:
-        """Extend the lease every RENEW_SECONDS until cancelled. A database outage is ridden out."""
+    async def _renew(
+        self,
+        job_id: uuid.UUID,
+        number: int,
+        lease: uuid.UUID,
+        solving: asyncio.Task[str | None],
+        lost: asyncio.Event,
+    ) -> None:
+        """Extend the lease every RENEW_SECONDS until cancelled, and stop the solve if it is lost.
+
+        Any error is logged and the next try goes on: a database outage must not end the renewal.
+        """
         while True:
             await asyncio.sleep(RENEW_SECONDS)
             try:
@@ -184,10 +205,14 @@ class Dispatcher:
                         .execution_options(synchronize_session=False)
                     )
                     await session.commit()
-                if renewed.rowcount == 0:  # pyright: ignore[reportAttributeAccessIssue]
-                    log.warning("Lost the lease on round %d of job %s", number, job_id)
-            except DATABASE_DOWN:
+            except Exception:
                 log.exception("Could not renew the lease on round %d of job %s", number, job_id)
+                continue
+            if renewed.rowcount == 0:  # pyright: ignore[reportAttributeAccessIssue]
+                log.warning("Lost the lease on round %d of job %s", number, job_id)
+                lost.set()
+                solving.cancel()  # another run owns the round: do not pay for this one
+                return
 
     async def _is_current(self, job_id: uuid.UUID, number: int, lease: uuid.UUID) -> bool:
         async with self.open_session() as session:
@@ -208,8 +233,10 @@ class Dispatcher:
         )
         return job if newest == number and holder == lease else None
 
-    async def _begin(self, job_id: uuid.UUID, number: int, lease: uuid.UUID) -> AgentRun | None:
-        """Claim the round and return the agent's task, marking a received job processing.
+    async def _begin(
+        self, job_id: uuid.UUID, number: int, lease: uuid.UUID
+    ) -> tuple[AgentRun, str] | None:
+        """Claim the round: return the agent's task and its user, and set a received job processing.
 
         Return None if the job is missing or has another status, the round is not its newest, or
         another run holds it (or it was claimed MAX_CLAIMS times). Claiming again with the same
@@ -257,21 +284,26 @@ class Dispatcher:
                 round=number,
                 text=job.input_text or "",
                 feedback=row.feedback,
-                context=self._grant(job, number),
             )
             await session.commit()
-            return run
+            return run, job.user_id
 
-    def _grant(self, job: Job, number: int) -> ContextGrant | None:
+    @staticmethod
+    def _grant(job_id: uuid.UUID, user_id: str, number: int) -> ContextGrant | None:
         """The agent's way into the Context API for this round, or None when there is none."""
         url = os.environ.get("CONTEXT_API_URL", "")
-        return ContextGrant(url=url, token=mint_token(job.id, job.user_id, number)) if url else None
+        return ContextGrant(url=url, token=mint_token(job_id, user_id, number)) if url else None
 
-    async def _solve(self, run: AgentRun) -> str | None:
-        """Return the answer, or None if the agent gives none or both attempts raise an error."""
+    async def _solve(self, run: AgentRun, user_id: str) -> str | None:
+        """Return the answer, or None if the agent gives none or both attempts raise an error.
+
+        Each attempt gets a token of its own, so a retry long after the first never holds one that
+        is about to expire.
+        """
         for attempt in range(1, ATTEMPTS + 1):
             try:
-                return (await self.agents.solve(run)).answer
+                grant = self._grant(run.job_id, user_id, run.round)
+                return (await self.agents.solve(run.model_copy(update={"context": grant}))).answer
             except Exception:
                 log.exception("Attempt %d of job %s failed", attempt, run.job_id)
         return None

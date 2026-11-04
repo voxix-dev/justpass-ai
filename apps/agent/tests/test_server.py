@@ -182,6 +182,31 @@ async def test_the_cache_keeps_only_the_newest_runs(
     assert (runs[0].job_id, 1) not in server.runs
 
 
+async def test_a_running_run_is_never_evicted(
+    client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(server, "MAX_RUNS", 1)
+    monkeypatch.setattr(server, "SOLVE_SECONDS", 0.3)
+    first = AgentRun(job_id=uuid4(), round=1, text="Solve")
+    running = server.join_run(first)
+    server.join_run(AgentRun(job_id=uuid4(), round=1, text="Solve"))
+    assert server.runs[(first.job_id, 1)] is running
+    assert (await running).answer == SAMPLE_ANSWER
+
+
+async def test_a_cancelled_run_is_dropped_so_the_round_can_run_again(
+    client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(server, "SOLVE_SECONDS", 5)
+    run = AgentRun(job_id=uuid4(), round=1, text="Solve")
+    work = server.join_run(run)
+    await asyncio.sleep(0)
+    work.cancel()
+    await asyncio.gather(work, return_exceptions=True)
+    await asyncio.sleep(0)  # the done callback runs on the next loop turn
+    assert (run.job_id, 1) not in server.runs
+
+
 def context_transport(
     task_text: str = "Solve", fail_on: str | None = None
 ) -> tuple[httpx2.MockTransport, list[httpx2.Request]]:
@@ -199,11 +224,17 @@ def context_transport(
                     {"number": 1, "feedback": None, "outcome": "answered", "artifacts": []},
                     {
                         "number": 2,
+                        "feedback": "Show the check",
+                        "outcome": "answered",
+                        "artifacts": [],
+                    },
+                    {
+                        "number": 3,
                         "feedback": "Explain step 2",
                         "outcome": "failed",
                         "artifacts": [],
                     },
-                    {"number": 3, "feedback": "More detail", "outcome": "running", "artifacts": []},
+                    {"number": 4, "feedback": "More detail", "outcome": "running", "artifacts": []},
                 ]
                 return httpx2.Response(
                     200,
@@ -213,7 +244,7 @@ def context_transport(
                         "level": "high_school",
                         "language": "en",
                         "text": task_text,
-                        "round": 3,
+                        "round": 4,
                         "rounds": rounds,
                     },
                 )
@@ -241,7 +272,7 @@ def context_calls(monkeypatch: pytest.MonkeyPatch) -> Callable[..., list[httpx2.
     return install
 
 
-def with_context(round_number: int = 3) -> dict[str, object]:
+def with_context(round_number: int = 4) -> dict[str, object]:
     grant = {"url": "http://api:8000", "token": "tok"}
     return body("Solve", round=round_number, context=grant)
 
@@ -264,9 +295,11 @@ async def test_with_a_context_the_agent_reads_the_task_and_writes_a_draft(
     written = json.loads(seen[-1].content)
     assert written["kind"] == "draft"
     assert written["content_md"] == answer
-    # Every round's feedback comes from the Context API, the failed one included.
-    assert "```\nExplain step 2\n```" in answer
+    # The feedback comes from the Context API: answered rounds and this one. A failed round's is
+    # left out, because the student's box gets it back and they may send it again.
+    assert "```\nShow the check\n```" in answer
     assert "```\nMore detail\n```" in answer
+    assert "Explain step 2" not in answer
 
 
 async def test_a_context_api_error_gives_no_answer(

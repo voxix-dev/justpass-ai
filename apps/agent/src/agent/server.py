@@ -83,7 +83,12 @@ async def _solve_with_context(grant_url: str, token: str, round_number: int) -> 
     async with ContextClient(grant_url, token) as context:
         task = await context.get_task()
         profile = await context.get_profile()
-        feedback = [r.feedback for r in task.rounds if r.feedback and r.number <= round_number]
+        # A round that failed is left out: the student sees its text again and may send it anew.
+        feedback = [
+            r.feedback
+            for r in task.rounds
+            if r.feedback and (r.outcome == "answered" or r.number == round_number)
+        ]
         if re.search(r"\bfail\b", task.text, re.IGNORECASE):
             return AgentAnswer(answer=None)
         answer = _answer(feedback)
@@ -113,18 +118,25 @@ def join_run(body: AgentRun) -> asyncio.Task[AgentAnswer]:
     work = asyncio.create_task(solve(body))
     work.add_done_callback(lambda done: _forget_if_failed(key, done))
     runs[key] = work
-    while len(runs) > MAX_RUNS:
-        runs.popitem(last=False)
+    _trim()
     return work
+
+
+def _trim() -> None:
+    """Forget the oldest finished runs beyond MAX_RUNS. A running one stays, so it is never lost."""
+    for key in [key for key, work in runs.items() if work.done()]:
+        if len(runs) <= MAX_RUNS:
+            break
+        del runs[key]
 
 
 def _forget_if_failed(key: tuple[UUID, int], work: asyncio.Task[AgentAnswer]) -> None:
     """A run that raised is dropped, so a retry runs again."""
-    if work.cancelled() or work.exception() is not None:
-        if work.exception() is not None:
-            logger.error("Run of %s round %s failed", key[0], key[1], exc_info=work.exception())
-        if runs.get(key) is work:
-            del runs[key]
+    error = None if work.cancelled() else work.exception()
+    if error is not None:
+        logger.error("Run of %s round %s failed", key[0], key[1], exc_info=error)
+    if (work.cancelled() or error is not None) and runs.get(key) is work:
+        del runs[key]
 
 
 async def stream(body: AgentRun) -> AsyncGenerator[bytes]:
