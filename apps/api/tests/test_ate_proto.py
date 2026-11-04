@@ -16,7 +16,8 @@ UPSTREAM_URL = (
 )
 OURS = Path(__file__).parents[1] / "src/api/ate.proto"
 
-type Field = tuple[str, int, str, int, bool]  # (name, type, type_name, label, proto3_optional)
+# (name, type, type_name, label, proto3_optional, oneof name or None)
+type Field = tuple[str, int, str, int, bool, str | None]
 
 
 def describe(proto: Path, out: Path) -> pb.FileDescriptorSet:
@@ -46,7 +47,15 @@ def messages_and_enums(
     def walk(prefix: str, msg: pb.DescriptorProto) -> None:
         name = f"{prefix}.{msg.name}"
         messages[name] = {
-            f.number: (f.name, f.type, f.type_name, f.label, f.proto3_optional) for f in msg.field
+            f.number: (
+                f.name,
+                f.type,
+                f.type_name,
+                f.label,
+                f.proto3_optional,
+                msg.oneof_decl[f.oneof_index].name if f.HasField("oneof_index") else None,
+            )
+            for f in msg.field
         }
         for nested in msg.nested_type:
             walk(name, nested)
