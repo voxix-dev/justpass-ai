@@ -26,6 +26,7 @@ change, and update it when your PR changes a design decision.
 - No stacked PRs. Every PR targets `main` and stands on its own. Don't split one change into a chain of PRs.
 - If a change depends on another open PR, wait until that PR is merged before opening it.
 - Only when waiting would block work for too long, put both changes in one bigger PR instead. Avoid this too.
+- Leave the PR description empty. CodeRabbit writes the summary.
 - To add docstrings with CodeRabbit, pick "Commit on current branch" under "Generate docstrings". Never "Create a new
   PR": that opens a stacked PR.
 
