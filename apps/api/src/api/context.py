@@ -82,7 +82,10 @@ async def _lock_current(session: AsyncSession, agent: Agent) -> Job:
 
     The dispatcher locks the job to finish a round, so a write cannot land after the answer. A
     run that lost its lease to another dispatcher keeps the round number, so the token carries the
-    lease too. Reads are not checked: they only show the job's own data.
+    lease too. The round row is locked as well, until the write commits: a release, renewal or
+    claim of the lease waits for it, and then sees the result. Every transaction that takes both
+    locks takes the job first, and the ones that update only the round take no other, so none
+    can deadlock. Reads are not checked: they only show the job's own data.
     """
     job = await session.scalar(
         select(Job)
@@ -94,9 +97,9 @@ async def _lock_current(session: AsyncSession, agent: Agent) -> Job:
         select(func.max(JobRound.number)).where(JobRound.job_id == agent.job.id)
     )
     holder = await session.scalar(
-        select(JobRound.lease_id).where(
-            JobRound.job_id == agent.job.id, JobRound.number == agent.round
-        )
+        select(JobRound.lease_id)
+        .where(JobRound.job_id == agent.job.id, JobRound.number == agent.round)
+        .with_for_update()
     )
     if (
         job is None

@@ -263,7 +263,9 @@ class Dispatcher:
             select(func.max(JobRound.number)).where(JobRound.job_id == job_id)
         )
         holder = await session.scalar(
-            select(JobRound.lease_id).where(JobRound.job_id == job_id, JobRound.number == number)
+            select(JobRound.lease_id)
+            .where(JobRound.job_id == job_id, JobRound.number == number)
+            .with_for_update()
         )
         return job if newest == number and holder == lease else None
 

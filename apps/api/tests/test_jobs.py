@@ -7,8 +7,9 @@ from typing import Any
 import httpx2
 import pytest
 from sqlalchemy import func, select, text, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from api.context import Agent, _lock_current  # pyright: ignore[reportPrivateUsage]
 from api.context_token import InvalidToken, verify_token
 from api.db import get_session
 from api.dispatcher import MAX_CLAIMS, Dispatcher
@@ -1028,6 +1029,47 @@ async def test_the_token_names_the_lease_that_runs_the_round(
     context = agents.runs[0].context
     assert context is not None
     assert verify_token(context.token).lease == lease
+
+
+async def test_a_release_waits_for_a_context_write_in_progress(engine: AsyncEngine):
+    """Real connections: the shared test one cannot show one transaction waiting for another."""
+    holder = uuid.uuid4()
+    user_id = f"user-{uuid.uuid4()}"
+
+    def new_session() -> AsyncSession:
+        return AsyncSession(engine, expire_on_commit=False)
+
+    async with new_session() as setup:
+        setup.add(User(id=user_id, is_anonymous=True))
+        await setup.flush()
+        job = Job(
+            user_id=user_id,
+            status=JobStatus.PROCESSING,
+            subject="math",
+            level=Level.COLLEGE,
+            language="en",
+            input_text="Solve",
+        )
+        setup.add(job)
+        await setup.flush()
+        setup.add(JobRound(job_id=job.id, number=1, lease_id=holder, claims=1))
+        await setup.commit()
+    try:
+        real = Dispatcher(FakeAgents(), new_session)
+        async with new_session() as write:
+            await _lock_current(write, Agent(job=job, round=1, lease=holder))  # the write begins
+            giving_back = asyncio.create_task(real._give_back(job.id, 1, holder))
+            await asyncio.sleep(0.3)
+            assert not giving_back.done()  # waits for the write to commit
+            await write.commit()
+        await asyncio.wait_for(giving_back, 5)
+        async with new_session() as check:
+            row = await round_row(check, str(job.id))
+        assert (row.lease_id, row.claims) == (None, 0)
+    finally:
+        async with new_session() as cleanup:
+            await cleanup.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
+            await cleanup.commit()
 
 
 async def test_the_sweep_runs_until_close(
