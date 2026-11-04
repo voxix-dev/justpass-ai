@@ -19,6 +19,7 @@ shared = { workspace = true }
 dev = [
     "deptry",
     "diff-cover",
+    "grpcio-tools==1.85.1",
     "httpx2>=2.16.0",
     "import-linter",
     "pre-commit",

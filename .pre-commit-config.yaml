@@ -18,3 +18,9 @@ repos:
         language: system
         pass_filenames: false
         files: pyproject\.toml$
+      - id: ate-pb2
+        name: ate_pb2 is regenerated from ate.proto
+        entry: uv run python -m grpc_tools.protoc -I apps/api/src/api --python_out=apps/api/src/api --pyi_out=apps/api/src/api apps/api/src/api/ate.proto
+        language: system
+        pass_filenames: false
+        files: ate\.proto$

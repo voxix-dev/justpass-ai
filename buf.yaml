@@ -1,0 +1,10 @@
+version: v2
+modules:
+  - path: apps/api/src/api
+lint:
+  use:
+    - STANDARD
+  except:
+    # The package and file names come from Substrate's ateapi.proto and must not change.
+    - PACKAGE_DIRECTORY_MATCH
+    - PACKAGE_VERSION_SUFFIX
