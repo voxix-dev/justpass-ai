@@ -20,6 +20,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://app:app@127.0.0.1:${DB_PORT:-5432}/app
       AGENT_URL: ""
+      CONTEXT_API_URL: ""  # the actors on kind cannot reach the API on the host yet
       ATE_ROUTER_URL: https://atenet-router.ate-system.svc:${ATE_ROUTER_PORT:-9443}
       ATE_API_TARGET: api.ate-system.svc:${ATE_API_PORT:-8443}
       ATE_ATESPACE: justpass-agents

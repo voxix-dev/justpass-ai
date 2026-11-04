@@ -88,6 +88,8 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@v4
+      - name: Make a secret for the Context API tokens
+        run: echo "CONTEXT_TOKEN_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
       - name: Start Postgres, the agent and the API
         run: docker compose up -d --build --wait api
         working-directory: .

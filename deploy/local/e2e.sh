@@ -54,6 +54,8 @@ revised=$(curl -fsS "$api/jobs/$id")
 expect "the revised job" "$(jq -r .status <<< "$revised")" done
 expect "its round" "$(jq -r .round <<< "$revised")" 2
 expect "its feedback" "$(jq -r .feedback <<< "$revised")" "Explain step 2"
+[[ $(jq -r .result <<< "$revised") == *"Explain step 2"* ]] || fail "the revised answer does not show the feedback"
+echo "ok: the revised answer shows the feedback"
 expect "the actor after round 2" "$(actor_state "$id")" ACTOR_STATE_SUSPENDED
 
 post "/jobs/$id/accept" '{"round": 2}' > /dev/null
