@@ -107,10 +107,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  api-image:
+  images:
     needs: [python, web, e2e, secrets]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [api, agent]
     permissions:
       contents: read
       packages: write
@@ -127,8 +131,8 @@ jobs:
       - uses: docker/build-push-action@v7
         with:
           context: .
-          file: apps/api/Dockerfile
+          file: apps/${{ matrix.image }}/Dockerfile
           push: true
-          tags: ghcr.io/voxix-dev/justpass-ai/api:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max,ignore-error=true
+          tags: ghcr.io/voxix-dev/justpass-ai/${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max,ignore-error=true
