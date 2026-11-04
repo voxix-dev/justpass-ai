@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from api import jobs
+from api import context, jobs
 from api.agents import agents_from_env
 from api.db import DATABASE_DOWN, open_session
 from api.dispatcher import Dispatcher
@@ -54,6 +54,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Homework API", version="0.0.0", lifespan=lifespan)
 app.add_middleware(BodyLimit)
 app.include_router(jobs.router)
+app.include_router(context.router)
 
 
 @app.exception_handler(RequestValidationError)
