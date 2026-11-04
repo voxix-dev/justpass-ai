@@ -42,7 +42,12 @@ class ContextClient:
 
     async def _call(self, tool: str, arguments: GetTask | GetProfile | WriteArtifact) -> bytes:
         response = await self._http.post(tool, content=arguments.model_dump_json().encode())
-        response.raise_for_status()
+        if response.is_error:  # keep the Context API's reason, which raise_for_status() drops
+            raise httpx2.HTTPStatusError(
+                f"{tool} returned {response.status_code}: {response.text[:500]}",
+                request=response.request,
+                response=response,
+            )
         return response.content
 
     async def get_task(self) -> Task:

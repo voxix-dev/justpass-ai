@@ -217,7 +217,7 @@ def context_transport(
         seen.append(request)
         tool = request.url.path.rsplit("/", 1)[-1]
         if tool == fail_on:
-            return httpx2.Response(500)
+            return httpx2.Response(409, text="the round is not current")
         match tool:
             case "get_task":
                 rounds: list[dict[str, object]] = [
@@ -306,8 +306,9 @@ async def test_a_context_api_error_gives_no_answer(
     client: httpx2.AsyncClient, context_calls: Callable[..., list[httpx2.Request]]
 ):
     context_calls(fail_on="get_profile")
-    with pytest.raises(httpx2.HTTPStatusError):
+    with pytest.raises(httpx2.HTTPStatusError) as error:
         await client.post("/run", json=with_context())
+    assert "get_profile returned 409: the round is not current" in str(error.value)
 
 
 async def test_the_word_fail_in_the_task_from_the_context_api_fails_the_run(

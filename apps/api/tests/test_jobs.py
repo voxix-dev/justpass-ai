@@ -881,6 +881,21 @@ async def test_a_round_claimed_too_often_is_left_alone(
     assert (await client.get(f"/jobs/{job_id}")).json()["status"] == "running"
 
 
+async def wait_for_a_renewal(
+    open_session: Callable[[], AsyncSession], job_id: uuid.UUID, seconds: float = 5
+) -> bool:
+    """Poll until the round's expired lease has been renewed; False if not within `seconds`."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
+    while loop.time() < deadline:
+        async with open_session() as session:
+            row = await round_row(session, str(job_id))
+        if row.lease_until is not None and row.lease_until > datetime.now(UTC):
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
 async def test_the_lease_is_renewed_while_the_agent_works(
     client: httpx2.AsyncClient,
     dispatcher: StepDispatcher,
@@ -892,13 +907,11 @@ async def test_the_lease_is_renewed_while_the_agent_works(
     monkeypatch.setattr("api.dispatcher.RENEW_SECONDS", 0.2)
     renewed: list[bool] = []
 
-    async def wait_for_a_renewal() -> None:
+    async def expire_and_wait() -> None:
         await expire_lease(dispatcher, job_id, 1)
-        await asyncio.sleep(0.25)
-        row = await round_row(session, str(job_id))
-        renewed.append(row.lease_until is not None and row.lease_until > datetime.now(UTC))
+        renewed.append(await wait_for_a_renewal(dispatcher.open_session, job_id))
 
-    agents.during_solve = wait_for_a_renewal
+    agents.during_solve = expire_and_wait
     dispatcher.start(job_id, 1)
     await dispatcher.drain()
     assert renewed == [True]
@@ -917,9 +930,7 @@ async def test_the_lease_is_renewed_while_the_actor_is_put_away(
 
     async def slow_hibernate(_: uuid.UUID) -> None:
         await expire_lease(dispatcher, job_id, 1)
-        await asyncio.sleep(0.25)
-        row = await round_row(session, str(job_id))
-        renewed.append(row.lease_until is not None and row.lease_until > datetime.now(UTC))
+        renewed.append(await wait_for_a_renewal(dispatcher.open_session, job_id))
 
     monkeypatch.setattr(agents, "hibernate", slow_hibernate)
     dispatcher.start(job_id, 1)
@@ -953,9 +964,7 @@ async def test_a_renewal_that_fails_for_any_reason_is_tried_again(
             return real()
 
         monkeypatch.setattr(dispatcher, "open_session", flaky)
-        await asyncio.sleep(0.5)  # the first renewal fails at 0.2 s, the second works at 0.4 s
-        row = await round_row(session, str(job_id))
-        renewed.append(row.lease_until is not None and row.lease_until > datetime.now(UTC))
+        renewed.append(await wait_for_a_renewal(real, job_id))  # the second try works
 
     agents.during_solve = break_the_first_renewal
     dispatcher.start(job_id, 1)
@@ -1030,6 +1039,30 @@ async def test_the_sweep_runs_until_close(
 
     assert not [task for task in real._tasks if not task.done()]
     assert agents.runs[0].job_id == job_id
+
+
+async def test_close_gives_the_round_back_without_counting_the_claim(
+    client: httpx2.AsyncClient,
+    dispatcher: StepDispatcher,
+    agents: FakeAgents,
+    session: AsyncSession,
+):
+    job_id = await queue(client, dispatcher)
+    real = Dispatcher(agents, dispatcher.open_session)
+
+    async def hang() -> None:
+        await asyncio.Event().wait()
+
+    agents.during_solve = hang
+    real.start(job_id, 1)
+    await asyncio.wait_for(agents.solving.wait(), 5)
+    held = await round_row(session, str(job_id))
+    assert (held.lease_id is not None, held.claims) == (True, 1)
+
+    await real.close()
+
+    row = await round_row(session, str(job_id))
+    assert (row.lease_id, row.lease_until, row.claims) == (None, None, 0)
 
 
 async def test_the_sweep_survives_an_error(

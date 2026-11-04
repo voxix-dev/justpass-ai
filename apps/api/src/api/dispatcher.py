@@ -40,6 +40,7 @@ DATABASE_DELAY = 5.0
 LEASE_SECONDS = 60  # a round nobody renewed for this long can be claimed again
 RENEW_SECONDS = 20
 SWEEP_SECONDS = 30
+GIVE_BACK_SECONDS = 5  # how long a shutdown waits to release a round's lease
 MAX_CLAIMS = 3  # how many times a round may be claimed, so one that keeps crashing stops
 LEASE = literal_column(f"interval '{LEASE_SECONDS} seconds'")
 
@@ -141,7 +142,10 @@ class Dispatcher:
                 await asyncio.sleep(DATABASE_DELAY)
 
     async def close(self) -> None:
-        """Cancel background work; recover() can pick up unfinished received or processing jobs."""
+        """Cancel background work, and wait until the rounds in flight have given their leases back.
+
+        recover() can pick up unfinished received or processing jobs.
+        """
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -175,8 +179,38 @@ class Dispatcher:
                 renewing.cancel()
                 await asyncio.gather(solving, renewing, return_exceptions=True)
             await self._keep_trying(lambda: self._finish(job_id, number, lease, answer))
+        except asyncio.CancelledError:
+            # A graceful shutdown: hand the round back at once, not after the lease runs out.
+            await self._give_back(job_id, number, lease)
+            raise
         except Exception:
             log.exception("Round %d of job %s stopped", number, job_id)
+
+    async def _give_back(self, job_id: uuid.UUID, number: int, lease: uuid.UUID) -> None:
+        """Release this run's lease and undo its claim, if the lease is still ours.
+
+        Only a clean shutdown comes here, so it must not count against MAX_CLAIMS: a crash, which
+        leaves the lease to run out, still does. Waits at most GIVE_BACK_SECONDS.
+        """
+        try:
+            async with asyncio.timeout(GIVE_BACK_SECONDS), self.open_session() as session:
+                await session.execute(
+                    update(JobRound)
+                    .where(
+                        JobRound.job_id == job_id,
+                        JobRound.number == number,
+                        JobRound.lease_id == lease,
+                    )
+                    .values(
+                        lease_id=None,
+                        lease_until=None,
+                        claims=func.greatest(JobRound.claims - 1, 0),
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                await session.commit()
+        except Exception:
+            log.exception("Could not give back round %d of job %s", number, job_id)
 
     async def _renew(
         self,
