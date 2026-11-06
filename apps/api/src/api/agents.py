@@ -8,10 +8,11 @@ import asyncio
 import os
 import ssl
 import uuid
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Coroutine
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import grpc
 import httpx2
@@ -31,6 +32,31 @@ RUN_TIMEOUT = httpx2.Timeout(CONTROL_TIMEOUT, read=IDLE_TIMEOUT)
 BUSY_WAIT = 60.0  # how long a job waits for a free worker before it counts as a failure
 BUSY_RETRY_DELAY = 2.0
 ACCESS_POLICY_NAME = "default"  # every atespace has one policy, and Substrate fixes its name
+EGRESS_POLICY_NAME = "default"  # so does every actor, for its egress policy
+
+
+def egress_rules(url: str) -> list[ate_pb2.EgressRule]:
+    """The one destination an actor may reach, the Context API: its host and port, over its scheme.
+
+    http is matched per request by the gateway, which dials the name itself. https is forwarded
+    untouched, matched on the SNI. An empty URL means no Context API and so no destination.
+    Raise ValueError for any other URL.
+    """
+    if not url:
+        return []
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(f"CONTEXT_API_URL must be an http or https URL, got {url!r}")
+    https = parts.scheme == "https"
+    ports = ate_pb2.Ports(numbers=[parts.port or (443 if https else 80)])
+    hostnames = [parts.hostname]
+    if https:
+        return [
+            ate_pb2.EgressRule(
+                tls_passthrough=ate_pb2.TlsPassthroughRule(hostnames=hostnames, ports=ports)
+            )
+        ]
+    return [ate_pb2.EgressRule(http=ate_pb2.HttpRule(hostnames=hostnames, ports=ports))]
 
 
 class Agents(Protocol):
@@ -121,6 +147,19 @@ class Control:
         )
         await self._call("CreateActor", ate_pb2.CreateActorRequest(actor=actor))
 
+    async def create_egress_policy(
+        self, atespace: str, actor: str, rules: list[ate_pb2.EgressRule]
+    ) -> None:
+        """Allow the actor these destinations and no others: without a policy it reaches nothing."""
+        policy = ate_pb2.EgressPolicy(
+            metadata=ate_pb2.ResourceMetadata(atespace=atespace, name=EGRESS_POLICY_NAME),
+            rules=rules,
+        )
+        request = ate_pb2.CreateActorEgressPolicyRequest(
+            actor=ate_pb2.ObjectRef(atespace=atespace, name=actor), egress_policy=policy
+        )
+        await self._call("CreateActorEgressPolicy", request)
+
     async def suspend_actor(self, atespace: str, name: str) -> None:
         ref = ate_pb2.ObjectRef(atespace=atespace, name=name)
         await self._call("SuspendActor", ate_pb2.SuspendActorRequest(actor=ref))
@@ -168,6 +207,15 @@ def _actor_name(job_id: uuid.UUID) -> str:
     return f"job-{job_id}"
 
 
+async def _created(call: Coroutine[Any, Any, None]) -> None:
+    """Await a create call. The thing existing already (a later round, or a retry) is fine."""
+    try:
+        await call
+    except grpc.aio.AioRpcError as error:
+        if error.code() != grpc.StatusCode.ALREADY_EXISTS:
+            raise
+
+
 @dataclass
 class SubstrateAgents:
     """One actor per job: every round of a job goes to the same actor, which keeps its memory.
@@ -180,21 +228,22 @@ class SubstrateAgents:
     router_url: str
     atespace: str
     template: str
+    egress: list[ate_pb2.EgressRule] = field(default_factory=list[ate_pb2.EgressRule])
     busy_wait: float = BUSY_WAIT
 
     async def solve(self, run: AgentRun) -> AgentAnswer:
         """Create or reuse the job's actor and send it a round through the router.
 
-        Retry router 503 responses until busy_wait seconds have elapsed; other HTTP errors and
-        actor creation errors other than ALREADY_EXISTS propagate, as do transport and reply
-        validation errors. A 503 at or after the deadline also propagates.
+        An actor with no egress policy can reach nothing, so a policy for the Context API is created
+        before the first request wakes the actor. Retry router 503 responses until busy_wait
+        seconds have elapsed; other HTTP errors and actor or policy creation errors other than
+        ALREADY_EXISTS propagate, as do transport and reply validation errors. A 503 at or after
+        the deadline also propagates.
         """
         actor = _actor_name(run.job_id)
-        try:
-            await self.control.create_actor(self.atespace, actor, self.template)
-        except grpc.aio.AioRpcError as error:
-            if error.code() != grpc.StatusCode.ALREADY_EXISTS:  # a later round, or a retry
-                raise
+        await _created(self.control.create_actor(self.atespace, actor, self.template))
+        if self.egress:  # a retry after a half-done create finds the actor but not its policy
+            await _created(self.control.create_egress_policy(self.atespace, actor, self.egress))
         target = {"ate-target-actor": f"{self.atespace}/{actor}"}
         deadline = asyncio.get_running_loop().time() + self.busy_wait
         async with self.router() as client:
@@ -239,6 +288,7 @@ def _substrate_from_env(router_url: str) -> SubstrateAgents:
         router_url=router_url,
         atespace=os.environ["ATE_ATESPACE"],
         template=os.environ["ATE_TEMPLATE"],
+        egress=egress_rules(os.environ.get("CONTEXT_API_URL", "")),
     )
 
 

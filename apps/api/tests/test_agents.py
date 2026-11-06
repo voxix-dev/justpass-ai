@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from api import ate_pb2
-from api.agents import Control, SingleAgent, SubstrateAgents, agents_from_env
+from api.agents import Control, SingleAgent, SubstrateAgents, agents_from_env, egress_rules
 from shared.agent_run import AgentAnswer, AgentRun
 
 pytestmark = pytest.mark.anyio
@@ -48,7 +48,10 @@ class FakeAteApi:
 async def ate_api() -> AsyncIterator[FakeAteApi]:
     fake = FakeAteApi()
     server = grpc.aio.server()
-    methods = {m: fake.handler(m) for m in ("CreateActor", "SuspendActor", "DeleteActor")}
+    methods = {
+        m: fake.handler(m)
+        for m in ("CreateActor", "CreateActorEgressPolicy", "SuspendActor", "DeleteActor")
+    }
     server.add_generic_rpc_handlers(
         [grpc.method_handlers_generic_handler("ateapi.Control", methods)]
     )
@@ -89,6 +92,71 @@ async def test_solve_creates_the_actor_and_asks_it(substrate: SubstrateAgents, a
     actor = ate_pb2.CreateActorRequest.FromString(request).actor
     assert (actor.metadata.atespace, actor.metadata.name) == ("homework", ACTOR)
     assert (actor.actor_template.atespace, actor.actor_template.name) == ("homework", "agent-v1")
+
+
+CONTEXT_HTTP = "http://context-api.justpass-agents.svc.cluster.local:8000"
+
+
+async def test_solve_allows_the_actor_only_the_context_api(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    substrate.egress = egress_rules(CONTEXT_HTTP)
+    assert await substrate.solve(RUN) == AgentAnswer(answer="x = 2")
+
+    assert [method for method, _, _ in ate_api.calls] == ["CreateActor", "CreateActorEgressPolicy"]
+    request = ate_pb2.CreateActorEgressPolicyRequest.FromString(ate_api.calls[1][1])
+    assert (request.actor.atespace, request.actor.name) == ("homework", ACTOR)
+    policy = request.egress_policy
+    assert (policy.metadata.atespace, policy.metadata.name) == ("homework", "default")
+    [rule] = policy.rules
+    assert not rule.HasField("tls_passthrough")
+    assert list(rule.http.hostnames) == ["context-api.justpass-agents.svc.cluster.local"]
+    assert list(rule.http.ports.numbers) == [8000]
+    assert not rule.http.ports.HasField("all")
+
+
+async def test_solve_without_a_context_api_creates_no_policy(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    substrate.egress = egress_rules("")
+    await substrate.solve(RUN)
+    assert [method for method, _, _ in ate_api.calls] == ["CreateActor"]
+
+
+async def test_solve_creates_the_policy_of_an_actor_that_exists(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    """A retry after a create that stopped half way finds the actor, and still needs its policy."""
+    substrate.egress = egress_rules(CONTEXT_HTTP)
+    ate_api.errors["CreateActor"] = grpc.StatusCode.ALREADY_EXISTS
+    await substrate.solve(RUN)
+    assert [method for method, _, _ in ate_api.calls] == ["CreateActor", "CreateActorEgressPolicy"]
+
+
+async def test_solve_ignores_a_policy_that_exists_and_raises_on_other_errors(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    substrate.egress = egress_rules(CONTEXT_HTTP)
+    ate_api.errors["CreateActorEgressPolicy"] = grpc.StatusCode.ALREADY_EXISTS
+    assert await substrate.solve(RUN) == AgentAnswer(answer="x = 2")
+    ate_api.errors["CreateActorEgressPolicy"] = grpc.StatusCode.PERMISSION_DENIED
+    with pytest.raises(grpc.aio.AioRpcError):
+        await substrate.solve(RUN)
+
+
+def test_egress_rules_for_https_pass_the_tls_through():
+    [rule] = egress_rules("https://context.example.com")
+    assert not rule.HasField("http")
+    assert list(rule.tls_passthrough.hostnames) == ["context.example.com"]
+    assert list(rule.tls_passthrough.ports.numbers) == [443]
+
+
+def test_egress_rules_default_ports_and_bad_urls():
+    assert list(egress_rules("http://api").pop().http.ports.numbers) == [80]
+    assert list(egress_rules("https://api:8443").pop().tls_passthrough.ports.numbers) == [8443]
+    for bad in ("ftp://api", "api:8000", "http://"):
+        with pytest.raises(ValueError, match="CONTEXT_API_URL"):
+            egress_rules(bad)
 
 
 async def test_solve_accepts_heartbeat_newlines_before_the_answer(substrate: SubstrateAgents):
@@ -225,9 +293,11 @@ def test_agents_from_env_reads_the_substrate_settings(monkeypatch: pytest.Monkey
         "ATE_TEMPLATE": "agent-v1",
     }.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.setenv("CONTEXT_API_URL", CONTEXT_HTTP)
     agents = agents_from_env()
     assert isinstance(agents, SubstrateAgents)
     assert (agents.atespace, agents.template) == ("homework", "agent-v1")
+    assert agents.egress == egress_rules(CONTEXT_HTTP)
 
 
 def test_agents_from_env_needs_one_or_the_other(monkeypatch: pytest.MonkeyPatch):

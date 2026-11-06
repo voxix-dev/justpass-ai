@@ -216,3 +216,55 @@ class UpdateAtespaceAccessPolicyRequest(_message.Message):
     atespace: ObjectRef
     access_policy: AccessPolicy
     def __init__(self, atespace: _Optional[_Union[ObjectRef, _Mapping]] = ..., access_policy: _Optional[_Union[AccessPolicy, _Mapping]] = ...) -> None: ...
+
+class EgressPolicy(_message.Message):
+    __slots__ = ("metadata", "rules")
+    METADATA_FIELD_NUMBER: _ClassVar[int]
+    RULES_FIELD_NUMBER: _ClassVar[int]
+    metadata: ResourceMetadata
+    rules: _containers.RepeatedCompositeFieldContainer[EgressRule]
+    def __init__(self, metadata: _Optional[_Union[ResourceMetadata, _Mapping]] = ..., rules: _Optional[_Iterable[_Union[EgressRule, _Mapping]]] = ...) -> None: ...
+
+class EgressRule(_message.Message):
+    __slots__ = ("http", "tls_passthrough")
+    HTTP_FIELD_NUMBER: _ClassVar[int]
+    TLS_PASSTHROUGH_FIELD_NUMBER: _ClassVar[int]
+    http: HttpRule
+    tls_passthrough: TlsPassthroughRule
+    def __init__(self, http: _Optional[_Union[HttpRule, _Mapping]] = ..., tls_passthrough: _Optional[_Union[TlsPassthroughRule, _Mapping]] = ...) -> None: ...
+
+class HttpRule(_message.Message):
+    __slots__ = ("hostnames", "ports")
+    HOSTNAMES_FIELD_NUMBER: _ClassVar[int]
+    PORTS_FIELD_NUMBER: _ClassVar[int]
+    hostnames: _containers.RepeatedScalarFieldContainer[str]
+    ports: Ports
+    def __init__(self, hostnames: _Optional[_Iterable[str]] = ..., ports: _Optional[_Union[Ports, _Mapping]] = ...) -> None: ...
+
+class TlsPassthroughRule(_message.Message):
+    __slots__ = ("hostnames", "ports")
+    HOSTNAMES_FIELD_NUMBER: _ClassVar[int]
+    PORTS_FIELD_NUMBER: _ClassVar[int]
+    hostnames: _containers.RepeatedScalarFieldContainer[str]
+    ports: Ports
+    def __init__(self, hostnames: _Optional[_Iterable[str]] = ..., ports: _Optional[_Union[Ports, _Mapping]] = ...) -> None: ...
+
+class Ports(_message.Message):
+    __slots__ = ("all", "numbers")
+    ALL_FIELD_NUMBER: _ClassVar[int]
+    NUMBERS_FIELD_NUMBER: _ClassVar[int]
+    all: AllPorts
+    numbers: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, all: _Optional[_Union[AllPorts, _Mapping]] = ..., numbers: _Optional[_Iterable[int]] = ...) -> None: ...
+
+class AllPorts(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class CreateActorEgressPolicyRequest(_message.Message):
+    __slots__ = ("actor", "egress_policy")
+    ACTOR_FIELD_NUMBER: _ClassVar[int]
+    EGRESS_POLICY_FIELD_NUMBER: _ClassVar[int]
+    actor: ObjectRef
+    egress_policy: EgressPolicy
+    def __init__(self, actor: _Optional[_Union[ObjectRef, _Mapping]] = ..., egress_policy: _Optional[_Union[EgressPolicy, _Mapping]] = ...) -> None: ...
