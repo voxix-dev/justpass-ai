@@ -1,6 +1,6 @@
 # API image. CI publishes it to ghcr.io/voxix-dev/justpass-ai/api after CI passes on main.
 # Build context: repo root (`docker compose build api`).
-# On start it migrates the database, then serves on :8000. Needs DATABASE_URL, and AGENT_URL or the
+# On start it migrates the database, then serves on $PORT (Cloud Run sets it), default 8000. Needs DATABASE_URL, and AGENT_URL or the
 # ATE_* settings (see .env.example).
 
 FROM python:3.14.10-slim-trixie AS builder
@@ -33,4 +33,4 @@ COPY apps/api/migrations apps/api/migrations
 ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1
 USER 10001
 EXPOSE 8000
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn api.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
