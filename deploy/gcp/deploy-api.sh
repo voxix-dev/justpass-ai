@@ -59,7 +59,15 @@ while [ "$SECONDS" -lt 600 ]; do
           "ready $(jq -r .latestReadyRevision <<<"$service")" >&2
         exit 1
       fi
-      if ! jq -e '.latestReadyRevision as $r | ([.trafficStatuses[]? | select(.revision == $r) | .percent // 0] | add) == 100' \
+      # Ready and created revisions match even when a later deploy replaced ours, so check the serving revision's image.
+      # latestReadyRevision is a full resource name and trafficStatuses[].revision a short one, so compare short names.
+      ready=$(jq -r '.latestReadyRevision | split("/") | last' <<<"$service")
+      revision=$(call "$url/revisions/$ready")
+      if ! jq -e --arg image "$IMAGE" '.containers[0].image == $image' <<<"$revision" >/dev/null; then
+        echo "deploy of $IMAGE finished but the latest ready revision runs $(jq -r '.containers[0].image' <<<"$revision")" >&2
+        exit 1
+      fi
+      if ! jq -e --arg r "$ready" '[.trafficStatuses[]? | select((.revision // "" | split("/") | last) == $r) | .percent // 0] | add == 100' \
         <<<"$service" >/dev/null; then
         echo "deploy of $IMAGE finished but traffic is not 100% on the new revision: $(jq -c .trafficStatuses <<<"$service")" \
           "(traffic is pinned to another revision; not changing it)" >&2
