@@ -501,15 +501,66 @@ async def test_a_failed_revision_keeps_the_last_answer_and_its_own_row(
     assert (failed.feedback, failed.failed_at is not None) == ("lost note", True)
     assert (failed.lease_id, failed.lease_until) == (None, None)
 
-    # The student still reads round 1, and can accept it.
+    # The student still reads round 1, and there is no round 2 to accept yet.
     stale = await client.post(f"/jobs/{job['id']}/accept", json={"round": 2})
     assert stale.status_code == 409
 
     retried = await feedback(after, "try again", seen=1)
-    assert (retried["round"], retried["feedback"]) == (3, "try again")  # no reuse of number 2
+    # The student's second round, the third row: a failed round's number is never reused.
+    assert (retried["round"], retried["feedback"]) == (2, "try again")
+    assert agents.runs[-1].round == 3
     assert (retried["result"], retried["failedFeedback"]) == (ANSWER, None)
-    accepted = await client.post(f"/jobs/{job['id']}/accept", json={"round": 3})
+    assert (await client.get("/jobs")).json() == [retried]
+    await session.refresh(failed)
+    assert (failed.feedback, failed.failed_at is not None) == ("lost note", True)
+    assert (await client.post(f"/jobs/{job['id']}/accept", json={"round": 3})).status_code == 409
+    accepted = await client.post(f"/jobs/{job['id']}/accept", json={"round": 2})
     assert accepted.status_code == 200
+    assert accepted.json()["round"] == 2
+
+
+async def test_two_failed_revisions_in_a_row_leave_no_gap_for_the_student(
+    client: httpx2.AsyncClient,
+    session: AsyncSession,
+    create: Create,
+    feedback: Create,
+    agents: FakeAgents,
+):
+    job = await create()
+    shown = [job["round"]]
+    for _ in range(2):
+        agents.unreachable = 2
+        failed = await feedback(job, "again", seen=1)
+        assert failed["failedFeedback"] == "again"
+        shown.append(failed["round"])
+        assert (await client.get("/jobs")).json() == [failed]
+    revised = await feedback(job, "again", seen=1)
+    shown.append(revised["round"])
+    assert shown == [1, 1, 1, 2]
+    assert revised["failedFeedback"] is None
+    assert (await client.get("/jobs")).json() == [revised]
+
+    rows = await session.execute(
+        select(JobRound.number, JobRound.failed_at.is_(None))
+        .where(JobRound.job_id == uuid.UUID(job["id"]))
+        .order_by(JobRound.number)
+    )
+    assert rows.all() == [(1, True), (2, False), (3, False), (4, True)]
+    assert (await client.post(f"/jobs/{job['id']}/accept", json={"round": 4})).status_code == 409
+    assert (await client.post(f"/jobs/{job['id']}/accept", json={"round": 2})).status_code == 200
+
+
+async def test_feedback_after_a_failed_revision_counts_the_shown_round(
+    client: httpx2.AsyncClient, create: Create, feedback: Create, agents: FakeAgents
+):
+    job = await create()
+    agents.unreachable = 2
+    await feedback(job, "lost note")
+    stale = await client.post(f"/jobs/{job['id']}/feedback", json={"text": "x", "round": 2})
+    assert stale.status_code == 409
+    again = await client.post(f"/jobs/{job['id']}/feedback", json={"text": "x", "round": 1})
+    assert again.status_code == 200
+    assert again.json()["round"] == 2
 
 
 async def test_a_failed_first_round_has_no_failed_feedback(create: Create):

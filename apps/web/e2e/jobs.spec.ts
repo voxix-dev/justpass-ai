@@ -32,12 +32,13 @@ test.describe('signed in', () => {
   })
 
   test('feedback revises the same job', async ({ page }) => {
-    const url = await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
+    const task = `Solve x^2 - 5x + 6 = 0 (${Date.now()})`
+    const url = await sendTask(page, task)
     await page.getByLabel('Something off? Push back').fill('Explain step 2')
     await page.getByRole('button', { name: 'Get a revised answer' }).click()
 
     await expect(page.getByText('Revised after your feedback: “Explain step 2”')).toBeVisible()
-    await expect(page.getByText('Revised answer.')).toBeVisible()
+    await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
     await expect(page.getByLabel('Something off? Push back')).toHaveValue('')
     await expect(page.locator('#answer')).toBeFocused()
     await expect(page.getByText('Revised after your feedback')).toBeInViewport()
@@ -45,12 +46,16 @@ test.describe('signed in', () => {
 
     await page.getByRole('button', { name: 'Get a revised answer' }).click()
     await expect(page.getByText('Write what should change first.')).toBeVisible()
+
+    await page.goto('/jobs')
+    await expect(page.getByRole('link').filter({ hasText: task }).getByText(', round 2')).toBeVisible()
   })
 
   test('a revision that fails keeps the answer and the feedback, and says so', async ({ page }) => {
     const url = await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
     await expect(page.getByRole('heading', { name: 'Solution' })).toBeVisible()
-    // The API keeps a failed round and reports its feedback, so the page sees round 2 running, then round 1 with failedFeedback.
+    // The API keeps a failed round and reports its feedback, so the page sees round 2 running, then round 1
+    // with failedFeedback. The student's count has no gap: the retry below is round 2 again.
     const api = url.replace('/jobs/', '/api/jobs/')
     let failed = false
     await page.route('**/feedback', async (route) => {
@@ -69,6 +74,13 @@ test.describe('signed in', () => {
     await expect(page.getByText('Could not revise the answer.')).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Solution' })).toBeVisible()
     await expect(page.getByLabel('Something off? Push back')).toHaveValue('Explain step 2')
+    await expect(page.getByText(/Revised answer/)).toHaveCount(0)
+
+    // The same feedback again, this time for real.
+    await page.unroute('**/feedback')
+    await page.unroute(api)
+    await page.getByRole('button', { name: 'Get a revised answer' }).click()
+    await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
   })
 
   test('math is typeset with the CSS of the same KaTeX version', async ({ page }) => {
@@ -105,10 +117,10 @@ test.describe('signed in', () => {
 
     await page.getByLabel('Something off? Push back').fill('More detail')
     await page.getByRole('button', { name: 'Get a revised answer' }).click()
-    await expect(page.getByText('Revised answer.')).toBeVisible()
+    await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
 
     await stale.getByRole('button', { name: 'Accept answer' }).click()
-    await expect(stale.getByText('Revised answer.')).toBeVisible()
+    await expect(stale.getByText('Revised answer, round 2.')).toBeVisible()
     await expect(stale.getByText('Accepted. Done and dusted.')).toHaveCount(0)
   })
 
@@ -161,7 +173,7 @@ test.describe('signed in', () => {
     })
     await page.evaluate(`window.dispatchEvent(new Event('visibilitychange'))`)
 
-    await expect(page.getByText('Revised answer.')).toBeVisible()
+    await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
     await expect(page.getByLabel('Something off? Push back')).toHaveValue('My draft')
   })
 
@@ -180,7 +192,7 @@ test.describe('signed in', () => {
     await page.getByLabel('Something off? Push back').fill('And step 3')
     release()
 
-    await expect(page.getByText('Revised answer.')).toBeVisible()
+    await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
     await expect(page.getByLabel('Something off? Push back')).toHaveValue('And step 3')
     expect(page.url()).toBe(url)
   })
@@ -261,10 +273,10 @@ test.describe('signed in', () => {
 
       await page.request.post(`${api}/feedback`, { data: { text: 'From another tab', round: 2 } })
       await refetch(page)
-      await expect(page.getByText('Revised answer.')).toBeVisible()
+      await expect(page.getByText('Revised answer, round 3.')).toBeVisible()
 
       release()
-      await expect(page.getByText('Revised answer.')).toBeVisible()
+      await expect(page.getByText('Revised answer, round 3.')).toBeVisible()
       // The job only shows round 3's feedback, so this tab cannot tell whether its own round 2
       // succeeded or failed and was replaced. It keeps the text rather than risk losing it.
       await expect(page.getByLabel('Something off? Push back')).toHaveValue('More detail')
@@ -289,9 +301,9 @@ test.describe('signed in', () => {
       await expect(page.getByText('Working through the steps…').first()).toBeVisible()
 
       release()
-      await expect(page.getByText('Revised answer.')).toBeVisible()
+      await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
       await page.waitForTimeout(300)
-      await expect(page.getByText('Revised answer.')).toBeVisible()
+      await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
     })
   })
 

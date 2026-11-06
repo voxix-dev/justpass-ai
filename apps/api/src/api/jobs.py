@@ -100,7 +100,7 @@ class JobOut(BaseModel):
     result: str | None  # Markdown with $inline$ and $$display$$ math, set when done
     error: str | None
     accepted: bool
-    round: int  # the round shown; each feedback starts a new one
+    round: int  # 1 for the first answer, +1 for each revision that worked
     feedback: str | None  # what the student asked to change in this round
     # What the student asked for in a newer round that failed, so the web app can offer it again.
     failed_feedback: str | None
@@ -136,10 +136,10 @@ def _title(text: str) -> str:
 
 
 def _shown_round(job_id: Any) -> ScalarSelect[int]:
-    """The round the student reads: the newest one that did not fail, or round 1 if none did.
+    """The number of the round the student reads: the newest that did not fail, or 1 if none did.
 
     A revision that failed keeps its row (with what the agent wrote in it), but the student goes on
-    reading the earlier answer. Round numbers can have gaps after such a failure.
+    reading the earlier answer.
     """
     return (
         select(func.coalesce(func.max(JobRound.number).filter(JobRound.failed_at.is_(None)), 1))
@@ -149,9 +149,23 @@ def _shown_round(job_id: Any) -> ScalarSelect[int]:
     )
 
 
+def _shown_ordinal(job_id: Any) -> ScalarSelect[int]:
+    """The round as the student counts it: 1, 2, 3 over the rounds that did not fail.
+
+    A failed revision leaves a gap in `job_rounds.number`, which stays internal. The student sees no
+    gap, and the retry of a failed revision is the same "round 2" again.
+    """
+    return (
+        select(func.greatest(func.count().filter(JobRound.failed_at.is_(None)), 1))
+        .where(JobRound.job_id == job_id)
+        .correlate(Job)
+        .scalar_subquery()
+    )
+
+
 def _jobs() -> Select[Job, int, str | None, str | None, str | None]:
-    """The dev user's jobs with their shown round, its answer and the feedback of a newer round
-    that failed.
+    """The dev user's jobs with the round the student counts, its answer and the feedback of a newer
+    round that failed.
 
     One statement, so a response never mixes two rounds of a job that is being revised.
     """
@@ -164,7 +178,7 @@ def _jobs() -> Select[Job, int, str | None, str | None, str | None]:
     )
     failed = aliased(JobRound)
     return (
-        select(Job, JobRound.number, JobRound.feedback, Artifact.content, failed.feedback)
+        select(Job, _shown_ordinal(Job.id), JobRound.feedback, Artifact.content, failed.feedback)
         .join(JobRound, and_(JobRound.job_id == Job.id, JobRound.number == shown))
         .outerjoin(
             failed,
@@ -281,10 +295,13 @@ async def get_job(job_id: uuid.UUID, session: Session) -> JobOut:
 
 async def _check_review(session: AsyncSession, job: Job, seen: int, *allowed: JobStatus) -> None:
     """409 if the job's status isn't allowed or the student saw an older answer than the shown
-    one (say in a second tab), so nobody accepts an answer they never read."""
+    one (say in a second tab), so nobody accepts an answer they never read.
+
+    `seen` is the round as the Jobs API shows it, not the row's number.
+    """
     if job.status not in allowed:
         raise HTTPException(status.HTTP_409_CONFLICT, f"The job is {job.status}, not in review")
-    if seen != await session.scalar(select(_shown_round(job.id))):
+    if seen != await session.scalar(select(_shown_ordinal(job.id))):
         raise HTTPException(status.HTTP_409_CONFLICT, "There is a newer answer. Read that first.")
 
 
@@ -316,7 +333,9 @@ async def send_feedback(
     """
     job = await _own_job(session, job_id)
     await _check_review(session, job, body.round, JobStatus.AWAITING_REVIEW, JobStatus.EXPIRED)
-    number = await _newest_round(session, job.id) + 1  # after a failed revision, not shown + 1
+    number = (
+        await _newest_round(session, job.id) + 1
+    )  # internal: never reuses a failed round's number
     session.add(JobRound(job_id=job.id, number=number, feedback=body.text))
     job.move_to(JobStatus.PROCESSING, datetime.now(UTC))
     await session.flush()

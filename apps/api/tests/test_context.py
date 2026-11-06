@@ -161,6 +161,27 @@ async def test_get_task(client: httpx2.AsyncClient, session: AsyncSession):
     }
 
 
+async def test_get_task_keeps_the_internal_round_numbers(
+    client: httpx2.AsyncClient, session: AsyncSession
+):
+    """The Jobs API counts only rounds that did not fail, so a student sees 1 and 2 where the agent
+    reads 1, 2 and 3. Agents never show a round number to a student."""
+    job = await add_job(session, "alice")
+    await add_artifact(session, job, ArtifactKind.FINAL)
+    session.add(JobRound(job_id=job.id, number=2, feedback="more steps", failed_at=job.created_at))
+    session.add(JobRound(job_id=job.id, number=3, feedback="try again", lease_id=LEASE))
+    await session.flush()
+    await add_artifact(session, job, ArtifactKind.FINAL, round=3)
+
+    task = (await call(client, "get_task", auth(job, 3))).json()
+    assert task["round"] == 3
+    assert [(r["number"], r["outcome"]) for r in task["rounds"]] == [
+        (1, "answered"),
+        (2, "failed"),
+        (3, "answered"),
+    ]
+
+
 async def test_read_artifact_from_any_round_of_the_job(
     client: httpx2.AsyncClient, session: AsyncSession
 ):

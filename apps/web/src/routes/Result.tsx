@@ -61,7 +61,7 @@ function announcement(job: Job) {
   if (job.status === 'queued') return 'Waiting for a solver.'
   if (job.status === 'running') return 'Working through the steps.'
   if (job.status === 'failed') return ''
-  return job.round > 1 ? 'Revised answer ready.' : 'The answer is ready.'
+  return job.round > 1 ? `Revised answer ready, round ${job.round}.` : 'The answer is ready.'
 }
 
 /** If an answer cannot be rendered, show its raw text so the student can still read and review it. */
@@ -116,7 +116,7 @@ function JobDetail({ job }: { job: Job }) {
           <span>{ago(job.createdAt)}</span>
         </div>
         <h1 dir="auto" className="mt-4 text-4xl break-words sm:text-5xl">{job.title}</h1>
-        {job.round > 1 && !pending && <p className="mt-3 text-muted-foreground">Revised answer.</p>}
+        {job.round > 1 && !pending && <p className="mt-3 text-muted-foreground">Revised answer, round {job.round}.</p>}
       </header>
 
       {job.text !== job.title && (

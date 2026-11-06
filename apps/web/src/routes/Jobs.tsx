@@ -64,7 +64,7 @@ export default function Jobs() {
                       <p dir="auto" className="truncate font-bold">{job.title}</p>
                       <p className="text-sm text-muted-foreground">
                         Sent {ago(job.createdAt)}
-                        {job.round > 1 && ', revised'}
+                        {job.round > 1 && `, round ${job.round}`}
                       </p>
                     </div>
                     <StatusBadge job={job} />
