@@ -27,7 +27,7 @@ module "api" {
   project_id = var.project_id
   region     = var.region
   image      = var.bootstrap_image
-  env        = merge({ AGENT_URL = var.agent_url }, var.env)
+  env        = merge({ AGENT_URL = var.agent_url, FIREBASE_PROJECT_ID = var.firebase_project_id }, var.env)
 
   depends_on = [google_project_service.api]
 }
@@ -63,8 +63,15 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repository" = "assertion.repository"
     "attribute.ref"        = "assertion.ref"
   }
-  # Only workflows on main of this repository can get a token.
-  attribute_condition = "assertion.repository == \"${var.github_repository}\" && assertion.ref == \"refs/heads/main\""
+  # Only the deploy workflow of this repository, on main, can get a token. The numeric ids stay the same if
+  # the repository or the organisation is renamed, and a different one that takes over the old name fails them.
+  attribute_condition = join(" && ", [
+    "assertion.repository == \"${var.github_repository}\"",
+    "assertion.repository_id == \"${var.github_repository_id}\"",
+    "assertion.repository_owner_id == \"${var.github_owner_id}\"",
+    "assertion.ref == \"refs/heads/main\"",
+    "assertion.job_workflow_ref == \"${var.github_repository}/.github/workflows/deploy.yml@refs/heads/main\"",
+  ])
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"

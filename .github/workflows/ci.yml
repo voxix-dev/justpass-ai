@@ -120,6 +120,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.16.1
       - run: terraform fmt -check -recursive deploy/terraform
       - name: Validate the production and local roots
         run: |
@@ -140,6 +142,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v4
         with:
+          terraform_version: 1.16.1
           terraform_wrapper: false # the script reads `terraform output`
       - run: ENGINE=docker deploy/gcp/local-e2e.sh
       - name: floci-gcp logs

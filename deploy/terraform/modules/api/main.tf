@@ -44,6 +44,10 @@ resource "google_sql_database_instance" "db" {
     tier    = var.db_tier
     edition = "ENTERPRISE" # the default of newer versions, Enterprise Plus, has no custom tiers
 
+    ip_configuration {
+      ssl_mode = "ENCRYPTED_ONLY"
+    }
+
     backup_configuration {
       enabled = true
     }

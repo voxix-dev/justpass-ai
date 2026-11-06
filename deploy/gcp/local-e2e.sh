@@ -38,7 +38,11 @@ else
 fi
 "$ENGINE" run -d --name floci-gcp "${engine_args[@]}" -p 127.0.0.1:4588:4588 \
   -v "$socket:/var/run/docker.sock" "$FLOCI_IMAGE" >/dev/null
-until [ "$(curl -s -o /dev/null -w '%{http_code}' $FLOCI_URL/)" != 000 ]; do sleep 1; done
+for i in $(seq 60); do
+  [ "$(curl -s -o /dev/null -w '%{http_code}' $FLOCI_URL/)" != 000 ] && break
+  [ "$i" -lt 60 ] || { echo "floci-gcp did not answer on $FLOCI_URL within 60 s" >&2; exit 1; }
+  sleep 1
+done
 
 "$ENGINE" build -t $IMAGE:dev -f apps/api/Dockerfile .
 "$ENGINE" tag $IMAGE:dev $IMAGE:e2e
@@ -56,8 +60,9 @@ deploy || deploy
 
 # floci-gcp serves each service on its own host name at one port: send that name to 127.0.0.1.
 host=$(tf output -raw service_uri | sed 's|^http://||')
-for _ in $(seq 60); do
+for i in $(seq 60); do
   curl -fsS -H "Host: $host" "$FLOCI_URL/ready" >/dev/null 2>&1 && break
+  [ "$i" -lt 60 ] || { echo "the API did not become ready within 2 minutes" >&2; exit 1; }
   sleep 2
 done
 curl -fsS -H "Host: $host" "$FLOCI_URL/ready"; echo
