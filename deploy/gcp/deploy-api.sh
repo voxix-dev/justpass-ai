@@ -24,9 +24,21 @@ call() {
   printf '%s\n' "$out"
 }
 
-# Send the whole template back with only the image changed, so nothing else in it is reset.
-template=$(call "$url" | jq --arg image "$IMAGE" '.template | .containers[0].image = $image')
-operation=$(call -X PATCH "$url?updateMask=template" -d "{\"template\": $template}" | jq -r .name)
+# Send the whole template back with only the image changed, so nothing else in it is reset. The etag from the same GET
+# makes Cloud Run refuse the update (409 ABORTED) if the service changed in between, e.g. by a Terraform apply, instead
+# of overwriting that change. It is sent only when the GET returned one (floci-gcp returns one but never checks it).
+current=$(call "$url")
+body=$(jq --arg image "$IMAGE" \
+  '{template: (.template | .containers[0].image = $image)} + (if (.etag // "") != "" then {etag: .etag} else {} end)' \
+  <<<"$current")
+if ! patch=$(call -X PATCH "$url?updateMask=template" -d "$body" 2>&1); then
+  echo "$patch" >&2
+  if grep -q -E 'HTTP 409|ABORTED' <<<"$patch"; then
+    echo "the service changed while deploying (etag mismatch); nothing was overwritten, re-run the deploy" >&2
+  fi
+  exit 1
+fi
+operation=$(jq -r .name <<<"$patch")
 
 # Wait at most 10 minutes; a few failed polls in a row are not a failed deploy.
 failures=0
@@ -38,7 +50,22 @@ while [ "$SECONDS" -lt 600 ]; do
         echo "deploy of $IMAGE failed: $(jq -c .error <<<"$state")" >&2
         exit 1
       fi
-      echo "deployed $IMAGE to $(call "$url" | jq -r .uri)"
+      # An operation can finish while traffic still goes elsewhere, so check that the new revision is the one serving.
+      # trafficStatuses always names a concrete revision (a LATEST target shows the latest ready one), floci-gcp too.
+      service=$(call "$url")
+      if ! jq -e '.latestReadyRevision != null and .latestReadyRevision == .latestCreatedRevision' \
+        <<<"$service" >/dev/null; then
+        echo "deploy of $IMAGE finished but the latest revision is not ready: created $(jq -r .latestCreatedRevision <<<"$service")," \
+          "ready $(jq -r .latestReadyRevision <<<"$service")" >&2
+        exit 1
+      fi
+      if ! jq -e '.latestReadyRevision as $r | ([.trafficStatuses[]? | select(.revision == $r) | .percent // 0] | add) == 100' \
+        <<<"$service" >/dev/null; then
+        echo "deploy of $IMAGE finished but traffic is not 100% on the new revision: $(jq -c .trafficStatuses <<<"$service")" \
+          "(traffic is pinned to another revision; not changing it)" >&2
+        exit 1
+      fi
+      echo "deployed $IMAGE to $(jq -r .uri <<<"$service")"
       exit 0
     fi
   elif [ $((++failures)) -ge 5 ]; then
