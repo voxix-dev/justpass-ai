@@ -13,6 +13,21 @@ variable "github_repository" {
   default     = "voxix-dev/justpass-ai"
 }
 
+variable "github_repository_id" {
+  type    = string
+  default = "1430335211" # gh api repos/voxix-dev/justpass-ai -q .id
+}
+
+variable "github_owner_id" {
+  type    = string
+  default = "203257071" # gh api repos/voxix-dev/justpass-ai -q .owner.id
+}
+
+variable "firebase_project_id" {
+  type        = string
+  description = "Firebase project whose ID tokens the API accepts (FIREBASE_PROJECT_ID)."
+}
+
 variable "bootstrap_image" {
   type        = string
   description = "Image of the first revision. CI deploys the real one."
@@ -26,6 +41,6 @@ variable "agent_url" {
 
 variable "env" {
   type        = map(string)
-  description = "More environment for the API: FIREBASE_PROJECT_ID, CONTEXT_API_URL, GCS_BUCKET, ..."
+  description = "More environment for the API: CONTEXT_API_URL, GCS_BUCKET, ..."
   default     = {}
 }
