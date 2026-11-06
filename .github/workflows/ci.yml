@@ -113,6 +113,37 @@ jobs:
           path: apps/web/test-results
           retention-days: 7
 
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v4
+      - run: terraform fmt -check -recursive deploy/terraform
+      - name: Validate the production and local roots
+        run: |
+          for d in prod local; do
+            terraform -chdir=deploy/terraform/$d init -backend=false -input=false
+            terraform -chdir=deploy/terraform/$d validate
+          done
+      - name: Test the module
+        run: |
+          terraform -chdir=deploy/terraform/modules/api init -backend=false -input=false
+          terraform -chdir=deploy/terraform/modules/api test
+
+  # The module and the deploy script against floci-gcp, which runs Cloud SQL and Cloud Run as containers.
+  gcp-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false # the script reads `terraform output`
+      - run: ENGINE=docker deploy/gcp/local-e2e.sh
+      - name: floci-gcp logs
+        if: failure()
+        run: docker logs floci-gcp
+
   secrets:
     runs-on: ubuntu-latest
     steps:
