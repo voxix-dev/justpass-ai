@@ -11,9 +11,22 @@ source deploy/local/env.sh
 
 stale() {
   local registered pod_ips ip
-  registered=$(kubectl ate get worker -o json 2> /dev/null | jq -r '.. | .ips? // empty | .[]')
+  # errexit is off inside a function called from `stale || ...`, so a failed lookup must exit by itself;
+  # otherwise an empty list would look like "every worker is stale" (or "none is") and --fix would delete
+  # healthy pods.
+  registered=$(kubectl ate get worker -o json | jq -r '.. | .ips? // empty | .[]') || {
+    echo "Cannot list the workers registered in ate-api (expired identity or no port-forward?)" >&2
+    exit 2
+  }
   pod_ips=$(kubectl -n justpass-agents get pods -l ate.dev/worker-pool=agent \
-    -o jsonpath='{range .items[*]}{.status.podIP}{"\n"}{end}')
+    -o jsonpath='{range .items[*]}{.status.podIP}{"\n"}{end}') || {
+    echo "Cannot list the agent worker pods" >&2
+    exit 2
+  }
+  if [[ -z $pod_ips ]]; then
+    echo "No agent worker pods have an IP yet" >&2
+    exit 2
+  fi
   for ip in $pod_ips; do
     grep -qx "$ip" <<< "$registered" || return 0
   done
