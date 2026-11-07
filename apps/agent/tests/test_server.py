@@ -1,7 +1,7 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator, Callable
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx2
 import pytest
@@ -155,6 +155,62 @@ async def test_a_run_that_raised_is_not_cached(
     assert calls == 2
 
 
+async def test_a_retry_under_the_same_lease_joins_the_run(
+    client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    solves: list[UUID | None] = []
+    real = server.solve
+
+    async def counted(run: AgentRun) -> AgentAnswer:
+        solves.append(run.lease_id)
+        return await real(run)
+
+    monkeypatch.setattr(server, "solve", counted)
+    same = body("Solve", lease_id=str(uuid4()))
+    await client.post("/run", json=same)
+    assert (await client.post("/run", json=same)).json() == {"answer": SAMPLE_ANSWER}
+    assert len(solves) == 1
+
+
+async def test_a_new_lease_on_the_same_round_runs_again(
+    client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    solves: list[UUID | None] = []
+    real = server.solve
+
+    async def counted(run: AgentRun) -> AgentAnswer:
+        solves.append(run.lease_id)
+        return await real(run)
+
+    monkeypatch.setattr(server, "solve", counted)
+    first, second = str(uuid4()), str(uuid4())
+    job = body("Solve")
+    await client.post("/run", json={**job, "lease_id": first})
+    await client.post("/run", json={**job, "lease_id": second})
+    assert solves == [UUID(first), UUID(second)]
+
+
+async def test_a_failure_under_one_lease_is_not_the_answer_to_the_next(
+    client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """The first owner's run holds a token its lease no longer matches, so it fails for good."""
+    real = server.solve
+
+    async def stale_then_fresh(run: AgentRun) -> AgentAnswer:
+        if run.lease_id == old:
+            return AgentAnswer(answer=None)  # a finished failure
+        return await real(run)
+
+    old = uuid4()
+    monkeypatch.setattr(server, "solve", stale_then_fresh)
+    job = body("Solve")
+    assert (await client.post("/run", json={**job, "lease_id": str(old)})).json() == {
+        "answer": None
+    }
+    fresh = await client.post("/run", json={**job, "lease_id": str(uuid4())})
+    assert fresh.json() == {"answer": SAMPLE_ANSWER}
+
+
 async def test_a_hang_up_does_not_cancel_the_work(
     client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ):
@@ -166,7 +222,7 @@ async def test_a_hang_up_does_not_cancel_the_work(
     waiter.cancel()
     await asyncio.gather(waiter, return_exceptions=True)
     await stream.aclose()
-    work = server.runs[(run.job_id, 1)]
+    work = server.runs[(run.job_id, 1, None)]
     assert not work.cancelled()
     assert (await work).answer == SAMPLE_ANSWER
 
@@ -179,7 +235,7 @@ async def test_the_cache_keeps_only_the_newest_runs(
     for run in runs:
         await server.join_run(run)
     assert [key[0] for key in server.runs][-2:] == [run.job_id for run in runs[1:]]
-    assert (runs[0].job_id, 1) not in server.runs
+    assert (runs[0].job_id, 1, None) not in server.runs
 
 
 async def test_a_running_run_is_never_evicted(
@@ -190,7 +246,7 @@ async def test_a_running_run_is_never_evicted(
     first = AgentRun(job_id=uuid4(), round=1, text="Solve")
     running = server.join_run(first)
     server.join_run(AgentRun(job_id=uuid4(), round=1, text="Solve"))
-    assert server.runs[(first.job_id, 1)] is running
+    assert server.runs[(first.job_id, 1, None)] is running
     assert (await running).answer == SAMPLE_ANSWER
 
 
@@ -204,7 +260,7 @@ async def test_a_cancelled_run_is_dropped_so_the_round_can_run_again(
     work.cancel()
     await asyncio.gather(work, return_exceptions=True)
     await asyncio.sleep(0)  # the done callback runs on the next loop turn
-    assert (run.job_id, 1) not in server.runs
+    assert (run.job_id, 1, None) not in server.runs
 
 
 def context_transport(

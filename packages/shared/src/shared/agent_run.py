@@ -26,6 +26,10 @@ class AgentRun(BaseModel):
     round: int = Field(ge=1)
     text: str  # the student's task
     feedback: str | None = None  # what the student asked to change, from round 2 on
+    # The dispatcher's lease on this round, the one its Context token is for. The agent runs a round
+    # once per lease: a retry under the same lease joins the run, a new lease (the round was
+    # claimed again by another dispatcher) starts its own. None when no lease is in play.
+    lease_id: uuid.UUID | None = None
     # None when there is no Context API to reach: the agent works from text and feedback alone.
     context: ContextGrant | None = None
 

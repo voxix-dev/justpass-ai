@@ -180,7 +180,7 @@ async def test_a_new_job_is_queued_until_the_agent_answers(
     assert (await client.get(f"/jobs/{queued['id']}")).json() == queued
 
     await dispatcher.drain()
-    assert agents.runs == [
+    assert [run.model_copy(update={"lease_id": None}) for run in agents.runs] == [
         AgentRun(job_id=uuid.UUID(queued["id"]), round=1, text="Solve x", feedback=None)
     ]
     done = (await client.get(f"/jobs/{queued['id']}")).json()
@@ -1083,6 +1083,16 @@ async def test_the_token_names_the_lease_that_runs_the_round(
     context = agents.runs[0].context
     assert context is not None
     assert verify_token(context.token).lease == lease
+    assert agents.runs[0].lease_id == lease  # the agent keys its run by the same lease
+
+
+async def test_the_agent_gets_the_lease_without_a_context_api(
+    dispatcher: StepDispatcher, agents: FakeAgents, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("CONTEXT_API_URL", "")
+    lease = uuid.uuid4()
+    await dispatcher._solve(AgentRun(job_id=uuid.uuid4(), round=1, text="Solve"), "alice", lease)
+    assert (agents.runs[0].context, agents.runs[0].lease_id) == (None, lease)
 
 
 async def test_a_release_waits_for_a_context_write_in_progress(engine: AsyncEngine):

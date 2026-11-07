@@ -343,7 +343,11 @@ class Dispatcher:
         for attempt in range(1, ATTEMPTS + 1):
             try:
                 grant = self._grant(run.job_id, user_id, run.round, lease)
-                return (await self.agents.solve(run.model_copy(update={"context": grant}))).answer
+                return (
+                    await self.agents.solve(
+                        run.model_copy(update={"context": grant, "lease_id": lease})
+                    )
+                ).answer
             except Exception:
                 log.exception("Attempt %d of job %s failed", attempt, run.job_id)
         return None

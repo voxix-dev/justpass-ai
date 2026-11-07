@@ -105,12 +105,18 @@ async def solve(body: AgentRun) -> AgentAnswer:
     return AgentAnswer(answer=_answer(_feedback_of(body)))
 
 
-runs: OrderedDict[tuple[UUID, int], asyncio.Task[AgentAnswer]] = OrderedDict()
+RunKey = tuple[UUID, int, UUID | None]  # job, round, lease
+
+runs: OrderedDict[RunKey, asyncio.Task[AgentAnswer]] = OrderedDict()
 
 
 def join_run(body: AgentRun) -> asyncio.Task[AgentAnswer]:
-    """The work for this round: start it, or join the one already running or finished."""
-    key = (body.job_id, body.round)
+    """The work for this round under this lease: start it, or join the one running or finished.
+
+    A new lease on the same round (another dispatcher claimed it) gets a run of its own: the old
+    run holds a Context token for the old lease, whose writes the API refuses.
+    """
+    key: RunKey = (body.job_id, body.round, body.lease_id)
     work = runs.get(key)
     if work is not None:
         runs.move_to_end(key)
@@ -130,11 +136,11 @@ def _trim() -> None:
         del runs[key]
 
 
-def _forget_if_failed(key: tuple[UUID, int], work: asyncio.Task[AgentAnswer]) -> None:
+def _forget_if_failed(key: RunKey, work: asyncio.Task[AgentAnswer]) -> None:
     """A run that raised is dropped, so a retry runs again."""
     error = None if work.cancelled() else work.exception()
     if error is not None:
-        logger.error("Run of %s round %s failed", key[0], key[1], exc_info=error)
+        logger.error("Run of %s round %s lease %s failed", *key, exc_info=error)
     if (work.cancelled() or error is not None) and runs.get(key) is work:
         del runs[key]
 
@@ -157,7 +163,8 @@ async def run(body: AgentRun) -> StreamingResponse:
     alive. If the work raises, the stream ends without JSON and the caller counts a failed attempt.
 
     The whole word "fail" in the task, ignoring case, returns an answer of None. Feedback is shown
-    in the answer, in a fenced block. A second call for a round that is running or done joins that
-    run instead of starting another.
+    in the answer, in a fenced block. A second call for a round that is running or done under the
+    same lease joins that run instead of starting another; a call under a new lease starts a new
+    run.
     """
     return StreamingResponse(stream(body), media_type="application/json")
