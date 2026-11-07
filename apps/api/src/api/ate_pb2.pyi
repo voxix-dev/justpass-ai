@@ -261,6 +261,22 @@ class AllPorts(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
 
+class GetActorEgressPolicyRequest(_message.Message):
+    __slots__ = ("actor", "name")
+    ACTOR_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    actor: ObjectRef
+    name: str
+    def __init__(self, actor: _Optional[_Union[ObjectRef, _Mapping]] = ..., name: _Optional[str] = ...) -> None: ...
+
+class UpdateActorEgressPolicyRequest(_message.Message):
+    __slots__ = ("actor", "egress_policy")
+    ACTOR_FIELD_NUMBER: _ClassVar[int]
+    EGRESS_POLICY_FIELD_NUMBER: _ClassVar[int]
+    actor: ObjectRef
+    egress_policy: EgressPolicy
+    def __init__(self, actor: _Optional[_Union[ObjectRef, _Mapping]] = ..., egress_policy: _Optional[_Union[EgressPolicy, _Mapping]] = ...) -> None: ...
+
 class CreateActorEgressPolicyRequest(_message.Message):
     __slots__ = ("actor", "egress_policy")
     ACTOR_FIELD_NUMBER: _ClassVar[int]

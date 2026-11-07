@@ -7,7 +7,8 @@
 # that name. Templates are immutable, so every change gets a template of its own.
 atespace: justpass-agents
 
-# Lets the API create, suspend and delete actors in this atespace, and nothing outside it.
+# Lets the API create, suspend and delete actors in this atespace, and nothing outside it. The editor
+# role also covers the actors' egress policies: the API creates and updates one per actor.
 accessPolicy:
   bindings:
   - role: editor

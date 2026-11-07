@@ -546,7 +546,10 @@ async def test_two_failed_revisions_in_a_row_leave_no_gap_for_the_student(
         .order_by(JobRound.number)
     )
     assert rows.all() == [(1, True), (2, False), (3, False), (4, True)]
-    assert (await client.post(f"/jobs/{job['id']}/accept", json={"round": 4})).status_code == 409
+    # The student reads "round 2", so row numbers (4) and the superseded first answer (1) are stale.
+    for seen in (1, 3, 4):
+        response = await client.post(f"/jobs/{job['id']}/accept", json={"round": seen})
+        assert response.status_code == 409, seen
     assert (await client.post(f"/jobs/{job['id']}/accept", json={"round": 2})).status_code == 200
 
 
