@@ -37,6 +37,7 @@ AGENT_IMAGE=$(publish justpass-agent apps/agent/Dockerfile)
 kubectl apply -k deploy/local
 kubectl -n justpass-agents wait --for=create deploy/agent --timeout=60s # the controller makes it
 kubectl -n justpass-agents rollout status deploy/agent --timeout=180s
+deploy/local/workers.sh --fix # after a reboot the pods have new IPs that ate-api does not know
 
 deploy/local/identity.sh
 
