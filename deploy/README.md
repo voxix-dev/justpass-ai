@@ -12,3 +12,20 @@
 Cloud targets: [wiki: Architecture](https://github.com/voxix-dev/justpass-ai/wiki/Architecture#hosting).
 
 Local clusters use their own kubeconfig (`~/.kube/substrate-kind.yaml`); never write to `~/.kube/config`.
+
+## GCP: the API on Cloud Run, Postgres on Cloud SQL
+
+- `terraform/modules/api/`: Cloud SQL (Postgres 18), the runtime service account, the secrets and the Cloud Run
+  service. `emulator = true` switches only what floci-gcp cannot do: the Cloud SQL volume and Secret Manager
+  references become a TCP connection and plain environment values. Its tests: `terraform test` in that directory.
+- `terraform/prod/`: the module plus Artifact Registry, Workload Identity Federation for GitHub Actions (only `main`
+  of this repository) and the deployer service account. State is in a GCS bucket: `terraform init
+  -backend-config="bucket=<bucket>"`. The state holds the secrets (database password, `DATABASE_URL`, token
+  secret), so make that bucket by hand with versioning and uniform bucket-level access, and give read access only
+  to the people who run Terraform. `terraform output` lists the repository variables `.github/workflows/deploy.yml`
+  needs; until `GCP_PROJECT_ID` is set that workflow does nothing. Terraform sets only the first image; CI deploys
+  the rest with `gcp/deploy-api.sh`.
+- `terraform/local/`: the module in floci-gcp. `gcp/local-e2e.sh` starts floci-gcp (rootless podman: enable
+  `podman.socket` first; `ENGINE=docker` for Docker), builds the API image, applies this root, deploys with the same
+  script CI uses and checks that the API answers from its database. `gcp/local-e2e.sh down` removes everything.
+  CI runs it as `gcp-e2e`.
