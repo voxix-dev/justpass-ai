@@ -1,0 +1,14 @@
+# The Context API as the actors see it. The API is not in the cluster, so this Service has no
+# selector, and deploy.sh creates its EndpointSlice with the address of context-relay on the kind
+# network (podman or docker puts a new address on it whenever the container is recreated).
+# The actors' egress policy allows this one host and port.
+apiVersion: v1
+kind: Service
+metadata:
+  name: context-api
+  namespace: justpass-agents
+spec:
+  ports:
+  - name: http
+    port: 8000
+    protocol: TCP

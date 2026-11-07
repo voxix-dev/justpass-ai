@@ -85,21 +85,27 @@ function JobDetail({ job }: { job: Job }) {
   // Here, not in Actions: Actions is gone while a revision runs, and the text must survive that.
   const [note, setNote] = useState('')
   const [revising, setRevising] = useState<number | null>(null)
-  const [revisionFailed, setRevisionFailed] = useState(false)
+  // The feedback of a failed revision that was already put back in the note, so it is put back once.
+  const [restored, setRestored] = useState<string | null>(null)
+  // A failed revision keeps its feedback on the job, so this holds after a reload or in another tab too.
+  const revisionFailed = !pending && !!job.failedFeedback
 
   // The job says when a revision runs, whoever sent it: this page, another tab, or a page reloaded.
   if (pending && job.round > 1 && revising !== job.round) {
     setRevising(job.round)
-    setRevisionFailed(false)
     if (!note) setNote(job.feedback ?? '')
   }
-  // A revision that fails drops its round, so the job comes back on the answer it had.
   if (revising !== null && !pending) {
     setRevising(null)
-    if (job.round < revising) setRevisionFailed(true)
     // Only the feedback that was revised is done. Any other text is an unsent draft, so it stays.
     // The API stores feedback trimmed.
-    else if (note.trim() === job.feedback) setNote('')
+    if (!job.failedFeedback && note.trim() === job.feedback) setNote('')
+  }
+  if (!job.failedFeedback && restored !== null) setRestored(null)
+  // A revision that failed leaves the answer it had: give the student their feedback back.
+  if (!pending && job.failedFeedback && restored !== job.failedFeedback) {
+    setRestored(job.failedFeedback)
+    if (!note) setNote(job.failedFeedback)
   }
 
   return (
@@ -175,10 +181,7 @@ function JobDetail({ job }: { job: Job }) {
             note={note}
             setNote={setNote}
             revisionFailed={revisionFailed}
-            onRevising={(round) => {
-              setRevisionFailed(false)
-              setRevising(round)
-            }}
+            onRevising={setRevising}
           />
         )}
       </Suspense>

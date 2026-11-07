@@ -138,3 +138,45 @@ message UpdateAtespaceAccessPolicyRequest {
   ObjectRef atespace = 1;
   AccessPolicy access_policy = 2;
 }
+
+message EgressPolicy {
+  ResourceMetadata metadata = 1;
+  repeated EgressRule rules = 2;
+}
+
+message EgressRule {
+  HttpRule http = 1;
+  TlsPassthroughRule tls_passthrough = 3;
+}
+
+message HttpRule {
+  repeated string hostnames = 1;
+  Ports ports = 2;
+}
+
+message TlsPassthroughRule {
+  repeated string hostnames = 1;
+  Ports ports = 2;
+}
+
+message Ports {
+  AllPorts all = 1;
+  repeated int32 numbers = 2;
+}
+
+message AllPorts {}
+
+message GetActorEgressPolicyRequest {
+  ObjectRef actor = 1;
+  string name = 2;
+}
+
+message UpdateActorEgressPolicyRequest {
+  ObjectRef actor = 1;
+  EgressPolicy egress_policy = 2;
+}
+
+message CreateActorEgressPolicyRequest {
+  ObjectRef actor = 1;
+  EgressPolicy egress_policy = 2;
+}

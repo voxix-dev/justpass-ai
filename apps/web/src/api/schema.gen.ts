@@ -168,6 +168,8 @@ export interface components {
             createdAt: string;
             /** Error */
             error: string | null;
+            /** Failedfeedback */
+            failedFeedback: string | null;
             /** Feedback */
             feedback: string | null;
             /**

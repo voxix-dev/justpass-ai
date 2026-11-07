@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
@@ -9,7 +10,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from api import jobs
+from api import context, context_token, jobs
 from api.agents import agents_from_env
 from api.db import DATABASE_DOWN, open_session
 from api.dispatcher import Dispatcher
@@ -44,9 +45,12 @@ class BodyLimit:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Make the dispatcher and restart rounds that a previous process left unfinished."""
+    if os.environ.get("CONTEXT_API_URL"):
+        context_token.secret()  # refuse to start with agents that could never authenticate
     dispatcher = Dispatcher(agents_from_env(), open_session)
     app.state.dispatcher = dispatcher
     await dispatcher.recover_at_start_up()
+    dispatcher.start_sweeping()
     yield
     await dispatcher.close()
 
@@ -54,6 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Homework API", version="0.0.0", lifespan=lifespan)
 app.add_middleware(BodyLimit)
 app.include_router(jobs.router)
+app.include_router(context.router)
 
 
 @app.exception_handler(RequestValidationError)

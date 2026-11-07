@@ -3,7 +3,12 @@ name = "agent"
 version = "0.0.0"
 description = "The agent: the HTTP server that runs inside a Substrate actor."
 requires-python = ">=3.14"
-dependencies = ["fastapi>=0.115", "shared", "uvicorn>=0.30"]
+dependencies = [
+    "fastapi>=0.115",
+    "httpx2>=2.16.0",
+    "shared",
+    "uvicorn>=0.30",
+]
 
 [tool.uv.sources]
 shared = { workspace = true }

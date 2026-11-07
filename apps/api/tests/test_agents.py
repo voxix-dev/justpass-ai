@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from api import ate_pb2
-from api.agents import Control, SingleAgent, SubstrateAgents, agents_from_env
+from api.agents import Control, SingleAgent, SubstrateAgents, agents_from_env, egress_rules
 from shared.agent_run import AgentAnswer, AgentRun
 
 pytestmark = pytest.mark.anyio
@@ -32,14 +32,18 @@ class FakeAteApi:
     port: int = 0
     calls: list[tuple[str, bytes, str]] = field(default_factory=list[tuple[str, bytes, str]])
     errors: dict[str, grpc.StatusCode] = field(default_factory=dict[str, grpc.StatusCode])
+    replies: dict[str, bytes] = field(default_factory=dict[str, bytes])
+    # Every ate-api call and every router /run, in the order they arrived.
+    order: list[str] = field(default_factory=list[str])
 
     def handler(self, method: str):
         async def handle(request: bytes, context: grpc.aio.ServicerContext) -> bytes:
             token = dict(context.invocation_metadata() or [])["authorization"]
             self.calls.append((method, request, str(token)))
+            self.order.append(method)
             if method in self.errors:
                 await context.abort(self.errors[method], "refused")
-            return b""
+            return self.replies.get(method, b"")
 
         return grpc.unary_unary_rpc_method_handler(handle)
 
@@ -48,7 +52,17 @@ class FakeAteApi:
 async def ate_api() -> AsyncIterator[FakeAteApi]:
     fake = FakeAteApi()
     server = grpc.aio.server()
-    methods = {m: fake.handler(m) for m in ("CreateActor", "SuspendActor", "DeleteActor")}
+    methods = {
+        m: fake.handler(m)
+        for m in (
+            "CreateActor",
+            "CreateActorEgressPolicy",
+            "GetActorEgressPolicy",
+            "UpdateActorEgressPolicy",
+            "SuspendActor",
+            "DeleteActor",
+        )
+    }
     server.add_generic_rpc_handlers(
         [grpc.method_handlers_generic_handler("ateapi.Control", methods)]
     )
@@ -64,6 +78,7 @@ def substrate(ate_api: FakeAteApi, tmp_path: Path) -> SubstrateAgents:
     token.write_text("the-token\n")
 
     def answer(request: httpx2.Request) -> httpx2.Response:
+        ate_api.order.append("router /run")
         assert request.url == "https://router/run"
         assert request.headers["ate-target-actor"] == f"homework/{ACTOR}"
         assert AgentRun.model_validate_json(request.content) == RUN
@@ -89,6 +104,154 @@ async def test_solve_creates_the_actor_and_asks_it(substrate: SubstrateAgents, a
     actor = ate_pb2.CreateActorRequest.FromString(request).actor
     assert (actor.metadata.atespace, actor.metadata.name) == ("homework", ACTOR)
     assert (actor.actor_template.atespace, actor.actor_template.name) == ("homework", "agent-v1")
+
+
+CONTEXT_HTTP = "http://context-api.justpass-agents.svc.cluster.local:8000"
+
+
+async def test_solve_allows_the_actor_only_the_context_api(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    substrate.egress = egress_rules(CONTEXT_HTTP)
+    assert await substrate.solve(RUN) == AgentAnswer(answer="x = 2")
+
+    assert [method for method, _, _ in ate_api.calls] == ["CreateActor", "CreateActorEgressPolicy"]
+    request = ate_pb2.CreateActorEgressPolicyRequest.FromString(ate_api.calls[1][1])
+    assert (request.actor.atespace, request.actor.name) == ("homework", ACTOR)
+    policy = request.egress_policy
+    assert (policy.metadata.atespace, policy.metadata.name) == ("homework", "default")
+    [rule] = policy.rules
+    assert not rule.HasField("tls_passthrough")
+    assert list(rule.http.hostnames) == ["context-api.justpass-agents.svc.cluster.local"]
+    assert list(rule.http.ports.numbers) == [8000]
+    assert not rule.http.ports.HasField("all")
+
+
+async def test_solve_creates_the_policy_before_the_actor_is_woken(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    """The router's first request wakes the actor, which then must already have its policy."""
+    substrate.egress = egress_rules(CONTEXT_HTTP)
+    await substrate.solve(RUN)
+    assert ate_api.order == ["CreateActor", "CreateActorEgressPolicy", "router /run"]
+
+
+async def test_solve_without_a_context_api_creates_no_policy(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    substrate.egress = egress_rules("")
+    await substrate.solve(RUN)
+    assert [method for method, _, _ in ate_api.calls] == ["CreateActor"]
+
+
+async def test_solve_creates_the_policy_of_an_actor_that_exists(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    """A retry after a create that stopped half way finds the actor, and still needs its policy."""
+    substrate.egress = egress_rules(CONTEXT_HTTP)
+    ate_api.errors["CreateActor"] = grpc.StatusCode.ALREADY_EXISTS
+    await substrate.solve(RUN)
+    assert [method for method, _, _ in ate_api.calls] == ["CreateActor", "CreateActorEgressPolicy"]
+
+
+async def test_solve_ignores_a_policy_that_exists_and_raises_on_other_errors(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    substrate.egress = egress_rules(CONTEXT_HTTP)
+    ate_api.errors["CreateActorEgressPolicy"] = grpc.StatusCode.ALREADY_EXISTS
+    ate_api.replies["GetActorEgressPolicy"] = ate_pb2.EgressPolicy(
+        rules=substrate.egress
+    ).SerializeToString()
+    assert await substrate.solve(RUN) == AgentAnswer(answer="x = 2")
+    assert "UpdateActorEgressPolicy" not in ate_api.order  # the rules are the wanted ones
+
+    ate_api.order.clear()
+    ate_api.errors["CreateActorEgressPolicy"] = grpc.StatusCode.PERMISSION_DENIED
+    with pytest.raises(grpc.aio.AioRpcError):
+        await substrate.solve(RUN)
+    assert ate_api.order == ["CreateActor", "CreateActorEgressPolicy"]  # the router was not called
+
+
+async def test_solve_replaces_the_rules_of_a_policy_made_for_another_context_api(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    """CONTEXT_API_URL changed since the actor was made: its old rules must not outlive that."""
+    substrate.egress = egress_rules(CONTEXT_HTTP)
+    old = ate_pb2.EgressPolicy(
+        metadata=ate_pb2.ResourceMetadata(
+            atespace="homework", name="default", uid="the-uid", version=3
+        ),
+        rules=egress_rules("http://old-api:8000"),
+    )
+    ate_api.errors["CreateActorEgressPolicy"] = grpc.StatusCode.ALREADY_EXISTS
+    ate_api.replies["GetActorEgressPolicy"] = old.SerializeToString()
+    await substrate.solve(RUN)
+
+    assert ate_api.order == [
+        "CreateActor",
+        "CreateActorEgressPolicy",
+        "GetActorEgressPolicy",
+        "UpdateActorEgressPolicy",
+        "router /run",
+    ]
+    update = next(r for m, r, _ in ate_api.calls if m == "UpdateActorEgressPolicy")
+    request = ate_pb2.UpdateActorEgressPolicyRequest.FromString(update)
+    assert (request.actor.atespace, request.actor.name) == ("homework", ACTOR)
+    assert (request.egress_policy.metadata.uid, request.egress_policy.metadata.version) == (
+        "the-uid",
+        3,
+    )
+    assert list(request.egress_policy.rules) == substrate.egress
+
+
+def test_egress_rules_for_https_pass_the_tls_through():
+    [rule] = egress_rules("https://context.example.com")
+    assert not rule.HasField("http")
+    assert list(rule.tls_passthrough.hostnames) == ["context.example.com"]
+    assert list(rule.tls_passthrough.ports.numbers) == [443]
+
+
+def test_egress_rules_default_ports_and_bad_urls():
+    assert list(egress_rules("http://api").pop().http.ports.numbers) == [80]
+    assert list(egress_rules("https://api:8443").pop().tls_passthrough.ports.numbers) == [8443]
+    for bad in ("ftp://api", "api:8000", "http://"):
+        with pytest.raises(ValueError, match="CONTEXT_API_URL"):
+            egress_rules(bad)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://10.89.5.4:8000",
+        "https://[::1]:8443",
+        "http://context-api.justpass-agents.svc.cluster.local.:8000",
+        "http://under_score:8000",
+        "http://-api:8000",
+    ],
+)
+def test_egress_rules_refuse_the_hosts_substrate_refuses(url: str):
+    with pytest.raises(ValueError, match="DNS name"):
+        egress_rules(url)
+
+
+def test_agents_from_env_refuses_an_ip_address_as_the_context_api(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Startup fails, rather than every job failing later with INVALID_ARGUMENT."""
+    monkeypatch.delenv("AGENT_URL", raising=False)
+    for name, value in {
+        "ATE_ROUTER_URL": "https://router",
+        "ATE_API_TARGET": "api:443",
+        "ATE_CA_FILE": "/ca",
+        "ATE_CLIENT_CERT_FILE": "/cert",
+        "ATE_TOKEN_FILE": "/token",
+        "ATE_ATESPACE": "homework",
+        "ATE_TEMPLATE": "agent-v1",
+        "CONTEXT_API_URL": "http://10.89.5.4:8000",
+    }.items():
+        monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match="CONTEXT_API_URL"):
+        agents_from_env()
 
 
 async def test_solve_accepts_heartbeat_newlines_before_the_answer(substrate: SubstrateAgents):
@@ -225,9 +388,11 @@ def test_agents_from_env_reads_the_substrate_settings(monkeypatch: pytest.Monkey
         "ATE_TEMPLATE": "agent-v1",
     }.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.setenv("CONTEXT_API_URL", CONTEXT_HTTP)
     agents = agents_from_env()
     assert isinstance(agents, SubstrateAgents)
     assert (agents.atespace, agents.template) == ("homework", "agent-v1")
+    assert agents.egress == egress_rules(CONTEXT_HTTP)
 
 
 def test_agents_from_env_needs_one_or_the_other(monkeypatch: pytest.MonkeyPatch):
