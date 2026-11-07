@@ -37,6 +37,7 @@ AGENT_IMAGE=$(publish justpass-agent apps/agent/Dockerfile)
 kubectl apply -k deploy/local
 kubectl -n justpass-agents wait --for=create deploy/agent --timeout=60s # the controller makes it
 kubectl -n justpass-agents rollout status deploy/agent --timeout=180s
+deploy/local/workers.sh --fix # after a reboot the pods have new IPs that ate-api does not know
 
 deploy/local/identity.sh
 
@@ -64,4 +65,28 @@ ATE_TEMPLATE=$(uv run python -m api.substrate_sync deploy/substrate/agents.yaml 
   --ca-file deploy/local/.identity/mounted/trust-bundle.pem --token-file "$owner_token")
 export ATE_TEMPLATE
 
-"$tool" compose -f compose.yaml -f deploy/local/compose.yaml up -d --build --wait api
+compose=("$tool" compose -f compose.yaml -f deploy/local/compose.yaml)
+"${compose[@]}" up -d --build --wait api context-uds context-relay
+
+# The Service context-api has no selector, so its endpoint is the relay's address on the kind network,
+# which is a new one whenever the container was recreated. Applying this again is harmless.
+relay=$("$tool" inspect -f '{{(index .NetworkSettings.Networks "kind").IPAddress}}' \
+  "$("${compose[@]}" ps -q context-relay)")
+[[ -n $relay ]] || { echo "context-relay has no address on the kind network" >&2; exit 1; }
+kubectl apply -f - << EOF
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: context-api
+  namespace: justpass-agents
+  labels:
+    kubernetes.io/service-name: context-api
+    endpointslice.kubernetes.io/managed-by: deploy.sh
+addressType: IPv4
+ports:
+- name: http
+  port: 8000
+  protocol: TCP
+endpoints:
+- addresses: ["$relay"]
+EOF

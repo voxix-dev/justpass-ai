@@ -74,6 +74,17 @@
             ],
             "title": "Error"
           },
+          "failedFeedback": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failedfeedback"
+          },
           "feedback": {
             "anyOf": [
               {
@@ -134,7 +145,8 @@
           "error",
           "accepted",
           "round",
-          "feedback"
+          "feedback",
+          "failedFeedback"
         ],
         "title": "JobOut",
         "type": "object"

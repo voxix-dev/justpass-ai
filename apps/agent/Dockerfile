@@ -15,11 +15,12 @@ COPY packages/shared/pyproject.toml packages/shared/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --package agent --no-install-workspace
 
-# Then the workspace packages, installed as regular (non-editable) packages.
+# Then the workspace packages, installed as regular (non-editable) packages. No uv cache here: it
+# would be free to reuse a wheel it built from older sources of these directories, and the
+# dependencies are already in the layer above, so there is nothing to download but the build backend.
 COPY apps/agent/src apps/agent/src
 COPY packages/shared/src packages/shared/src
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --package agent --no-editable
+RUN uv sync --locked --no-dev --package agent --no-editable --no-cache
 
 
 FROM python:3.14.10-slim-trixie

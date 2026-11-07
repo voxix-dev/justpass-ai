@@ -23,6 +23,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     MetaData,
+    SmallInteger,
     String,
     UniqueConstraint,
     func,
@@ -156,6 +157,14 @@ class JobRound(Base):
     )
     number: Mapped[int] = mapped_column(primary_key=True)
     feedback: Mapped[str | None]  # what the student asked to change
+    # Set when the agent gave no answer. The row stays, so what the agent wrote in it can be read.
+    failed_at: Mapped[datetime | None]
+    # The dispatcher that runs this round holds a lease and renews it. Another one may take the
+    # round once lease_until has passed. `claims` counts the takes, to stop paying for a round that
+    # keeps crashing. All times come from the database clock.
+    lease_id: Mapped[uuid.UUID | None]
+    lease_until: Mapped[datetime | None]
+    claims: Mapped[int] = mapped_column(SmallInteger, server_default="0")
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
@@ -182,6 +191,7 @@ class Artifact(Base):
     job_id: Mapped[uuid.UUID]
     round: Mapped[int]
     kind: Mapped[ArtifactKind] = mapped_column(str_enum(ArtifactKind, "kind"))
+    title: Mapped[str | None] = mapped_column(String(200))
     content: Mapped[str | None]  # Markdown, math as KaTeX
     storage_key: Mapped[str | None]  # Cloud Storage object key, for files
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

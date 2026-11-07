@@ -16,6 +16,7 @@ version = "0.0.0"
 source = { editable = "apps/agent" }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx2" },
     { name = "shared" },
     { name = "uvicorn" },
 ]
@@ -23,6 +24,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx2", specifier = ">=2.16.0" },
     { name = "shared", editable = "packages/shared" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]

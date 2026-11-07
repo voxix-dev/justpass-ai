@@ -32,7 +32,8 @@ test.describe('signed in', () => {
   })
 
   test('feedback revises the same job', async ({ page }) => {
-    const url = await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
+    const task = `Solve x^2 - 5x + 6 = 0 (${Date.now()})`
+    const url = await sendTask(page, task)
     await page.getByLabel('Something off? Push back').fill('Explain step 2')
     await page.getByRole('button', { name: 'Get a revised answer' }).click()
 
@@ -45,15 +46,27 @@ test.describe('signed in', () => {
 
     await page.getByRole('button', { name: 'Get a revised answer' }).click()
     await expect(page.getByText('Write what should change first.')).toBeVisible()
+
+    await page.goto('/jobs')
+    await expect(page.getByRole('link').filter({ hasText: task }).getByText(', round 2')).toBeVisible()
   })
 
   test('a revision that fails keeps the answer and the feedback, and says so', async ({ page }) => {
     const url = await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
     await expect(page.getByRole('heading', { name: 'Solution' })).toBeVisible()
-    // The API drops a failed round, so the page sees round 2 running, then round 1 again.
+    // The API keeps a failed round and reports its feedback, so the page sees round 2 running, then round 1
+    // with failedFeedback. The student's count has no gap: the retry below is round 2 again.
+    const api = url.replace('/jobs/', '/api/jobs/')
+    let failed = false
     await page.route('**/feedback', async (route) => {
-      const job = await (await page.request.get(url.replace('/jobs/', '/api/jobs/'))).json()
+      const job = await (await page.request.get(api)).json()
+      failed = true
       await route.fulfill({ json: { ...job, status: 'running', round: 2, result: null } })
+    })
+    await page.route(api, async (route) => {
+      const response = await route.fetch()
+      const job = await response.json()
+      await route.fulfill({ response, json: failed ? { ...job, failedFeedback: 'Explain step 2' } : job })
     })
     await page.getByLabel('Something off? Push back').fill('Explain step 2')
     await page.getByRole('button', { name: 'Get a revised answer' }).click()
@@ -61,6 +74,13 @@ test.describe('signed in', () => {
     await expect(page.getByText('Could not revise the answer.')).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Solution' })).toBeVisible()
     await expect(page.getByLabel('Something off? Push back')).toHaveValue('Explain step 2')
+    await expect(page.getByText(/Revised answer/)).toHaveCount(0)
+
+    // The same feedback again, this time for real.
+    await page.unroute('**/feedback')
+    await page.unroute(api)
+    await page.getByRole('button', { name: 'Get a revised answer' }).click()
+    await expect(page.getByText('Revised answer, round 2.')).toBeVisible()
   })
 
   test('math is typeset with the CSS of the same KaTeX version', async ({ page }) => {
@@ -115,7 +135,7 @@ test.describe('signed in', () => {
       await page.route(url.replace('/jobs/', '/api/jobs/'), async (route) => {
         const response = await route.fetch()
         const job = await response.json()
-        if (!first) return route.fulfill({ response })
+        if (!first) return route.fulfill({ response, json: { ...job, failedFeedback: 'Explain step 2' } })
         first = false
         await route.fulfill({ response, json: { ...job, status: 'running', round: 2, result: null, feedback: 'Explain step 2' } })
       })
@@ -125,6 +145,19 @@ test.describe('signed in', () => {
       await expect(page.getByLabel('Something off? Push back')).toHaveValue('Explain step 2')
     })
   }
+
+  test('a failed revision found after a reload gives the feedback back', async ({ page }) => {
+    const url = await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
+    await expect(page.getByRole('heading', { name: 'Solution' })).toBeVisible()
+    await page.route(url.replace('/jobs/', '/api/jobs/'), async (route) => {
+      const response = await route.fetch()
+      await route.fulfill({ response, json: { ...(await response.json()), failedFeedback: 'Explain step 2' } })
+    })
+    await page.reload()
+
+    await expect(page.getByText('Could not revise the answer.')).toBeVisible()
+    await expect(page.getByLabel('Something off? Push back')).toHaveValue('Explain step 2')
+  })
 
   test('a revision from another tab leaves an unsent draft alone', async ({ page }) => {
     const url = await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
