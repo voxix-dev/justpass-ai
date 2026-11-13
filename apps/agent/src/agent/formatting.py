@@ -38,7 +38,7 @@ def normalize_markdown(text: str) -> str:
     out: list[str] = []
     prose: list[str] = []
     fence = ""
-    indent = 0  # of the open fence; a closing one may sit at most 3 columns deeper
+    container = 0  # where the open fence's container starts; a closing one may sit 3 columns in
 
     def flush() -> None:
         if prose:
@@ -51,7 +51,7 @@ def normalize_markdown(text: str) -> str:
             out.append(line)
             if (
                 opening
-                and len(opening[1]) <= indent + 3
+                and len(opening[1]) <= container + 3
                 and set(line.strip()) == {fence[0]}
                 and len(line.strip()) >= len(fence)
             ):
@@ -59,7 +59,9 @@ def normalize_markdown(text: str) -> str:
         elif opening:
             flush()
             out.append(line)
-            indent, fence = len(opening[1]), opening[2]
+            indent = len(opening[1])
+            container = indent if indent > 3 else 0  # deeper than 3 only inside a list item
+            fence = opening[2]
         else:
             prose.append(line)
     flush()

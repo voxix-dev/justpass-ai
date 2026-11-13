@@ -1,3 +1,5 @@
+import pytest
+
 from agent.formatting import normalize_markdown
 
 
@@ -52,6 +54,7 @@ def test_fence_inside_a_list_item_is_left_alone():
     assert normalize_markdown(text) == text.replace("\\(y\\)", "$y$")
 
 
-def test_a_deeper_marker_does_not_close_a_fence():
-    text = "```\n    ```\n\\(x\\)\n```\nThen \\(y\\)"
+@pytest.mark.parametrize("opening", ["```", "   ```"])
+def test_a_marker_four_columns_in_does_not_close_a_fence(opening: str):
+    text = f"{opening}\n    ```\n\\(x\\)\n```\nThen \\(y\\)"
     assert normalize_markdown(text) == text.replace("\\(y\\)", "$y$")
