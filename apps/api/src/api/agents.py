@@ -293,8 +293,8 @@ class SubstrateAgents:
         """
         actor = _actor_name(run.job_id)
         await _created(self.control.create_actor(self.atespace, actor, self.template))
-        if self.egress:  # a retry after a half-done create finds the actor but not its policy
-            await self._set_egress(actor)
+        # Also with no rules: an actor made under other settings must lose its old destinations.
+        await self._set_egress(actor)
         target = {"ate-target-actor": f"{self.atespace}/{actor}"}
         deadline = asyncio.get_running_loop().time() + self.busy_wait
         async with self.router() as client:

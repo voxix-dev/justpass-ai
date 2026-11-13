@@ -2,6 +2,7 @@ import json
 from collections.abc import AsyncIterator, Callable, Iterator
 from uuid import uuid4
 
+import anyio
 import httpx2
 import pytest
 from pydantic import SecretStr
@@ -20,6 +21,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from agent import server, solver
 from agent.context import ContextClient
 from agent.server import SAMPLE_ANSWER, app
+from shared.agent_run import AgentRun
 
 pytestmark = pytest.mark.anyio
 
@@ -35,9 +37,11 @@ def anyio_backend() -> str:
 @pytest.fixture(autouse=True)
 def fresh_memory() -> Iterator[None]:
     solver.histories.clear()
+    solver.newest_runs.clear()
     server.runs.clear()
     yield
     solver.histories.clear()
+    solver.newest_runs.clear()
     server.runs.clear()
 
 
@@ -240,7 +244,9 @@ async def test_write_document_without_a_context_api_says_so(
     requests = use_model(script)
     response = await client.post("/run", json=run_body())
     assert response.json() == {"answer": "No document, here is the answer."}
-    assert tool_returns(requests[-1])["write_document"] == solver.DOCUMENTS_UNAVAILABLE
+    returned = tool_returns(requests[-1])["write_document"]
+    assert "saved=False" in returned
+    assert solver.DOCUMENTS_UNAVAILABLE in returned
 
 
 async def test_a_refused_document_is_retried_by_the_model(
@@ -309,6 +315,79 @@ async def test_a_round_that_runs_again_starts_from_scratch(
     await client.post("/run", json={**job, "lease_id": str(uuid4())})
     await client.post("/run", json={**job, "lease_id": str(uuid4())})
     assert len(prompts(requests[1])) == 1
+
+
+async def test_an_older_lease_finishing_late_keeps_the_newer_conversation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    old_started, old_may_finish = anyio.Event(), anyio.Event()
+    calls = 0
+
+    async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:  # the old lease waits until the new one is done
+            old_started.set()
+            await old_may_finish.wait()
+            return text("old")
+        return text("new" if calls == 2 else f"next {len(prompts(messages))}")
+
+    def make_model(key: SecretStr) -> Model:
+        return FunctionModel(respond)
+
+    monkeypatch.setattr(solver, "make_model", make_model)
+    job = AgentRun(job_id=uuid4(), round=1, text="Solve", openrouter_key=SecretStr(KEY))
+    old = job.model_copy(update={"lease_id": uuid4()})
+    new = job.model_copy(update={"lease_id": uuid4()})
+    answers: list[str | None] = []
+
+    async def run(body: AgentRun) -> None:
+        answers.append((await solver.solve_with_model(body)).answer)
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(run, old)
+        await old_started.wait()
+        await run(new)
+        old_may_finish.set()
+    assert answers == ["new", "old"]
+
+    # The feedback round continues the newer conversation.
+    feedback = new.model_copy(update={"round": 2, "feedback": "More"})
+    assert (await solver.solve_with_model(feedback)).answer == "next 2"
+    kept = [
+        p.content
+        for m in solver.histories[job.job_id][1]
+        if isinstance(m, ModelResponse)
+        for p in m.parts
+        if isinstance(p, TextPart)
+    ]
+    assert kept == ["new", "next 2"]
+
+
+async def test_the_model_is_closed_after_the_round(monkeypatch: pytest.MonkeyPatch):
+    class Closing(FunctionModel):
+        exits = 0
+
+        async def __aexit__(self, *args: object) -> None:
+            Closing.exits += 1
+
+    failing = False
+
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if failing:
+            raise RuntimeError("model down")
+        return text("ok")
+
+    def make_model(key: SecretStr) -> Model:
+        return Closing(script)
+
+    monkeypatch.setattr(solver, "make_model", make_model)
+    job = AgentRun(job_id=uuid4(), round=1, text="Solve", openrouter_key=SecretStr(KEY))
+    await solver.solve_with_model(job)
+    failing = True
+    with pytest.raises(RuntimeError):
+        await solver.solve_with_model(job)
+    assert Closing.exits == 2
 
 
 async def test_a_model_that_loops_on_its_tools_is_stopped(

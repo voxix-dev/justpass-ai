@@ -99,7 +99,7 @@ def substrate(ate_api: FakeAteApi, tmp_path: Path) -> SubstrateAgents:
 async def test_solve_creates_the_actor_and_asks_it(substrate: SubstrateAgents, ate_api: FakeAteApi):
     assert await substrate.solve(RUN) == AgentAnswer(answer="x = 2")
 
-    [(method, request, token)] = ate_api.calls
+    [(method, request, token), _policy] = ate_api.calls
     assert (method, token) == ("CreateActor", "Bearer the-token")
     actor = ate_pb2.CreateActorRequest.FromString(request).actor
     assert (actor.metadata.atespace, actor.metadata.name) == ("homework", ACTOR)
@@ -136,12 +136,35 @@ async def test_solve_creates_the_policy_before_the_actor_is_woken(
     assert ate_api.order == ["CreateActor", "CreateActorEgressPolicy", "router /run"]
 
 
-async def test_solve_without_a_context_api_creates_no_policy(
+async def test_solve_without_rules_creates_an_empty_policy(
     substrate: SubstrateAgents, ate_api: FakeAteApi
 ):
     substrate.egress = egress_rules("")
     await substrate.solve(RUN)
-    assert [method for method, _, _ in ate_api.calls] == ["CreateActor"]
+    assert [method for method, _, _ in ate_api.calls] == ["CreateActor", "CreateActorEgressPolicy"]
+    request = ate_pb2.CreateActorEgressPolicyRequest.FromString(ate_api.calls[1][1])
+    assert list(request.egress_policy.rules) == []
+
+
+async def test_solve_empties_the_policy_of_an_actor_when_no_rules_are_wanted(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    """The key is gone and there is no Context API: the old openrouter.ai rule must not stay."""
+    old = ate_pb2.EgressPolicy(
+        metadata=ate_pb2.ResourceMetadata(
+            atespace="homework", name="default", uid="the-uid", version=3
+        ),
+        rules=egress_rules("", openrouter=True),
+    )
+    substrate.egress = []
+    ate_api.errors["CreateActorEgressPolicy"] = grpc.StatusCode.ALREADY_EXISTS
+    ate_api.replies["GetActorEgressPolicy"] = old.SerializeToString()
+    await substrate.solve(RUN)
+
+    update = next(r for m, r, _ in ate_api.calls if m == "UpdateActorEgressPolicy")
+    request = ate_pb2.UpdateActorEgressPolicyRequest.FromString(update)
+    assert list(request.egress_policy.rules) == []
+    assert request.egress_policy.metadata.uid == "the-uid"
 
 
 async def test_solve_creates_the_policy_of_an_actor_that_exists(

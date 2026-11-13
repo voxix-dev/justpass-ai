@@ -69,8 +69,6 @@ _OPERATORS = (
     ast.FloorDiv,
     ast.UAdd,
     ast.USub,
-    ast.Eq,
-    ast.NotEq,
     ast.Lt,
     ast.LtE,
     ast.Gt,
@@ -78,7 +76,7 @@ _OPERATORS = (
 )
 _NODES = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Compare, ast.Call, ast.Name, ast.Load)
 _ALLOWED = (*_NODES, *_OPERATORS)
-_EQUALS = re.compile(r"(?<![<>=!])=(?!=)")  # a lone =, not part of ==, <=, >= or !=
+_EQUALS = re.compile(r"(?<![<>=!])==?(?!=)")  # = or ==, not part of <=, >= or !=
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 
 Variable = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_]{0,29}$")]
@@ -91,8 +89,9 @@ class Refused(ValueError):
 def check_expression(expression: str) -> str:
     """Return the expression as Python source sympy may parse, or raise Refused.
 
-    Only numbers, names, arithmetic and comparison, and calls of FUNCTIONS pass. `^` means a power,
-    as students write it. No attribute, subscript, lambda, string, keyword argument or dunder.
+    Only numbers, names, arithmetic and comparison, and calls of FUNCTIONS pass; == and != do not.
+    `^` means a power, as students write it.
+    No attribute, subscript, lambda, string, keyword argument or dunder.
     """
     if len(expression) > MAX_EXPRESSION_LENGTH:
         raise Refused(f"The expression is longer than {MAX_EXPRESSION_LENGTH} characters.")
@@ -130,6 +129,8 @@ def _check_node(node: ast.AST) -> None:
                 + ", ".join(sorted(FUNCTIONS))
                 + "."
             )
+        case ast.Eq() | ast.NotEq():
+            raise Refused("Use = for an equation, in solve only. Use <, <=, > or >= to compare.")
         case _ if isinstance(node, _ALLOWED):
             pass
         case _:

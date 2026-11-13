@@ -51,6 +51,17 @@ async def test_solve_without_equals_means_zero() -> None:
     assert result.result == "[4]"
 
 
+async def test_solve_double_equals_is_an_equation() -> None:
+    result = await solve("x == 2")
+    assert result.result == "[2]"
+
+
+async def test_double_equals_and_not_equals_refused() -> None:
+    for call, text in ((evaluate, "1 == 1"), (simplify, "x == 2"), (solve, "x != 2")):
+        result = await call(text)
+        assert result.error and "=" in result.error and result.result is None
+
+
 async def test_solve_refuses_two_equals() -> None:
     result = await solve("x = 1 = 2")
     assert result.error and result.result is None

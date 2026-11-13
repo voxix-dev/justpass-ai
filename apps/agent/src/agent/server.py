@@ -16,6 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 from agent.context import ContextClient
 from agent.prompt import fence, round_feedback
@@ -56,11 +57,36 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Agent", version="0.0.0")
 
 
+class ValidationIssue(BaseModel):
+    """One validation error, FastAPI's entry without `input`."""
+
+    type: str
+    loc: list[str | int]
+    msg: str
+    ctx: dict[str, object] | None = None
+    url: str | None = None
+
+
+class ValidationErrorBody(BaseModel):
+    detail: list[ValidationIssue]
+
+
 @app.exception_handler(RequestValidationError)
 async def invalid_request(_: Request, error: RequestValidationError) -> JSONResponse:
     """Answer 422 without echoing the input, which holds the OpenRouter key."""
-    detail = [{k: v for k, v in e.items() if k != "input"} for e in error.errors()]
-    return JSONResponse({"detail": jsonable_encoder(detail)}, status_code=422)
+    body = ValidationErrorBody(
+        detail=[
+            ValidationIssue(
+                type=e["type"],
+                loc=list(e["loc"]),
+                msg=e["msg"],
+                ctx=jsonable_encoder(e["ctx"]) if "ctx" in e else None,
+                url=e.get("url"),
+            )
+            for e in error.errors()
+        ]
+    )
+    return JSONResponse(body.model_dump(mode="json", exclude_none=True), status_code=422)
 
 
 @app.get("/readyz")
