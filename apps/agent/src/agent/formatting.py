@@ -6,7 +6,7 @@ The web app renders `$...$` and `$$...$$` math only, so the LaTeX delimiters `\\
 
 import re
 
-_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})")  # any indent: fences nest in list items
 
 # Alternatives are tried left to right at each position, so code spans and `$$` blocks are matched
 # (and left alone) before a delimiter inside them can be.

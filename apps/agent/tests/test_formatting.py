@@ -45,3 +45,8 @@ def test_line_break_in_math_is_left_alone():
 def test_text_without_math_is_unchanged():
     text = "## Title\n\n- one\n- **two**\n\nCost is \\$5 and $x$ and $$y$$."
     assert normalize_markdown(text) == text
+
+
+def test_fence_inside_a_list_item_is_left_alone():
+    text = '1. Code:\n\n    ~~~python\n    pattern = r"\\(x\\)"\n    ~~~\n\n2. Then \\(y\\)'
+    assert normalize_markdown(text) == text.replace("\\(y\\)", "$y$")
