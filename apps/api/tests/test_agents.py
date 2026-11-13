@@ -7,7 +7,7 @@ from pathlib import Path
 import grpc
 import httpx2
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from api import ate_pb2
 from api.agents import Control, SingleAgent, SubstrateAgents, agents_from_env, egress_rules
@@ -204,11 +204,90 @@ async def test_solve_replaces_the_rules_of_a_policy_made_for_another_context_api
     assert list(request.egress_policy.rules) == substrate.egress
 
 
+async def test_solve_adds_the_openrouter_rule_to_a_policy_made_without_it(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    """The key was set after the actor was made: its policy must gain the rule."""
+    old = ate_pb2.EgressPolicy(
+        metadata=ate_pb2.ResourceMetadata(
+            atespace="homework", name="default", uid="the-uid", version=3
+        ),
+        rules=egress_rules(CONTEXT_HTTP),
+    )
+    substrate.egress = egress_rules(CONTEXT_HTTP, openrouter=True)
+    ate_api.errors["CreateActorEgressPolicy"] = grpc.StatusCode.ALREADY_EXISTS
+    ate_api.replies["GetActorEgressPolicy"] = old.SerializeToString()
+    await substrate.solve(RUN)
+
+    update = next(r for m, r, _ in ate_api.calls if m == "UpdateActorEgressPolicy")
+    rules = ate_pb2.UpdateActorEgressPolicyRequest.FromString(update).egress_policy.rules
+    assert [rule.HasField("tls_passthrough") for rule in rules] == [False, True]
+
+
+async def test_solve_removes_the_openrouter_rule_when_the_key_is_gone(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    old = ate_pb2.EgressPolicy(
+        metadata=ate_pb2.ResourceMetadata(
+            atespace="homework", name="default", uid="the-uid", version=3
+        ),
+        rules=egress_rules(CONTEXT_HTTP, openrouter=True),
+    )
+    substrate.egress = egress_rules(CONTEXT_HTTP)
+    ate_api.errors["CreateActorEgressPolicy"] = grpc.StatusCode.ALREADY_EXISTS
+    ate_api.replies["GetActorEgressPolicy"] = old.SerializeToString()
+    await substrate.solve(RUN)
+
+    update = next(r for m, r, _ in ate_api.calls if m == "UpdateActorEgressPolicy")
+    rules = ate_pb2.UpdateActorEgressPolicyRequest.FromString(update).egress_policy.rules
+    assert [rule.HasField("tls_passthrough") for rule in rules] == [False]
+
+
+async def test_solve_leaves_an_up_to_date_policy_with_openrouter_alone(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    rules = egress_rules(CONTEXT_HTTP, openrouter=True)
+    old = ate_pb2.EgressPolicy(
+        metadata=ate_pb2.ResourceMetadata(atespace="homework", name="default"), rules=rules
+    )
+    substrate.egress = rules
+    ate_api.errors["CreateActorEgressPolicy"] = grpc.StatusCode.ALREADY_EXISTS
+    ate_api.replies["GetActorEgressPolicy"] = old.SerializeToString()
+    await substrate.solve(RUN)
+    assert "UpdateActorEgressPolicy" not in ate_api.order
+
+
 def test_egress_rules_for_https_pass_the_tls_through():
     [rule] = egress_rules("https://context.example.com")
     assert not rule.HasField("http")
     assert list(rule.tls_passthrough.hostnames) == ["context.example.com"]
     assert list(rule.tls_passthrough.ports.numbers) == [443]
+
+
+KEY = "sk-or-dummy-key-for-tests"
+
+
+def test_egress_rules_add_openrouter_with_a_key():
+    http, openrouter = egress_rules(CONTEXT_HTTP, openrouter=True)
+    assert list(http.http.hostnames) == ["context-api.justpass-agents.svc.cluster.local"]
+    assert not openrouter.HasField("http")
+    assert list(openrouter.tls_passthrough.hostnames) == ["openrouter.ai"]
+    assert list(openrouter.tls_passthrough.ports.numbers) == [443]
+
+    https, openrouter = egress_rules("https://context.example.com", openrouter=True)
+    assert list(https.tls_passthrough.hostnames) == ["context.example.com"]
+    assert list(openrouter.tls_passthrough.hostnames) == ["openrouter.ai"]
+
+
+def test_egress_rules_without_a_key_have_no_openrouter():
+    assert egress_rules(CONTEXT_HTTP) == egress_rules(CONTEXT_HTTP, openrouter=False)
+    assert len(egress_rules(CONTEXT_HTTP)) == 1
+    assert egress_rules("") == []
+
+
+def test_egress_rules_allow_openrouter_without_a_context_api():
+    [rule] = egress_rules("", openrouter=True)
+    assert list(rule.tls_passthrough.hostnames) == ["openrouter.ai"]
 
 
 def test_egress_rules_default_ports_and_bad_urls():
@@ -357,6 +436,47 @@ async def test_single_agent_posts_the_run():
     await agent.release(JOB)
 
 
+async def test_single_agent_sends_the_key_in_the_body():
+    seen: list[dict] = []
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        seen.append(json.loads(request.content))
+        return httpx2.Response(200, json={"answer": None})
+
+    agent = SingleAgent("http://agent", httpx2.MockTransport(answer))
+    await agent.solve(RUN.model_copy(update={"openrouter_key": SecretStr(KEY)}))
+    await agent.solve(RUN)
+    assert [body["openrouter_key"] for body in seen] == [KEY, None]
+
+
+async def test_substrate_sends_the_key_in_the_body(substrate: SubstrateAgents):
+    seen: list[dict] = []
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        seen.append(json.loads(request.content))
+        return httpx2.Response(200, json={"answer": None})
+
+    substrate.router = lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(answer))
+    await substrate.solve(RUN.model_copy(update={"openrouter_key": SecretStr(KEY)}))
+    assert seen[0]["openrouter_key"] == KEY
+
+
+async def test_the_key_stays_out_of_reprs_logs_and_errors(caplog: pytest.LogCaptureFixture):
+    run = RUN.model_copy(update={"openrouter_key": SecretStr(KEY)})
+    transport = httpx2.MockTransport(lambda _: httpx2.Response(503))
+    with caplog.at_level("DEBUG"), pytest.raises(httpx2.HTTPStatusError) as error:
+        await SingleAgent("http://agent", transport).solve(run)
+    for text in (
+        repr(run),
+        str(run),
+        run.model_dump_json(),
+        str(run.model_dump()),
+        str(error.value),
+        caplog.text,
+    ):
+        assert KEY not in text
+
+
 async def test_an_answer_with_nul_raises():
     """Postgres would refuse it when saving, which leaves the job running instead of failing it."""
     transport = httpx2.MockTransport(lambda _: httpx2.Response(200, json={"answer": "a\x00b"}))
@@ -392,6 +512,29 @@ def test_agents_from_env_reads_the_substrate_settings(monkeypatch: pytest.Monkey
     agents = agents_from_env()
     assert isinstance(agents, SubstrateAgents)
     assert (agents.atespace, agents.template) == ("homework", "agent-v1")
+    assert agents.egress == egress_rules(CONTEXT_HTTP)
+
+
+def test_agents_from_env_allows_openrouter_with_a_key(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("AGENT_URL", raising=False)
+    for name, value in {
+        "ATE_ROUTER_URL": "https://router",
+        "ATE_API_TARGET": "api:443",
+        "ATE_CA_FILE": "/ca",
+        "ATE_CLIENT_CERT_FILE": "/cert",
+        "ATE_TOKEN_FILE": "/token",
+        "ATE_ATESPACE": "homework",
+        "ATE_TEMPLATE": "agent-v1",
+        "CONTEXT_API_URL": CONTEXT_HTTP,
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
+    agents = agents_from_env()
+    assert isinstance(agents, SubstrateAgents)
+    assert agents.egress == egress_rules(CONTEXT_HTTP, openrouter=True)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    agents = agents_from_env()
+    assert isinstance(agents, SubstrateAgents)
     assert agents.egress == egress_rules(CONTEXT_HTTP)
 
 

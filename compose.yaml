@@ -42,6 +42,7 @@ services:
       AGENT_URL: http://agent
       CONTEXT_API_URL: http://api:8000  # where the agent reaches the Context API
       CONTEXT_TOKEN_SECRET: ${CONTEXT_TOKEN_SECRET:?see .env.example}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}  # empty: the agent gives the fixed sample answer
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"  # no auth yet: keep it off the network
     healthcheck:
