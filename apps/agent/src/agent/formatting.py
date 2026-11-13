@@ -1,0 +1,60 @@
+"""Markdown clean-up for model answers.
+
+The web app renders `$...$` and `$$...$$` math only, so the LaTeX delimiters `\\(...\\)` and
+`\\[...\\]` are rewritten to those.
+"""
+
+import re
+
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+# Alternatives are tried left to right at each position, so code spans and `$$` blocks are matched
+# (and left alone) before a delimiter inside them can be.
+_SPAN = re.compile(
+    r"""
+    (?P<code>(?<!`)(?P<ticks>`+)(?!`).+?(?<!`)(?P=ticks)(?!`))
+    | (?P<dollars>\$\$.*?\$\$)
+    | (?<!\\)\\\[(?P<display>.*?)(?<!\\)\\\]
+    | (?<!\\)\\\((?P<inline>.*?)(?<!\\)\\\)
+    """,
+    re.DOTALL | re.VERBOSE,
+)
+
+
+def _replace(match: re.Match[str]) -> str:
+    if match["display"] is not None:
+        return f"\n$$\n{match['display'].strip()}\n$$\n"
+    if match["inline"] is not None:
+        return f"${match['inline'].strip()}$"
+    return match[0]
+
+
+def normalize_markdown(text: str) -> str:
+    """Rewrite `\\[...\\]` as `$$` display math and `\\(...\\)` as `$...$` inline math.
+
+    Fenced code blocks, inline code spans, existing `$$...$$` blocks and escaped `\\\\[` (a LaTeX
+    line break) are left as they are.
+    """
+    out: list[str] = []
+    prose: list[str] = []
+    fence = ""
+
+    def flush() -> None:
+        if prose:
+            out.append(_SPAN.sub(_replace, "".join(prose)))
+            prose.clear()
+
+    for line in text.splitlines(keepends=True):
+        opening = _FENCE.match(line)
+        if fence:
+            out.append(line)
+            if opening and set(line.strip()) == {fence[0]} and len(line.strip()) >= len(fence):
+                fence = ""
+        elif opening:
+            flush()
+            out.append(line)
+            fence = opening[1]
+        else:
+            prose.append(line)
+    flush()
+    return "".join(out)

@@ -21,6 +21,7 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from agent import math_tools
+from agent.formatting import normalize_markdown
 from agent.prompt import SYSTEM_PROMPT
 from shared.agent_run import AgentAnswer, AgentRun
 
@@ -65,7 +66,9 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
             usage_limits=UsageLimits(request_limit=MAX_MODEL_REQUESTS),
         )
     _log_run(body, result.new_messages(), result.usage)
-    answer = result.output.replace("\x00", "").strip()  # an answer cannot hold NUL
+    answer = normalize_markdown(
+        result.output.replace("\x00", "")
+    ).strip()  # an answer cannot hold NUL
     return AgentAnswer(answer=answer or None)
 
 
