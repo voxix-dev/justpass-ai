@@ -50,3 +50,8 @@ def test_text_without_math_is_unchanged():
 def test_fence_inside_a_list_item_is_left_alone():
     text = '1. Code:\n\n    ~~~python\n    pattern = r"\\(x\\)"\n    ~~~\n\n2. Then \\(y\\)'
     assert normalize_markdown(text) == text.replace("\\(y\\)", "$y$")
+
+
+def test_a_deeper_marker_does_not_close_a_fence():
+    text = "```\n    ```\n\\(x\\)\n```\nThen \\(y\\)"
+    assert normalize_markdown(text) == text.replace("\\(y\\)", "$y$")

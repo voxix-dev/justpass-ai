@@ -6,7 +6,7 @@ The web app renders `$...$` and `$$...$$` math only, so the LaTeX delimiters `\\
 
 import re
 
-_FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})")  # any indent: fences nest in list items
+_FENCE = re.compile(r"^([ \t]*)(`{3,}|~{3,})")  # any indent: fences nest in list items
 
 # Alternatives are tried left to right at each position, so code spans and `$$` blocks are matched
 # (and left alone) before a delimiter inside them can be.
@@ -38,6 +38,7 @@ def normalize_markdown(text: str) -> str:
     out: list[str] = []
     prose: list[str] = []
     fence = ""
+    indent = 0  # of the open fence; a closing one may sit at most 3 columns deeper
 
     def flush() -> None:
         if prose:
@@ -48,12 +49,17 @@ def normalize_markdown(text: str) -> str:
         opening = _FENCE.match(line)
         if fence:
             out.append(line)
-            if opening and set(line.strip()) == {fence[0]} and len(line.strip()) >= len(fence):
+            if (
+                opening
+                and len(opening[1]) <= indent + 3
+                and set(line.strip()) == {fence[0]}
+                and len(line.strip()) >= len(fence)
+            ):
                 fence = ""
         elif opening:
             flush()
             out.append(line)
-            fence = opening[1]
+            indent, fence = len(opening[1]), opening[2]
         else:
             prose.append(line)
     flush()
