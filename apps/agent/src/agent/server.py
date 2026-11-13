@@ -9,6 +9,7 @@ development, the tests and the cluster check run with no model and no cost.
 import asyncio
 import logging
 import re
+import sys
 from collections import OrderedDict
 from collections.abc import AsyncGenerator
 from uuid import UUID
@@ -55,6 +56,19 @@ HEARTBEAT_SECONDS = 5  # how often /run writes a byte while working, so the API 
 MAX_RUNS = 64  # finished and running rounds remembered, so a retried /run joins instead of redoing
 
 logger = logging.getLogger(__name__)
+
+
+def _log_to_stdout() -> None:
+    """Send the agent's own INFO logs to stdout, which uvicorn leaves unconfigured."""
+    package = logging.getLogger("agent")
+    package.setLevel(logging.INFO)
+    if not package.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
+        package.addHandler(handler)
+
+
+_log_to_stdout()
 app = FastAPI(title="Agent", version="0.0.0")
 
 

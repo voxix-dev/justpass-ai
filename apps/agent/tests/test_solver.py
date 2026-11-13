@@ -1,5 +1,7 @@
+import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Iterator
+from typing import cast
 from uuid import uuid4
 
 import httpx2
@@ -234,6 +236,30 @@ async def test_a_model_that_loops_on_its_tools_is_stopped(
         await client.post("/run", json=run_body())
 
 
+async def test_a_round_that_overruns_its_time_is_stopped(monkeypatch: pytest.MonkeyPatch):
+    async def slow(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        await asyncio.sleep(5)
+        return text("late")
+
+    def make_model(key: SecretStr) -> Model:
+        return FunctionModel(slow)
+
+    monkeypatch.setattr(solver, "make_model", make_model)
+    monkeypatch.setattr(solver, "ROUND_TIMEOUT_SECONDS", 0.05)
+    job = AgentRun(job_id=uuid4(), round=1, text="Solve", openrouter_key=SecretStr(KEY))
+    with pytest.raises(TimeoutError):
+        await solver.solve_with_model(job)
+
+
+async def test_the_model_settings_bound_reasoning_tokens_and_time():
+    model = solver.make_model(SecretStr(KEY))
+    settings = cast(dict[str, object], model.settings)
+    assert settings.get("openrouter_reasoning") == solver.REASONING
+    assert settings.get("max_tokens") == solver.MAX_OUTPUT_TOKENS
+    assert settings.get("timeout") == solver.MODEL_TIMEOUT_SECONDS
+    assert solver.MODEL_TIMEOUT_SECONDS < solver.ROUND_TIMEOUT_SECONDS
+
+
 async def test_an_empty_reply_is_no_answer(
     client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
 ):
@@ -299,6 +325,9 @@ async def test_the_request_to_openrouter_asks_for_the_cheapest_provider(
     payload = json.loads(request.content)
     assert payload["model"] == solver.MODEL_ID == "deepseek/deepseek-v4.1-flash"
     assert payload["provider"] == {"sort": "price"}
+    assert payload["reasoning"] == solver.REASONING == {"max_tokens": 4_000}
+    assert payload["max_tokens"] == solver.MAX_OUTPUT_TOKENS
+    assert solver.REASONING.get("max_tokens", 0) < solver.MAX_OUTPUT_TOKENS
     assert {t["function"]["name"] for t in payload["tools"]} >= {"evaluate"}
     assert "write_document" not in {t["function"]["name"] for t in payload["tools"]}
 

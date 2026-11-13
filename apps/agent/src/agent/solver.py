@@ -5,6 +5,7 @@ text reply is the answer. Every round is a fresh conversation. Feedback rounds g
 sample for now (server.py).
 """
 
+import asyncio
 import logging
 
 import httpx2
@@ -16,6 +17,7 @@ from pydantic_ai.models.openrouter import (
     OpenRouterModel,
     OpenRouterModelSettings,
     OpenRouterProviderConfig,
+    OpenRouterReasoning,
 )
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.usage import RunUsage, UsageLimits
@@ -29,8 +31,10 @@ logger = logging.getLogger(__name__)
 
 MODEL_ID = "deepseek/deepseek-v4.1-flash"
 ROUTING: OpenRouterProviderConfig = {"sort": "price"}  # the cheapest provider of the model
-MAX_OUTPUT_TOKENS = 16_000
-MODEL_TIMEOUT_SECONDS = 120  # one request to the model
+REASONING: OpenRouterReasoning = {"max_tokens": 4_000}  # bounds the thinking before the answer
+MAX_OUTPUT_TOKENS = 8_000  # reasoning and answer together, so above the reasoning budget
+MODEL_TIMEOUT_SECONDS = 60  # one request to the model
+ROUND_TIMEOUT_SECONDS = 180  # a whole round, all its requests
 MAX_MODEL_REQUESTS = 25  # one round: a model that loops on its tools is stopped here
 
 agent = Agent(
@@ -50,6 +54,7 @@ def make_model(key: SecretStr, http_client: httpx2.AsyncClient | None = None) ->
     provider = OpenRouterProvider(api_key=key.get_secret_value(), http_client=http_client)
     settings = OpenRouterModelSettings(
         openrouter_provider=ROUTING,
+        openrouter_reasoning=REASONING,
         max_tokens=MAX_OUTPUT_TOKENS,
         timeout=MODEL_TIMEOUT_SECONDS,
     )
@@ -57,9 +62,12 @@ def make_model(key: SecretStr, http_client: httpx2.AsyncClient | None = None) ->
 
 
 async def solve_with_model(body: AgentRun) -> AgentAnswer:
-    """Ask the model to solve the task text. A model that fails raises."""
+    """Ask the model to solve the task text. A model that fails or overruns the round raises."""
     assert body.openrouter_key is not None
-    async with make_model(body.openrouter_key) as model:  # closes the HTTP client of the round
+    async with (
+        asyncio.timeout(ROUND_TIMEOUT_SECONDS),
+        make_model(body.openrouter_key) as model,  # closes the HTTP client of the round
+    ):
         result = await agent.run(
             body.text,
             model=model,
