@@ -78,7 +78,18 @@ def use_model(monkeypatch: pytest.MonkeyPatch) -> Callable[[Script], list[list[M
 
 
 @pytest.fixture
-def context_api(monkeypatch: pytest.MonkeyPatch) -> list[httpx2.Request]:
+def task_rounds() -> list[dict[str, object]]:
+    """The rounds the fake Context API reports; a test may change them between rounds."""
+    return [
+        {"number": 1, "feedback": None, "outcome": "answered", "artifacts": []},
+        {"number": 2, "feedback": "Show the check", "outcome": "running", "artifacts": []},
+    ]
+
+
+@pytest.fixture
+def context_api(
+    monkeypatch: pytest.MonkeyPatch, task_rounds: list[dict[str, object]]
+) -> list[httpx2.Request]:
     seen: list[httpx2.Request] = []
     job_id = str(uuid4())
 
@@ -87,23 +98,14 @@ def context_api(monkeypatch: pytest.MonkeyPatch) -> list[httpx2.Request]:
         tool = request.url.path.rsplit("/", 1)[-1]
         match tool:
             case "get_task":
-                rounds: list[dict[str, object]] = [
-                    {"number": 1, "feedback": None, "outcome": "answered", "artifacts": []},
-                    {
-                        "number": 2,
-                        "feedback": "Show the check",
-                        "outcome": "running",
-                        "artifacts": [],
-                    },
-                ]
                 task: dict[str, object] = {
                     "job_id": job_id,
                     "subject": "math",
                     "level": "high_school",
                     "language": "pl",
                     "text": "Solve x^2 = 4",
-                    "round": 2,
-                    "rounds": rounds,
+                    "round": task_rounds[-1]["number"],
+                    "rounds": task_rounds,
                 }
                 return httpx2.Response(200, json=task)
             case "get_profile":
@@ -331,6 +333,63 @@ async def test_a_fresh_process_rebuilds_the_job_from_the_task(
     assert "```\nShow the check\n```" in sent[0]
 
 
+def round_row(number: int, outcome: str, feedback: str | None) -> dict[str, object]:
+    return {"number": number, "feedback": feedback, "outcome": outcome, "artifacts": []}
+
+
+async def test_a_round_that_failed_on_the_api_is_not_continued(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    task_rounds: list[dict[str, object]],
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level("INFO", logger="agent.solver")
+    requests = use_model(lambda messages, info: text("ok"))
+    job = run_body(context=grant())
+    await client.post("/run", json=job)
+    await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
+    # Round 2 finished here, but the API marked it failed and the student sent round 3.
+    task_rounds[:] = [
+        round_row(1, "answered", None),
+        round_row(2, "failed", "Show the check"),
+        round_row(3, "running", "Third change"),
+    ]
+    await client.post("/run", json={**job, "round": 3, "feedback": "Third change"})
+    assert f"Round 3 of job {job['job_id']} continues round 1" in caplog.text
+    assert not any("Show the check" in p for p in prompts(requests[2]))
+    assert any("Third change" in p for p in prompts(requests[2]))
+
+
+async def test_a_round_without_a_checkpoint_rebuilds_with_the_feedback_of_the_answered(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    task_rounds: list[dict[str, object]],
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level("INFO", logger="agent.solver")
+    requests = use_model(lambda messages, info: text("ok"))
+    job = run_body(context=grant())
+    job_id = UUID(str(job["job_id"]))
+    await client.post("/run", json=job)
+    # Round 2 ran while another lease owned the job, so it stored no checkpoint.
+    solver.newest_runs[job_id] = (3, uuid4())
+    await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
+    assert sorted(solver.histories[job_id]) == [1]
+    task_rounds[:] = [
+        round_row(1, "answered", None),
+        round_row(2, "answered", "Show the check"),
+        round_row(3, "running", "Third change"),
+    ]
+    await client.post("/run", json={**job, "round": 3, "feedback": "Third change"})
+    assert f"Round 3 of job {job_id} starts from the task and 2 feedback" in caplog.text
+    assert len(prompts(requests[2])) == 1
+    assert "Show the check" in prompts(requests[2])[0]
+    assert "Third change" in prompts(requests[2])[0]
+    assert solver.histories[job_id][3].rounds == (1, 2, 3)
+
+
 async def test_a_round_that_runs_again_starts_from_scratch(
     client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
 ):
@@ -380,7 +439,7 @@ async def test_an_older_lease_finishing_late_keeps_the_newer_conversation(
     assert (await solver.solve_with_model(feedback)).answer == "next 2"
     kept = [
         p.content
-        for m in solver.histories[job.job_id][2]
+        for m in solver.histories[job.job_id][2].messages
         if isinstance(m, ModelResponse)
         for p in m.parts
         if isinstance(p, TextPart)
@@ -434,7 +493,7 @@ async def test_an_older_lease_delayed_before_its_run_does_not_take_over(
     assert solver.newest_runs[job.job_id] == (2, new.lease_id)
     kept = [
         p.content
-        for m in solver.histories[job.job_id][2]
+        for m in solver.histories[job.job_id][2].messages
         if isinstance(m, ModelResponse)
         for p in m.parts
         if isinstance(p, TextPart)

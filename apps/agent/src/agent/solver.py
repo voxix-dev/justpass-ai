@@ -103,8 +103,17 @@ agent = Agent(
     retries=2,
 )
 
-# job id -> round -> the conversation up to the answer of that round
-histories: OrderedDict[UUID, dict[int, list[ModelMessage]]] = OrderedDict()
+
+@dataclass
+class Checkpoint:
+    """A conversation up to the answer of a round, and the rounds whose feedback it holds."""
+
+    rounds: tuple[int, ...]
+    messages: list[ModelMessage]
+
+
+# job id -> round -> the checkpoint after the answer of that round
+histories: OrderedDict[UUID, dict[int, Checkpoint]] = OrderedDict()
 # job id -> round and lease of the newest run started: only that run publishes its history
 newest_runs: OrderedDict[UUID, tuple[int, UUID | None]] = OrderedDict()
 
@@ -134,12 +143,15 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
     ):
         if body.context is None:
             feedback = [body.feedback] if body.feedback else []
-            return await _answer(body, model, body.text, None, feedback, None)
+            return await _answer(body, model, body.text, None, feedback, None, None)
         async with ContextClient(body.context.url, body.context.token) as context:
             task = await context.get_task()
             profile = await context.get_profile()
             feedback = round_feedback(task, body.round)
-            return await _answer(body, model, task.text, profile, feedback, context)
+            answered = tuple(
+                r.number for r in task.rounds if r.outcome == "answered" and r.number < body.round
+            )
+            return await _answer(body, model, task.text, profile, feedback, context, answered)
 
 
 def _register_run(body: AgentRun) -> None:
@@ -158,17 +170,27 @@ async def _answer(
     profile: Profile | None,
     feedback: list[str],
     context: ContextClient | None,
+    answered: tuple[int, ...] | None,
 ) -> AgentAnswer:
     this_run = (body.round, body.lease_id)
     checkpoints = histories.get(body.job_id, {})
-    earlier = [number for number in checkpoints if number < body.round]
-    # A feedback round continues the newest earlier round: a round that runs again does not start
-    # from its own first attempt, and keeps the feedback of the rounds before it.
-    if earlier and body.feedback:
-        prompt, history = feedback_message(body.feedback), checkpoints[max(earlier)]
-        logger.info("Round %s of job %s continues round %s", body.round, body.job_id, max(earlier))
+    candidates = [
+        number
+        for number, checkpoint in checkpoints.items()
+        if number < body.round and (answered is None or checkpoint.rounds == answered)
+    ]
+    # A feedback round continues the newest earlier checkpoint, so a round that runs again does not
+    # start from its own first attempt. With a Context API, only a checkpoint that holds exactly the
+    # answered rounds qualifies: it neither misses the feedback of an answered round nor brings
+    # back that of a failed one. Otherwise the round rebuilds from the task.
+    if candidates and body.feedback:
+        chosen = max(candidates)
+        prompt, history = feedback_message(body.feedback), checkpoints[chosen].messages
+        rounds = (*checkpoints[chosen].rounds, body.round)
+        logger.info("Round %s of job %s continues round %s", body.round, body.job_id, chosen)
     else:
         prompt, history = task_message(text, profile, feedback), None
+        rounds = (*(answered or ()), body.round)
         logger.info(
             "Round %s of job %s starts from the task and %d feedback",
             body.round,
@@ -188,7 +210,7 @@ async def _answer(
         kept = histories.setdefault(body.job_id, {})
         for number in [n for n in kept if n > body.round]:
             del kept[number]
-        kept[body.round] = result.all_messages()
+        kept[body.round] = Checkpoint(rounds, result.all_messages())
         histories.move_to_end(body.job_id)
         while len(histories) > MAX_JOBS:
             histories.popitem(last=False)
