@@ -111,6 +111,29 @@ def context_api(
             case "get_profile":
                 profile = {"level": "high_school", "language": "pl", "subject": "math"}
                 return httpx2.Response(200, json=profile | {"profile_md": "Likes short steps"})
+            case "get_subject_memory":
+                return httpx2.Response(
+                    200, json={"subject": "math", "content_md": "Writes in pencil"}
+                )
+            case "update_memory":
+                body = json.loads(request.content)
+                return httpx2.Response(
+                    200, json={"subject": body["subject"], "content_md": body["content_md"]}
+                )
+            case "search_history":
+                return httpx2.Response(
+                    200, json=[{"subject": "physics", "content_md": "Forgets units"}]
+                )
+            case "list_history":
+                item = {
+                    "job_id": str(uuid4()),
+                    "subject": "physics",
+                    "status": "accepted",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "grade": "5",
+                    "grade_comment": None,
+                }
+                return httpx2.Response(200, json=[item])
             case _:
                 return httpx2.Response(200, json={"artifact_id": str(uuid4())})
 
@@ -205,6 +228,10 @@ async def test_all_tools_are_offered(
         "differentiate",
         "integrate",
         "write_document",
+        "update_memory",
+        "read_memory",
+        "search_memory",
+        "list_history",
     }
 
 
@@ -242,6 +269,7 @@ async def test_write_document_saves_a_draft_through_the_context_api(
     assert [r.url.path for r in context_api] == [
         "/v1/context/get_task",
         "/v1/context/get_profile",
+        "/v1/context/get_subject_memory",
         "/v1/context/write_artifact",
     ]
     written = json.loads(context_api[-1].content)
@@ -693,3 +721,92 @@ async def test_the_log_names_tools_and_tokens_but_not_the_key(
     assert "['evaluate']" in line
     assert "tokens in" in line
     assert KEY not in caplog.text
+
+
+async def test_the_subject_notes_are_in_the_first_message(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+):
+    requests = use_model(lambda messages, info: text("ok"))
+    await client.post("/run", json=run_body(context=grant()))
+    assert "Notes on the student in math:\n\n```\nWrites in pencil\n```" in prompts(requests[0])[0]
+
+
+async def test_update_memory_sends_the_notes_to_the_context_api(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+):
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not tool_returns(messages):
+            notes = {"scope": "subject", "subject": None, "content_md": "Show every step"}
+            return tool_call("update_memory", notes=notes)
+        return text("ok")
+
+    requests = use_model(script)
+    await client.post("/run", json=run_body(context=grant()))
+    assert "saved=True" in tool_returns(requests[-1])["update_memory"]
+    call = next(r for r in context_api if r.url.path.endswith("/update_memory"))
+    assert json.loads(call.content) == {
+        "scope": "subject",
+        "subject": None,
+        "content_md": "Show every step",
+    }
+
+
+async def test_notes_that_are_too_long_are_retried(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+):
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            notes = {"scope": "profile", "content_md": "x" * 10_001}
+            return tool_call("update_memory", notes=notes)
+        return text("ok")
+
+    requests = use_model(script)
+    await client.post("/run", json=run_body(context=grant()))
+    assert "string_too_long" in tool_returns(requests[-1])["update_memory"]
+    assert not any(r.url.path.endswith("/update_memory") for r in context_api)
+
+
+async def test_memory_tools_read_search_and_list(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+):
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not tool_returns(messages):
+            return ModelResponse(
+                parts=[
+                    ToolCallPart("read_memory", {"request": {"subject": "physics"}}),
+                    ToolCallPart("search_memory", {"request": {"query": "units"}}),
+                    ToolCallPart("list_history", {"request": {"limit": 3}}),
+                ]
+            )
+        return text("ok")
+
+    requests = use_model(script)
+    await client.post("/run", json=run_body(context=grant()))
+    returns = tool_returns(requests[-1])
+    assert "Writes in pencil" in returns["read_memory"]
+    assert "Forgets units" in returns["search_memory"]
+    assert "grade='5'" in returns["list_history"]
+    sent = {r.url.path.rsplit("/", 1)[-1]: json.loads(r.content) for r in context_api}
+    assert sent["search_history"] == {"query": "units"}
+    assert sent["list_history"] == {"limit": 3}
+
+
+async def test_memory_is_unavailable_without_a_context_api(
+    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+):
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not tool_returns(messages):
+            return tool_call("search_memory", request={"query": "units"})
+        return text("ok")
+
+    requests = use_model(script)
+    await client.post("/run", json=run_body())
+    assert "unavailable" in tool_returns(requests[-1])["search_memory"]

@@ -1,9 +1,10 @@
-"""The agent: one model on OpenRouter, with math tools and a tool that saves a document.
+"""The agent: one model on OpenRouter, with math tools, a document tool and memory tools.
 
-A round with a key runs here. The model gets the task, the student's profile and any feedback, and
-its text reply is the answer. The conversation of each job is kept in memory, so a feedback round
-continues it: the actor's memory snapshot keeps this process between rounds. A process that has
-lost it (a fresh actor) rebuilds the job from the task and its feedback.
+A round with a key runs here. The model gets the task, the student's profile, the notes on the
+student in the job's subject and any feedback, and its text reply is the answer. It saves and
+searches notes on the student with the memory tools. The conversation of each job is kept in
+memory, so a feedback round continues it: the actor's memory snapshot keeps this process between
+rounds. A process that has lost it (a fresh actor) rebuilds the job from the task and its feedback.
 """
 
 import asyncio
@@ -36,7 +37,16 @@ from agent.prompt import (
     task_message,
 )
 from shared.agent_run import AgentAnswer, AgentRun
-from shared.context import Profile, Text
+from shared.context import (
+    GetSubjectMemory,
+    HistoryItem,
+    ListHistory,
+    Memory,
+    Profile,
+    SearchHistory,
+    Text,
+    UpdateMemory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +61,7 @@ MAX_MODEL_REQUESTS = 25  # one round: a model that loops on its tools is stopped
 MAX_JOBS = 64  # conversations remembered; the oldest go first
 
 DOCUMENTS_UNAVAILABLE = "Documents are unavailable in this round. Put everything in your answer."
+MEMORY_UNAVAILABLE = "Memory is unavailable in this round."
 
 
 @dataclass
@@ -89,6 +100,51 @@ async def write_document(ctx: RunContext[Deps], document: DocumentInput) -> Docu
     return DocumentResult(saved=True, message=f"Saved the document {document.title!r}.")
 
 
+class MemoryResult(BaseModel):
+    """What the model is told about notes it asked to save."""
+
+    saved: bool
+    message: str
+
+
+async def update_memory(ctx: RunContext[Deps], notes: UpdateMemory) -> MemoryResult:
+    """Save lasting notes on the student, in the profile or in one subject (default: this job's).
+
+    This REPLACES the whole doc, so include the earlier notes you keep (read_memory shows them).
+    Save only what outlasts this task: how the student writes, the teacher's rules, mistakes they
+    repeat, what they prefer. Never the task's content or its answer. Keep it short: 2k tokens.
+    """
+    if ctx.deps.context is None:
+        return MemoryResult(saved=False, message=MEMORY_UNAVAILABLE)
+    try:
+        await ctx.deps.context.update_memory(notes.scope, notes.subject, notes.content_md)
+    except ValidationError as error:
+        reasons = "; ".join(f"{e['loc'][-1]}: {e['msg']}" for e in error.errors())
+        raise ModelRetry(f"The notes were refused ({reasons}). Fix them and call again.") from error
+    return MemoryResult(saved=True, message=f"Saved the {notes.scope} notes.")
+
+
+async def read_memory(ctx: RunContext[Deps], request: GetSubjectMemory) -> Memory | str:
+    """Read the notes on the student in a subject (default: this job's subject)."""
+    if ctx.deps.context is None:
+        return MEMORY_UNAVAILABLE
+    return await ctx.deps.context.get_subject_memory(request.subject)
+
+
+async def search_memory(ctx: RunContext[Deps], request: SearchHistory) -> list[Memory] | str:
+    """Search the notes on the student, in every subject, for a word or phrase."""
+    if ctx.deps.context is None:
+        return MEMORY_UNAVAILABLE
+    return await ctx.deps.context.search_history(request.query)
+
+
+async def list_history(ctx: RunContext[Deps], request: ListHistory) -> list[HistoryItem] | str:
+    """List the student's other homework, newest first, with the grade they said they got."""
+    if ctx.deps.context is None:
+        return MEMORY_UNAVAILABLE
+    return await ctx.deps.context.list_history(request.limit)
+
+
 agent = Agent(
     deps_type=Deps,
     instructions=SYSTEM_PROMPT,
@@ -99,6 +155,10 @@ agent = Agent(
         math_tools.differentiate,
         math_tools.integrate,
         write_document,
+        update_memory,
+        read_memory,
+        search_memory,
+        list_history,
     ],
     retries=2,
 )
@@ -143,15 +203,18 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
     ):
         if body.context is None:
             feedback = [body.feedback] if body.feedback else []
-            return await _answer(body, model, body.text, None, feedback, None, None)
+            return await _answer(body, model, body.text, None, None, feedback, None, None)
         async with ContextClient(body.context.url, body.context.token) as context:
             task = await context.get_task()
             profile = await context.get_profile()
+            subject_memory = await context.get_subject_memory()
             feedback = round_feedback(task, body.round)
             answered = tuple(
                 r.number for r in task.rounds if r.outcome == "answered" and r.number < body.round
             )
-            return await _answer(body, model, task.text, profile, feedback, context, answered)
+            return await _answer(
+                body, model, task.text, profile, subject_memory, feedback, context, answered
+            )
 
 
 def _register_run(body: AgentRun) -> None:
@@ -168,6 +231,7 @@ async def _answer(
     model: Model,
     text: str,
     profile: Profile | None,
+    subject_memory: Memory | None,
     feedback: list[str],
     context: ContextClient | None,
     answered: tuple[int, ...] | None,
@@ -189,7 +253,12 @@ async def _answer(
         rounds = (*checkpoints[chosen].rounds, body.round)
         logger.info("Round %s of job %s continues round %s", body.round, body.job_id, chosen)
     else:
-        prompt, history = task_message(text, profile, feedback), None
+        prompt, history = (
+            task_message(
+                text, profile, feedback, subject_memory.content_md if subject_memory else ""
+            ),
+            None,
+        )
         rounds = (*(answered or ()), body.round)
         logger.info(
             "Round %s of job %s starts from the task and %d feedback",
