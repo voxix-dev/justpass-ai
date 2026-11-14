@@ -12,6 +12,25 @@ def test_multiline_display_math():
     assert normalize_markdown(text) == "A\n\n$$\na = b\n  c = d\n$$\n\nB"
 
 
+def test_text_on_a_dollar_fence_line_moves_inside_the_block():
+    text = "## Odpowiedzi\n\n$$\\boxed{\n\\begin{array}{ll}\n1 & 2\n\\end{array}\n}$$\n"
+    assert normalize_markdown(text) == (
+        "## Odpowiedzi\n\n$$\n\\boxed{\n\\begin{array}{ll}\n1 & 2\n\\end{array}\n}\n$$\n"
+    )
+
+
+def test_a_dollar_block_opened_mid_line_starts_on_a_new_line():
+    assert normalize_markdown("Zatem $$x\n=y$$.") == "Zatem \n$$\nx\n=y\n$$\n."
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["A\n\n$$\nx\n=y\n$$\n\nB", "1. Krok\n\n   $$\n   x\n   =y\n   $$\n", "so $$x = 1$$ here"],
+)
+def test_well_formed_dollar_math_is_unchanged(text: str):
+    assert normalize_markdown(text) == text
+
+
 def test_inline_math_is_stripped():
     assert normalize_markdown(r"so \( x + 1 \) and \(y\)") == "so $x + 1$ and $y$"
 
