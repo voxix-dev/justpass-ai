@@ -16,7 +16,7 @@ web (SPA) ──/api/** + Firebase ID token──▶ API (FastAPI) ──▶ Pos
 ```
 
 - The web app uses only `contracts/openapi.json` (generated TypeScript client).
-- The agent has no database or storage access. It will read and write through the Context API; the model does not use it yet.
+- The agent has no database or storage access. It reads and writes through the Context API.
 - The API sends `OPENROUTER_API_KEY` to the agent with each round. The agent calls OpenRouter directly; its egress policy allows openrouter.ai:443 only when a key is set.
 
 Details: [wiki](https://github.com/voxix-dev/justpass-ai/wiki).
@@ -44,8 +44,8 @@ Ports taken? `API_PORT` moves the API for both compose and the web app's `pnpm d
 Postgres; change the port in `.env` too.
 
 The agent calls OpenRouter (`deepseek/deepseek-v4.1-flash`, cheapest provider) and has sympy math tools
-and works from the task text alone: no Context API, no documents, no conversation between rounds. Set `OPENROUTER_API_KEY` in `.env`. Without it the
-agent waits 10 seconds and sends back a fixed sample answer. Feedback rounds always get the fixed sample answer. A task with the word "fail" fails.
+and tools to write documents through the Context API. Set `OPENROUTER_API_KEY` in `.env`. Without it the
+agent waits 10 seconds and sends back a fixed sample answer. A task with the word "fail" fails.
 
 Web app: [apps/web/README.md](apps/web/README.md). Local Substrate cluster:
 [wiki: Local development](https://github.com/voxix-dev/justpass-ai/wiki/Local-development). Repo rules: [AGENTS.md](AGENTS.md).

@@ -1,16 +1,20 @@
-"""The agent: one model on OpenRouter, with math tools.
+"""The agent: one model on OpenRouter, with math tools and a tool that saves a document.
 
-A round with a key and no feedback runs here. The model works from the task text alone, and its
-text reply is the answer. Every round is a fresh conversation. Feedback rounds get the fixed
-sample for now (server.py).
+A round with a key runs here. The model gets the task, the student's profile and any feedback, and
+its text reply is the answer. The conversation of each job is kept in memory, so a feedback round
+continues it: the actor's memory snapshot keeps this process between rounds. A process that has
+lost it (a fresh actor) rebuilds the job from the task and its feedback.
 """
 
 import asyncio
 import logging
+from collections import OrderedDict
+from dataclasses import dataclass
+from uuid import UUID
 
 import httpx2
-from pydantic import SecretStr
-from pydantic_ai import Agent
+from pydantic import BaseModel, SecretStr, ValidationError
+from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models import Model
 from pydantic_ai.models.openrouter import (
@@ -23,9 +27,16 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from agent import math_tools
+from agent.context import ContextClient
 from agent.formatting import normalize_markdown
-from agent.prompt import SYSTEM_PROMPT
+from agent.prompt import (
+    SYSTEM_PROMPT,
+    feedback_message,
+    round_feedback,
+    task_message,
+)
 from shared.agent_run import AgentAnswer, AgentRun
+from shared.context import Profile
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +48,42 @@ MODEL_TIMEOUT_SECONDS = 60  # one request to the model
 ROUND_TIMEOUT_SECONDS = 180  # a whole round, all its requests
 MAX_MODEL_REQUESTS = 25  # one round: a model that loops on its tools is stopped here
 
+MAX_JOBS = 64  # conversations remembered; the oldest go first
+
+DOCUMENTS_UNAVAILABLE = "Documents are unavailable in this round. Put everything in your answer."
+
+
+@dataclass
+class Deps:
+    """What the tools reach: the Context API of this round, or None when there is none."""
+
+    context: ContextClient | None
+
+
+class DocumentResult(BaseModel):
+    """What the model is told about a document it asked to save."""
+
+    saved: bool
+    message: str
+
+
+async def write_document(ctx: RunContext[Deps], title: str, content_md: str) -> DocumentResult:
+    """Save a document for the student: a Markdown text with math in KaTeX, and a short title.
+
+    It is kept next to the answer, which is your reply and not a document.
+    """
+    if ctx.deps.context is None:
+        return DocumentResult(saved=False, message=DOCUMENTS_UNAVAILABLE)
+    try:
+        await ctx.deps.context.write_draft(title, content_md)
+    except ValidationError as error:  # too long, or a NUL character
+        reasons = "; ".join(f"{e['loc'][-1]}: {e['msg']}" for e in error.errors())
+        raise ModelRetry(f"The document was refused ({reasons}). Fix it and call again.") from error
+    return DocumentResult(saved=True, message=f"Saved the document {title!r}.")
+
+
 agent = Agent(
+    deps_type=Deps,
     instructions=SYSTEM_PROMPT,
     tools=[
         math_tools.evaluate,
@@ -45,9 +91,15 @@ agent = Agent(
         math_tools.solve,
         math_tools.differentiate,
         math_tools.integrate,
+        write_document,
     ],
     retries=2,
 )
+
+# job id -> the last round that was answered, and the conversation up to its answer
+histories: OrderedDict[UUID, tuple[int, list[ModelMessage]]] = OrderedDict()
+# job id -> round and lease of the newest run started: only that run publishes its history
+newest_runs: OrderedDict[UUID, tuple[int, UUID | None]] = OrderedDict()
 
 
 def make_model(key: SecretStr, http_client: httpx2.AsyncClient | None = None) -> Model:
@@ -62,18 +114,58 @@ def make_model(key: SecretStr, http_client: httpx2.AsyncClient | None = None) ->
 
 
 async def solve_with_model(body: AgentRun) -> AgentAnswer:
-    """Ask the model to solve the task text. A model that fails or overruns the round raises."""
+    """Run the round on the model. A Context API call or a model that fails, or a round that
+    overruns, raises."""
     assert body.openrouter_key is not None
     async with (
         asyncio.timeout(ROUND_TIMEOUT_SECONDS),
         make_model(body.openrouter_key) as model,  # closes the HTTP client of the round
     ):
-        result = await agent.run(
-            body.text,
-            model=model,
-            usage_limits=UsageLimits(request_limit=MAX_MODEL_REQUESTS),
-        )
+        if body.context is None:
+            feedback = [body.feedback] if body.feedback else []
+            return await _answer(body, model, body.text, None, feedback, None)
+        async with ContextClient(body.context.url, body.context.token) as context:
+            task = await context.get_task()
+            profile = await context.get_profile()
+            feedback = round_feedback(task, body.round)
+            return await _answer(body, model, task.text, profile, feedback, context)
+
+
+async def _answer(
+    body: AgentRun,
+    model: Model,
+    text: str,
+    profile: Profile | None,
+    feedback: list[str],
+    context: ContextClient | None,
+) -> AgentAnswer:
+    this_run = (body.round, body.lease_id)
+    newest = newest_runs.get(body.job_id)
+    if newest is None or newest[0] <= body.round:
+        newest_runs[body.job_id] = this_run
+        newest_runs.move_to_end(body.job_id)
+        while len(newest_runs) > MAX_JOBS:
+            newest_runs.popitem(last=False)
+    past = histories.get(body.job_id)
+    # The conversation is used for a later round only: a round that runs again starts from scratch.
+    if past is not None and past[0] < body.round and body.feedback:
+        prompt, history = feedback_message(body.feedback), past[1]
+    else:
+        prompt, history = task_message(text, profile, feedback), None
+    result = await agent.run(
+        prompt,
+        model=model,
+        deps=Deps(context),
+        message_history=history,
+        usage_limits=UsageLimits(request_limit=MAX_MODEL_REQUESTS),
+    )
     _log_run(body, result.new_messages(), result.usage)
+    # A run that a newer lease or round has overtaken must not replace its conversation.
+    if newest_runs.get(body.job_id) == this_run:
+        histories[body.job_id] = (body.round, result.all_messages())
+        histories.move_to_end(body.job_id)
+        while len(histories) > MAX_JOBS:
+            histories.popitem(last=False)
     answer = normalize_markdown(
         result.output.replace("\x00", "")
     ).strip()  # an answer cannot hold NUL
