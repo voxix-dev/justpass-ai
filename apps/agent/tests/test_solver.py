@@ -2,8 +2,9 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import anyio
 import httpx2
 import pytest
 from pydantic import SecretStr
@@ -22,7 +23,8 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from agent import server, solver
 from agent.context import ContextClient
 from agent.server import SAMPLE_ANSWER, app
-from shared.agent_run import AgentRun
+from shared.agent_run import AgentRun, ContextGrant
+from shared.context import Profile
 
 pytestmark = pytest.mark.anyio
 
@@ -37,8 +39,12 @@ def anyio_backend() -> str:
 
 @pytest.fixture(autouse=True)
 def fresh_memory() -> Iterator[None]:
+    solver.histories.clear()
+    solver.newest_runs.clear()
     server.runs.clear()
     yield
+    solver.histories.clear()
+    solver.newest_runs.clear()
     server.runs.clear()
 
 
@@ -72,13 +78,41 @@ def use_model(monkeypatch: pytest.MonkeyPatch) -> Callable[[Script], list[list[M
 
 
 @pytest.fixture
-def context_api(monkeypatch: pytest.MonkeyPatch) -> list[httpx2.Request]:
-    """A Context API that fails the test if it is called."""
+def task_rounds() -> list[dict[str, object]]:
+    """The rounds the fake Context API reports; a test may change them between rounds."""
+    return [
+        {"number": 1, "feedback": None, "outcome": "answered", "artifacts": []},
+        {"number": 2, "feedback": "Show the check", "outcome": "running", "artifacts": []},
+    ]
+
+
+@pytest.fixture
+def context_api(
+    monkeypatch: pytest.MonkeyPatch, task_rounds: list[dict[str, object]]
+) -> list[httpx2.Request]:
     seen: list[httpx2.Request] = []
+    job_id = str(uuid4())
 
     def handle(request: httpx2.Request) -> httpx2.Response:
         seen.append(request)
-        raise AssertionError("the Context API was called")
+        tool = request.url.path.rsplit("/", 1)[-1]
+        match tool:
+            case "get_task":
+                task: dict[str, object] = {
+                    "job_id": job_id,
+                    "subject": "math",
+                    "level": "high_school",
+                    "language": "pl",
+                    "text": "Solve x^2 = 4",
+                    "round": task_rounds[-1]["number"],
+                    "rounds": task_rounds,
+                }
+                return httpx2.Response(200, json=task)
+            case "get_profile":
+                profile = {"level": "high_school", "language": "pl", "subject": "math"}
+                return httpx2.Response(200, json=profile | {"profile_md": "Likes short steps"})
+            case _:
+                return httpx2.Response(200, json={"artifact_id": str(uuid4())})
 
     transport = httpx2.MockTransport(handle)
     real = ContextClient
@@ -86,7 +120,7 @@ def context_api(monkeypatch: pytest.MonkeyPatch) -> list[httpx2.Request]:
     def client_with(url: str, token: str) -> ContextClient:
         return real(url, token, transport)
 
-    monkeypatch.setattr(server, "ContextClient", client_with)
+    monkeypatch.setattr(solver, "ContextClient", client_with)
     return seen
 
 
@@ -164,39 +198,348 @@ async def test_all_tools_are_offered(
 
     use_model(script)
     await client.post("/run", json=run_body())
-    assert set(offered) == {"evaluate", "simplify", "solve", "differentiate", "integrate"}
+    assert set(offered) == {
+        "evaluate",
+        "simplify",
+        "solve",
+        "differentiate",
+        "integrate",
+        "write_document",
+    }
 
 
-async def test_the_context_api_is_not_used_even_with_a_context(
+async def test_write_document_has_a_flat_schema_with_the_limits(
+    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+):
+    schemas: dict[str, dict[str, object]] = {}
+
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        schemas.update({t.name: t.parameters_json_schema for t in info.function_tools})
+        return text("ok")
+
+    use_model(script)
+    await client.post("/run", json=run_body())
+    properties = cast(dict[str, dict[str, object]], schemas["write_document"]["properties"])
+    assert set(properties) == {"title", "content_md"}
+    assert properties["title"]["maxLength"] == 200
+    assert properties["content_md"]["maxLength"] == 100_000
+
+
+async def test_write_document_saves_a_draft_through_the_context_api(
     client: httpx2.AsyncClient,
     use_model: Callable[[Script], list[list[ModelMessage]]],
     context_api: list[httpx2.Request],
 ):
-    requests = use_model(lambda messages, info: text("Done"))
-    response = await client.post("/run", json=run_body(context=grant()))
-    assert response.json() == {"answer": "Done"}
-    assert prompts(requests[0]) == ["Solve x^2 = 4"]
-    assert context_api == []
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not tool_returns(messages):
+            return tool_call("write_document", title="Study sheet", content_md="# Roots\n$x^2$")
+        return text("See the sheet.")
+
+    requests = use_model(script)
+    response = await client.post("/run", json=run_body(round=2, context=grant()))
+    assert response.json() == {"answer": "See the sheet."}
+
+    assert [r.url.path for r in context_api] == [
+        "/v1/context/get_task",
+        "/v1/context/get_profile",
+        "/v1/context/write_artifact",
+    ]
+    written = json.loads(context_api[-1].content)
+    assert written == {"kind": "draft", "title": "Study sheet", "content_md": "# Roots\n$x^2$"}
+    assert "Study sheet" in tool_returns(requests[-1])["write_document"]
+    # Task, profile and feedback of the Context API are in the prompt.
+    prompt = prompts(requests[0])[0]
+    assert "Solve x^2 = 4" in prompt
+    assert "Likes short steps" in prompt
+    assert "'pl'" in prompt
+    assert "```\nShow the check\n```" in prompt
 
 
-@pytest.mark.parametrize(
-    "extra", [{"round": 2}, {"feedback": "More"}, {"round": 2, "feedback": "More"}]
-)
-async def test_a_feedback_round_returns_the_sample_without_the_model(
-    client: httpx2.AsyncClient,
-    monkeypatch: pytest.MonkeyPatch,
-    context_api: list[httpx2.Request],
-    extra: dict[str, object],
+async def test_write_document_without_a_context_api_says_so(
+    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
 ):
-    def never(key: SecretStr) -> Model:
-        raise AssertionError("the model was built")
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not tool_returns(messages):
+            return tool_call("write_document", title="Sheet", content_md="text")
+        return text("No document, here is the answer.")
 
-    monkeypatch.setattr(solver, "make_model", never)
-    response = await client.post("/run", json={**run_body(context=grant()), **extra})
-    answer = response.json()["answer"]
-    assert answer.startswith(SAMPLE_ANSWER)
-    assert ("More" in answer) == bool(extra.get("feedback"))
-    assert context_api == []
+    requests = use_model(script)
+    response = await client.post("/run", json=run_body())
+    assert response.json() == {"answer": "No document, here is the answer."}
+    returned = tool_returns(requests[-1])["write_document"]
+    assert "saved=False" in returned
+    assert solver.DOCUMENTS_UNAVAILABLE in returned
+
+
+async def test_a_refused_document_is_retried_by_the_model(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+):
+    calls = 0
+
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return tool_call("write_document", title="T" * 300, content_md="x")
+        if calls == 2:
+            return tool_call("write_document", title="Short", content_md="x")
+        return text("Fixed")
+
+    use_model(script)
+    response = await client.post("/run", json=run_body(round=2, context=grant()))
+    assert response.json() == {"answer": "Fixed"}
+    assert [r.url.path for r in context_api].count("/v1/context/write_artifact") == 1
+
+
+async def test_a_feedback_round_continues_the_conversation(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level("INFO", logger="agent.solver")
+    requests = use_model(lambda messages, info: text(f"Answer {len(prompts(messages))}"))
+    job = run_body()
+    first = await client.post("/run", json=job)
+    second = await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
+    assert first.json() == {"answer": "Answer 1"}
+    assert second.json() == {"answer": "Answer 2"}
+    # The second request carries the first prompt, the first answer and the feedback.
+    sent = prompts(requests[1])
+    assert len(sent) == 2
+    assert "Solve x^2 = 4" in sent[0]
+    assert "Show the check" in sent[1]
+    assert f"Round 2 of job {job['job_id']} continues round 1" in caplog.text
+    assert any(
+        isinstance(p, TextPart) and p.content == "Answer 1"
+        for m in requests[1]
+        if isinstance(m, ModelResponse)
+        for p in m.parts
+    )
+
+
+async def test_a_fresh_process_rebuilds_the_job_from_the_task(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+):
+    requests = use_model(lambda messages, info: text("Again"))
+    # No history for this job: round 2 starts from the task, with the feedback of the rounds.
+    await client.post("/run", json=run_body(round=2, feedback="Show the check", context=grant()))
+    sent = prompts(requests[0])
+    assert len(sent) == 1
+    assert "Solve x^2 = 4" in sent[0]
+    assert "```\nShow the check\n```" in sent[0]
+
+
+def round_row(number: int, outcome: str, feedback: str | None) -> dict[str, object]:
+    return {"number": number, "feedback": feedback, "outcome": outcome, "artifacts": []}
+
+
+async def test_a_round_that_failed_on_the_api_is_not_continued(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    task_rounds: list[dict[str, object]],
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level("INFO", logger="agent.solver")
+    requests = use_model(lambda messages, info: text("ok"))
+    job = run_body(context=grant())
+    await client.post("/run", json=job)
+    await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
+    # Round 2 finished here, but the API marked it failed and the student sent round 3.
+    task_rounds[:] = [
+        round_row(1, "answered", None),
+        round_row(2, "failed", "Show the check"),
+        round_row(3, "running", "Third change"),
+    ]
+    await client.post("/run", json={**job, "round": 3, "feedback": "Third change"})
+    assert f"Round 3 of job {job['job_id']} continues round 1" in caplog.text
+    assert not any("Show the check" in p for p in prompts(requests[2]))
+    assert any("Third change" in p for p in prompts(requests[2]))
+
+
+async def test_a_round_without_a_checkpoint_rebuilds_with_the_feedback_of_the_answered(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    task_rounds: list[dict[str, object]],
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level("INFO", logger="agent.solver")
+    requests = use_model(lambda messages, info: text("ok"))
+    job = run_body(context=grant())
+    job_id = UUID(str(job["job_id"]))
+    await client.post("/run", json=job)
+    # Round 2 ran while another lease owned the job, so it stored no checkpoint.
+    solver.newest_runs[job_id] = (3, uuid4())
+    await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
+    assert sorted(solver.histories[job_id]) == [1]
+    task_rounds[:] = [
+        round_row(1, "answered", None),
+        round_row(2, "answered", "Show the check"),
+        round_row(3, "running", "Third change"),
+    ]
+    await client.post("/run", json={**job, "round": 3, "feedback": "Third change"})
+    assert f"Round 3 of job {job_id} starts from the task and 2 feedback" in caplog.text
+    assert len(prompts(requests[2])) == 1
+    assert "Show the check" in prompts(requests[2])[0]
+    assert "Third change" in prompts(requests[2])[0]
+    assert solver.histories[job_id][3].rounds == (1, 2, 3)
+
+
+async def test_a_round_that_runs_again_starts_from_scratch(
+    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+):
+    requests = use_model(lambda messages, info: text("ok"))
+    job = {**run_body(), "feedback": "More", "round": 2}
+    await client.post("/run", json={**job, "lease_id": str(uuid4())})
+    await client.post("/run", json={**job, "lease_id": str(uuid4())})
+    assert len(prompts(requests[1])) == 1
+
+
+async def test_an_older_lease_finishing_late_keeps_the_newer_conversation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    old_started, old_may_finish = anyio.Event(), anyio.Event()
+    calls = 0
+
+    async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:  # the old lease waits until the new one is done
+            old_started.set()
+            await old_may_finish.wait()
+            return text("old")
+        return text("new" if calls == 2 else f"next {len(prompts(messages))}")
+
+    def make_model(key: SecretStr) -> Model:
+        return FunctionModel(respond)
+
+    monkeypatch.setattr(solver, "make_model", make_model)
+    job = AgentRun(job_id=uuid4(), round=1, text="Solve", openrouter_key=SecretStr(KEY))
+    old = job.model_copy(update={"lease_id": uuid4()})
+    new = job.model_copy(update={"lease_id": uuid4()})
+    answers: list[str | None] = []
+
+    async def run(body: AgentRun) -> None:
+        answers.append((await solver.solve_with_model(body)).answer)
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(run, old)
+        await old_started.wait()
+        await run(new)
+        old_may_finish.set()
+    assert answers == ["new", "old"]
+
+    # The feedback round continues the newer conversation.
+    feedback = new.model_copy(update={"round": 2, "feedback": "More"})
+    assert (await solver.solve_with_model(feedback)).answer == "next 2"
+    kept = [
+        p.content
+        for m in solver.histories[job.job_id][2].messages
+        if isinstance(m, ModelResponse)
+        for p in m.parts
+        if isinstance(p, TextPart)
+    ]
+    assert kept == ["new", "next 2"]
+
+
+async def test_an_older_lease_delayed_before_its_run_does_not_take_over(
+    monkeypatch: pytest.MonkeyPatch, context_api: list[httpx2.Request]
+):
+    old_waiting, old_may_go = anyio.Event(), anyio.Event()
+    real = ContextClient.get_profile
+    delayed: list[ContextClient] = []
+
+    async def get_profile(self: ContextClient) -> Profile:
+        if not delayed:  # the first call, made by the old lease
+            delayed.append(self)
+            old_waiting.set()
+            await old_may_go.wait()
+        return await real(self)
+
+    monkeypatch.setattr(ContextClient, "get_profile", get_profile)
+    calls = 0
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        return text("new" if calls == 1 else "old")  # the new lease answers first
+
+    def make_model(key: SecretStr) -> Model:
+        return FunctionModel(respond)
+
+    monkeypatch.setattr(solver, "make_model", make_model)
+    job = AgentRun(
+        job_id=uuid4(),
+        round=2,
+        text="Solve",
+        feedback="More",
+        openrouter_key=SecretStr(KEY),
+        context=ContextGrant(url="http://api:8000", token="tok"),
+    )
+    old = job.model_copy(update={"lease_id": uuid4()})
+    new = job.model_copy(update={"lease_id": uuid4()})
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(solver.solve_with_model, old)
+        await old_waiting.wait()
+        await solver.solve_with_model(new)
+        old_may_go.set()
+    # The old lease reached its answer last, but the new one owns the job.
+    assert solver.newest_runs[job.job_id] == (2, new.lease_id)
+    kept = [
+        p.content
+        for m in solver.histories[job.job_id][2].messages
+        if isinstance(m, ModelResponse)
+        for p in m.parts
+        if isinstance(p, TextPart)
+    ]
+    assert kept == ["new"]
+
+
+async def test_a_round_that_runs_again_keeps_the_feedback_of_earlier_rounds(
+    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+):
+    requests = use_model(lambda messages, info: text(f"Answer {len(requests)}"))
+    job = run_body()
+    await client.post("/run", json=job)
+    await client.post("/run", json={**job, "round": 2, "feedback": "Feedback A"})
+    await client.post(
+        "/run", json={**job, "round": 3, "feedback": "Feedback B", "lease_id": str(uuid4())}
+    )
+    await client.post(
+        "/run", json={**job, "round": 3, "feedback": "Feedback B", "lease_id": str(uuid4())}
+    )
+    again = prompts(requests[3])
+    assert any("Feedback A" in p for p in again)
+    assert sum("Feedback B" in p for p in again) == 1
+    sent = [
+        p.content
+        for m in requests[3]
+        if isinstance(m, ModelResponse)
+        for p in m.parts
+        if isinstance(p, TextPart)
+    ]
+    assert sent == ["Answer 1", "Answer 2"]  # not the answer of the first attempt at round 3
+    assert sorted(solver.histories[UUID(str(job["job_id"]))]) == [1, 2, 3]
+
+
+async def test_a_rerun_round_drops_the_checkpoints_after_it(
+    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+):
+    use_model(lambda messages, info: text("ok"))
+    job = run_body()
+    for number in (1, 2, 3):
+        await client.post(
+            "/run", json={**job, "round": number, "feedback": f"F{number}" if number > 1 else None}
+        )
+    solver.newest_runs.clear()  # the job is no longer owned by round 3
+    await client.post("/run", json={**job, "round": 2, "feedback": "F2", "lease_id": str(uuid4())})
+    assert sorted(solver.histories[UUID(str(job["job_id"]))]) == [1, 2]
 
 
 async def test_the_model_is_closed_after_the_round(monkeypatch: pytest.MonkeyPatch):
@@ -316,7 +659,7 @@ async def test_the_request_to_openrouter_asks_for_the_cheapest_provider(
     http = httpx2.AsyncClient(transport=httpx2.MockTransport(handle))
     model = solver.make_model(SecretStr(KEY), http)
     caplog.set_level("INFO", logger="agent.solver")
-    result = await solver.agent.run("Hi", model=model)
+    result = await solver.agent.run("Hi", model=model, deps=solver.Deps(None))
     assert result.output == "Hello"
 
     (request,) = sent
@@ -328,8 +671,7 @@ async def test_the_request_to_openrouter_asks_for_the_cheapest_provider(
     assert payload["reasoning"] == solver.REASONING == {"max_tokens": 4_000}
     assert payload["max_tokens"] == solver.MAX_OUTPUT_TOKENS
     assert solver.REASONING.get("max_tokens", 0) < solver.MAX_OUTPUT_TOKENS
-    assert {t["function"]["name"] for t in payload["tools"]} >= {"evaluate"}
-    assert "write_document" not in {t["function"]["name"] for t in payload["tools"]}
+    assert {t["function"]["name"] for t in payload["tools"]} >= {"evaluate", "write_document"}
 
 
 async def test_the_log_names_tools_and_tokens_but_not_the_key(
@@ -345,7 +687,9 @@ async def test_the_log_names_tools_and_tokens_but_not_the_key(
     use_model(script)
     caplog.set_level("INFO", logger="agent.solver")
     await client.post("/run", json=run_body())
-    line = next(r.getMessage() for r in caplog.records if r.name == "agent.solver")
+    lines = [r.getMessage() for r in caplog.records if r.name == "agent.solver"]
+    assert any("starts from the task and 0 feedback" in line for line in lines)
+    line = next(line for line in lines if "tokens in" in line)
     assert "['evaluate']" in line
     assert "tokens in" in line
     assert KEY not in caplog.text
