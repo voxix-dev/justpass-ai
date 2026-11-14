@@ -65,6 +65,9 @@ class UpdateMemory(BaseModel):
     scope: Literal["profile", "subject"]
     subject: Text | None = Field(default=None, min_length=1, max_length=100)  # default: the job's
     content_md: Text = Field(max_length=10_000)
+    # The version the new text was based on (0: no doc yet). A doc that has changed since is not
+    # replaced: the call fails with 412, so the writer reads it again and merges.
+    base_version: int = Field(ge=0)
 
 
 class ReadArtifact(BaseModel):
@@ -122,11 +125,14 @@ class Profile(BaseModel):
     language: str
     subject: str
     profile_md: str  # the notes kept on the student; empty until some are written
+    profile_version: int  # 0 until the profile doc exists
+    subjects: list[str] = []  # subjects with notes on the student, most recently updated first
 
 
 class Memory(BaseModel):
     subject: str | None  # None for the profile doc
     content_md: str  # empty when nothing is known yet
+    version: int  # 0 when there is no doc yet; each replacement adds 1
 
 
 class HistoryItem(BaseModel):

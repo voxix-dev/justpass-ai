@@ -211,6 +211,8 @@ class MemoryDoc(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     subject: Mapped[str | None] = mapped_column(String(100))
     body: Mapped[str]
+    # Each replacement adds 1; a writer must name the version its text is based on.
+    version: Mapped[int] = mapped_column(server_default="1")
     # 'simple' does no stemming, so it works the same for every language.
     tsv: Mapped[str] = mapped_column(
         TSVECTOR,

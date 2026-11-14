@@ -1,21 +1,31 @@
 """The agent's client for the Context API: the only way it reads or writes a student's data."""
 
 from types import TracebackType
-from typing import Self
+from typing import Literal, Self
 
 import httpx2
+from pydantic import BaseModel, TypeAdapter
 
 from shared.context import (
     GetProfile,
+    GetSubjectMemory,
     GetTask,
+    HistoryItem,
+    ListHistory,
+    Memory,
     Profile,
+    SearchHistory,
     Task,
+    UpdateMemory,
     WriteArtifact,
     WrittenArtifact,
 )
 from shared.models import ArtifactKind
 
 TIMEOUT_SECONDS = 30
+
+HISTORY = TypeAdapter(list[HistoryItem])
+MEMORIES = TypeAdapter(list[Memory])
 
 
 class ContextClient:
@@ -40,7 +50,7 @@ class ContextClient:
     ) -> None:
         await self._http.aclose()
 
-    async def _call(self, tool: str, arguments: GetTask | GetProfile | WriteArtifact) -> bytes:
+    async def _call(self, tool: str, arguments: BaseModel) -> bytes:
         response = await self._http.post(tool, content=arguments.model_dump_json().encode())
         if not response.is_success:  # also a redirect: its body is not tool output
             # Keep the Context API's reason, which raise_for_status() drops.
@@ -65,3 +75,28 @@ class ContextClient:
     async def write_draft(self, title: str, content_md: str) -> WrittenArtifact:
         arguments = WriteArtifact(kind=ArtifactKind.DRAFT, title=title, content_md=content_md)
         return WrittenArtifact.model_validate_json(await self._call("write_artifact", arguments))
+
+    async def get_subject_memory(self, subject: str | None = None) -> Memory:
+        arguments = GetSubjectMemory(subject=subject)
+        return Memory.model_validate_json(await self._call("get_subject_memory", arguments))
+
+    async def update_memory(
+        self,
+        scope: Literal["profile", "subject"],
+        subject: str | None,
+        content_md: str,
+        base_version: int,
+    ) -> Memory:
+        arguments = UpdateMemory(
+            scope=scope, subject=subject, content_md=content_md, base_version=base_version
+        )
+        return Memory.model_validate_json(await self._call("update_memory", arguments))
+
+    async def list_history(self, limit: int = 10) -> list[HistoryItem]:
+        reply = await self._call("list_history", ListHistory(limit=limit))
+        return HISTORY.validate_json(reply)
+
+    async def search_history(self, query: str) -> list[Memory]:
+        return MEMORIES.validate_json(
+            await self._call("search_history", SearchHistory(query=query))
+        )
