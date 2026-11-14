@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Builds the agent and runs it on the local Substrate cluster, and the API next to the cluster in a
 # container, as production has it on Cloud Run. Safe to run again.
-# Needs the cluster up, kubectl, uv, openssl, jq, and CONTAINER_TOOL (default docker; set it to
-# podman in env.local.sh for rootless podman).
+# Needs the cluster up, kubectl, uv, openssl, jq, and CONTAINER_TOOL (docker by default, or podman).
 set -euo pipefail
 shopt -s inherit_errexit # stop on failures inside $(...) too
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."

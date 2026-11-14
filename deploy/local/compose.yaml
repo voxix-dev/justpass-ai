@@ -1,6 +1,6 @@
 # Points the API from the root compose.yaml at the local Substrate cluster, instead of its one agent,
 # and gives the actors a way to the Context API (and to nothing else on this machine):
-#   podman compose -f compose.yaml -f deploy/local/compose.yaml up -d --build --wait api context-uds context-relay
+#   docker compose -f compose.yaml -f deploy/local/compose.yaml up -d --build --wait api context-uds context-relay
 # deploy.sh does this, after identity.sh and forward.sh. Relative paths start at the repo root.
 # Every compose command with this file needs ATE_TEMPLATE, which deploy.sh sets. Any value will do for
 # `logs` or `down`.
