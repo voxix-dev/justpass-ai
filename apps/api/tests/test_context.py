@@ -292,6 +292,10 @@ async def test_get_profile(client: httpx2.AsyncClient, session: AsyncSession):
     session.add(MemoryDoc(user_id="alice", body="Writes informally."))
     session.add(MemoryDoc(user_id="alice", subject="math", body="Weak at fractions."))
     await session.flush()
+    session.add(MemoryDoc(user_id="alice", subject="physics", body="Forgets units."))
+    await add_job(session, "bob")
+    session.add(MemoryDoc(user_id="bob", subject="history", body="Likes dates."))
+    await session.flush()
     response = await call(client, "get_profile", auth(job))
     assert response.json() == {
         "level": "college",
@@ -299,6 +303,7 @@ async def test_get_profile(client: httpx2.AsyncClient, session: AsyncSession):
         "subject": "math",
         "profile_md": "Writes informally.",
         "profile_version": 1,
+        "subjects": ["physics", "math"],
     }
 
 

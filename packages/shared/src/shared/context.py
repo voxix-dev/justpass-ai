@@ -126,6 +126,7 @@ class Profile(BaseModel):
     subject: str
     profile_md: str  # the notes kept on the student; empty until some are written
     profile_version: int  # 0 until the profile doc exists
+    subjects: list[str] = []  # subjects with notes on the student, most recently updated first
 
 
 class Memory(BaseModel):

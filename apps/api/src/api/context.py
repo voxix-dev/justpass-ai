@@ -199,12 +199,18 @@ async def write_artifact(args: WriteArtifact, agent: Caller, session: Session) -
 async def get_profile(args: GetProfile, agent: Caller, session: Session) -> Profile:
     job = agent.job
     profile_md, version = await _memory(session, job.user_id, None)
+    subjects = await session.scalars(
+        select(MemoryDoc.subject)
+        .where(MemoryDoc.user_id == job.user_id, MemoryDoc.subject.is_not(None))
+        .order_by(MemoryDoc.updated_at.desc(), MemoryDoc.subject)
+    )
     return Profile(
         level=job.level,
         language=job.language,
         subject=job.subject,
         profile_md=profile_md,
         profile_version=version,
+        subjects=[subject for subject in subjects if subject is not None],
     )
 
 
