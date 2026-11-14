@@ -46,7 +46,10 @@ def _own_lines(match: re.Match[str]) -> str:
     lines = [cont + head.strip()] if head.strip() else []
     if body is not None:
         lines.append(body)
-    last = tail.lstrip(" \t>" if ">" in cont else " \t").rstrip()  # without its container
+    last = tail  # without its container: as many `>` as the opening line has, each with any spacing
+    for _ in range(cont.count(">")):
+        last = last.lstrip(" \t").removeprefix(">")
+    last = last.strip()
     if last:
         lines.append(cont + last)
     lines.append(cont + "$$")
