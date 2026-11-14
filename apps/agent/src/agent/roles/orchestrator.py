@@ -35,17 +35,23 @@ ROUND_TOKEN_LIMIT = 300_000  # tokens of all roles in a round; past it no new wo
 ORCHESTRATOR_REQUEST_LIMIT = 10
 PREVIEW_CHARS = 300
 
-ORCHESTRATOR_PROMPT = """You lead the work on a student's homework. You plan and delegate; you \
+ORCHESTRATOR_PROMPT = f"""You lead the work on a student's homework. You plan and delegate; you \
 never write the answer yourself.
 
 - Call run_agent to give a worker a part of the work. Each call returns the id of the worker's
   result and a short preview of it.
+- You have at most {MAX_CALLS} run_agent calls in a round, retries included. Give one worker
+  several items of the same kind in one call (for example all the calculations), so that every
+  item of the task is covered within that limit.
 - Split independent parts into several run_agent calls in one response: they run at the same time.
+  When a part needs another part's result (a fact found, a number calculated), call them one after
+  the other and pass the first result's id in inputs.
 - Roles: math calculates and checks with math tools (its results can also be input for writer);
   writer writes essays, explanations and other prose; general gives a usual homework answer, and
   is the one to use when unsure.
 - Every worker already gets the task, the student line, the notes on the student and the feedback.
-  The brief must carry everything else it needs: which part to do and how.
+  The brief must carry everything else it needs: which part to do and how. Never put the
+  student's name, ID numbers or other personal details in a brief.
 - To use an earlier result, pass its id in inputs: the worker gets its full text.
 - On feedback, pass the ids of the earlier answer as inputs and put the change in the brief.
 - A failed or refused call may be tried again, or given to another role, within the limits.
@@ -196,7 +202,8 @@ def _log_worker(
     )  # fmt: skip
 
 
-def _refused(role: WorkerRole, reason: str) -> WorkResult:
+def _refused(state: RoundState, role: WorkerRole, reason: str) -> WorkResult:
+    logger.warning("[orchestrator] %s: refused a %s call: %s", state.log_prefix, role, reason)
     return WorkResult(id=None, role=role, status="refused", preview=reason, length=0)
 
 
@@ -208,14 +215,14 @@ async def run_agent(ctx: RunContext[RoundState], delegation: Delegation) -> Work
     state = ctx.deps
     role = delegation.role
     if state.calls >= MAX_CALLS:
-        return _refused(role, "Limit of calls reached, finish now.")
+        return _refused(state, role, "Limit of calls reached, finish now.")
     if ctx.usage.total_tokens + state.worker_tokens >= ROUND_TOKEN_LIMIT:
-        return _refused(role, "Token limit of the round reached, finish now.")
+        return _refused(state, role, "Token limit of the round reached, finish now.")
     unusable = [
         i for i in delegation.inputs if i not in state.results or state.results[i].status != "done"
     ]
     if unusable:
-        return _refused(role, f"Unknown or failed inputs: {', '.join(unusable)}.")
+        return _refused(state, role, f"Unknown or failed inputs: {', '.join(unusable)}.")
     state.calls += 1  # before the await, so calls running at once count each other
     result = await run_worker(state, role, delegation.brief, delegation.inputs)
     if result.status == "failed":
