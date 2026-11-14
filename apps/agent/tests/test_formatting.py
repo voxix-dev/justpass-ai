@@ -32,6 +32,10 @@ def test_a_dollar_block_in_a_blockquote_stays_in_it():
     assert normalize_markdown(text) == "> $$\n> \\boxed{\n> x\n> }\n> $$\n"
 
 
+def test_a_quote_marker_without_a_space_is_not_repeated():
+    assert normalize_markdown("> $$x\n>y$$\n") == "> $$\n> x\n> y\n> $$\n"
+
+
 def test_a_dollar_block_in_a_list_item_stays_in_it():
     text = "1. $$\\boxed{\n   x\n   }$$\n"
     assert normalize_markdown(text) == "1. $$\n   \\boxed{\n   x\n   }\n   $$\n"

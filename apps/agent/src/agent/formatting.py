@@ -46,8 +46,9 @@ def _own_lines(match: re.Match[str]) -> str:
     lines = [cont + head.strip()] if head.strip() else []
     if body is not None:
         lines.append(body)
-    if tail.removeprefix(cont).strip():
-        lines.append(cont + tail.removeprefix(cont).strip())
+    last = tail.lstrip(" \t>" if ">" in cont else " \t").rstrip()  # without its container
+    if last:
+        lines.append(cont + last)
     lines.append(cont + "$$")
     before = "" if _CONTAINER.fullmatch(prefix) else "\n" + cont
     after = "\n" + cont if end < len(text) and text[end] != "\n" else ""
