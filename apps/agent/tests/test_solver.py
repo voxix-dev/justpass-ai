@@ -2,7 +2,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import anyio
 import httpx2
@@ -23,7 +23,8 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from agent import server, solver
 from agent.context import ContextClient
 from agent.server import SAMPLE_ANSWER, app
-from shared.agent_run import AgentRun
+from shared.agent_run import AgentRun, ContextGrant
+from shared.context import Profile
 
 pytestmark = pytest.mark.anyio
 
@@ -205,6 +206,23 @@ async def test_all_tools_are_offered(
     }
 
 
+async def test_write_document_has_a_flat_schema_with_the_limits(
+    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+):
+    schemas: dict[str, dict[str, object]] = {}
+
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        schemas.update({t.name: t.parameters_json_schema for t in info.function_tools})
+        return text("ok")
+
+    use_model(script)
+    await client.post("/run", json=run_body())
+    properties = cast(dict[str, dict[str, object]], schemas["write_document"]["properties"])
+    assert set(properties) == {"title", "content_md"}
+    assert properties["title"]["maxLength"] == 200
+    assert properties["content_md"]["maxLength"] == 100_000
+
+
 async def test_write_document_saves_a_draft_through_the_context_api(
     client: httpx2.AsyncClient,
     use_model: Callable[[Script], list[list[ModelMessage]]],
@@ -358,12 +376,107 @@ async def test_an_older_lease_finishing_late_keeps_the_newer_conversation(
     assert (await solver.solve_with_model(feedback)).answer == "next 2"
     kept = [
         p.content
-        for m in solver.histories[job.job_id][1]
+        for m in solver.histories[job.job_id][2]
         if isinstance(m, ModelResponse)
         for p in m.parts
         if isinstance(p, TextPart)
     ]
     assert kept == ["new", "next 2"]
+
+
+async def test_an_older_lease_delayed_before_its_run_does_not_take_over(
+    monkeypatch: pytest.MonkeyPatch, context_api: list[httpx2.Request]
+):
+    old_waiting, old_may_go = anyio.Event(), anyio.Event()
+    real = ContextClient.get_profile
+    delayed: list[ContextClient] = []
+
+    async def get_profile(self: ContextClient) -> Profile:
+        if not delayed:  # the first call, made by the old lease
+            delayed.append(self)
+            old_waiting.set()
+            await old_may_go.wait()
+        return await real(self)
+
+    monkeypatch.setattr(ContextClient, "get_profile", get_profile)
+    calls = 0
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        return text("new" if calls == 1 else "old")  # the new lease answers first
+
+    def make_model(key: SecretStr) -> Model:
+        return FunctionModel(respond)
+
+    monkeypatch.setattr(solver, "make_model", make_model)
+    job = AgentRun(
+        job_id=uuid4(),
+        round=2,
+        text="Solve",
+        feedback="More",
+        openrouter_key=SecretStr(KEY),
+        context=ContextGrant(url="http://api:8000", token="tok"),
+    )
+    old = job.model_copy(update={"lease_id": uuid4()})
+    new = job.model_copy(update={"lease_id": uuid4()})
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(solver.solve_with_model, old)
+        await old_waiting.wait()
+        await solver.solve_with_model(new)
+        old_may_go.set()
+    # The old lease reached its answer last, but the new one owns the job.
+    assert solver.newest_runs[job.job_id] == (2, new.lease_id)
+    kept = [
+        p.content
+        for m in solver.histories[job.job_id][2]
+        if isinstance(m, ModelResponse)
+        for p in m.parts
+        if isinstance(p, TextPart)
+    ]
+    assert kept == ["new"]
+
+
+async def test_a_round_that_runs_again_keeps_the_feedback_of_earlier_rounds(
+    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+):
+    requests = use_model(lambda messages, info: text(f"Answer {len(requests)}"))
+    job = run_body()
+    await client.post("/run", json=job)
+    await client.post("/run", json={**job, "round": 2, "feedback": "Feedback A"})
+    await client.post(
+        "/run", json={**job, "round": 3, "feedback": "Feedback B", "lease_id": str(uuid4())}
+    )
+    await client.post(
+        "/run", json={**job, "round": 3, "feedback": "Feedback B", "lease_id": str(uuid4())}
+    )
+    again = prompts(requests[3])
+    assert any("Feedback A" in p for p in again)
+    assert sum("Feedback B" in p for p in again) == 1
+    sent = [
+        p.content
+        for m in requests[3]
+        if isinstance(m, ModelResponse)
+        for p in m.parts
+        if isinstance(p, TextPart)
+    ]
+    assert sent == ["Answer 1", "Answer 2"]  # not the answer of the first attempt at round 3
+    assert sorted(solver.histories[UUID(str(job["job_id"]))]) == [1, 2, 3]
+
+
+async def test_a_rerun_round_drops_the_checkpoints_after_it(
+    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+):
+    use_model(lambda messages, info: text("ok"))
+    job = run_body()
+    for number in (1, 2, 3):
+        await client.post(
+            "/run", json={**job, "round": number, "feedback": f"F{number}" if number > 1 else None}
+        )
+    solver.newest_runs.clear()  # the job is no longer owned by round 3
+    await client.post("/run", json={**job, "round": 2, "feedback": "F2", "lease_id": str(uuid4())})
+    assert sorted(solver.histories[UUID(str(job["job_id"]))]) == [1, 2]
 
 
 async def test_the_model_is_closed_after_the_round(monkeypatch: pytest.MonkeyPatch):
