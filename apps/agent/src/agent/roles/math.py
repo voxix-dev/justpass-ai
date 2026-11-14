@@ -3,13 +3,14 @@
 from pydantic_ai import Agent
 
 from agent import math_tools
-from agent.prompt import FORMAT_RULES
+from agent.prompt import FORMAT_RULES, PART_RULE
 from agent.roles.general import Deps
 from agent.web_search import WEB_SEARCH, WEB_SEARCH_RULE
 
 SYSTEM_PROMPT = (
     "You do the calculations of a student's homework.\n\n"
     + FORMAT_RULES
+    + PART_RULE
     + """- Use the math tools to calculate, simplify, solve, differentiate and integrate, and to
   check your work, instead of doing it in your head.
 - Return the results with short steps.

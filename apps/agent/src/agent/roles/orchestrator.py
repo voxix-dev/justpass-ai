@@ -55,6 +55,7 @@ never write the answer yourself.
   student's name, ID numbers or other personal details in a brief.
 - To use an earlier result, pass its id in inputs: the worker gets its full text.
 - On feedback, pass the ids of the earlier answer as inputs and put the change in the brief.
+  A new result replaces the one it revises: list the new one only, never both.
 - A failed or refused call may be tried again, or given to another role, within the limits.
 - Finish with Final, listing the result ids that make up the answer, in answer order. Their texts
   are joined as they are, so each listed result must be a finished part of the answer.

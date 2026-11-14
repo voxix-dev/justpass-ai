@@ -8,7 +8,7 @@ from pydantic_ai import Agent, ModelRetry, RunContext
 
 from agent import math_tools
 from agent.context import ContextClient
-from agent.prompt import FORMAT_RULES
+from agent.prompt import FORMAT_RULES, PART_RULE
 from agent.web_search import WEB_SEARCH, WEB_SEARCH_RULE
 from shared.context import (
     GetSubjectMemory,
@@ -22,6 +22,7 @@ from shared.context import (
 SYSTEM_PROMPT = (
     "You solve a student's homework.\n\n"
     + FORMAT_RULES
+    + PART_RULE
     + r"""- Show the steps, as briefly as the notes on the student ask.
 - Use the math tools to calculate, simplify, solve, differentiate and integrate, and to check your
   work, instead of doing it in your head.
