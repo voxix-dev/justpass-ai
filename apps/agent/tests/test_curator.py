@@ -7,7 +7,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from agent.context import ContextClient
 from agent.notes import MAX_DOC_CHARS, apply_notes, fit
 from agent.prompt import task_message
-from agent.roles.curator import Curation, curate, curator_message
+from agent.roles.curator import Curation, SubjectChoice, curate, curator_message, pick_subject
 from shared.context import Memory, Profile
 from shared.models import Level
 
@@ -149,6 +149,31 @@ def test_the_first_message_says_to_answer_in_the_language_of_the_task():
     )
     assert "in the language the task is written in" in message
     assert "use the language with code 'en'" in message
+
+
+@pytest.mark.anyio
+async def test_the_subject_is_named_from_the_task_and_the_known_subjects():
+    seen: list[str] = []
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(str(cast(Any, messages[0]).parts[-1].content))
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"name": "math"})])
+
+    subject = await pick_subject(FunctionModel(respond), "Find the rank", ["physics", "math"])
+    assert subject == "math"
+    assert "known subjects: physics, math" in seen[0]
+    assert "```\nFind the rank\n```" in seen[0]
+
+
+@pytest.mark.parametrize("name", ["math", "computer science", "a-b"])
+def test_a_subject_name_is_lowercase_english_words(name: str):
+    assert SubjectChoice(name=name).name == name
+
+
+@pytest.mark.parametrize("name", ["Math", "matematyka1", "", "x", "-math", "a" * 41])
+def test_a_subject_name_that_is_not_is_refused(name: str):
+    with pytest.raises(ValueError):
+        SubjectChoice(name=name)
 
 
 @pytest.fixture

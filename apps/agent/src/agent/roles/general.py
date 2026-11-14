@@ -56,6 +56,7 @@ class Deps:
     """What the tools reach: the Context API of this round, or None when there is none."""
 
     context: ContextClient | None
+    subject: str | None = None
 
 
 class DocumentResult(BaseModel):
@@ -97,7 +98,7 @@ async def read_memory(ctx: RunContext[Deps], request: GetSubjectMemory) -> Memor
     """Read the notes on the student in a subject (default: this job's subject)."""
     if ctx.deps.context is None:
         return Unavailable()
-    return await ctx.deps.context.get_subject_memory(request.subject)
+    return await ctx.deps.context.get_subject_memory(request.subject or ctx.deps.subject)
 
 
 async def search_memory(

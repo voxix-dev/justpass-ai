@@ -52,23 +52,25 @@ def _normalized(body: str) -> str:
     return "\n".join(line.rstrip() for line in body.splitlines() if line.strip())
 
 
-async def _reread(context: ContextClient, scope: Scope) -> tuple[str, int]:
+async def _reread(context: ContextClient, scope: Scope, subject: str) -> tuple[str, int]:
     if scope == "profile":
         profile = await context.get_profile()
         return profile.profile_md, profile.profile_version
-    memory = await context.get_subject_memory()
+    memory = await context.get_subject_memory(subject)
     return memory.content_md, memory.version
 
 
 async def save_notes(
     context: ContextClient,
     scope: Scope,
+    subject: str,
     add: list[str],
     remove: list[str],
     body: str,
     version: int,
 ) -> str:
     """Apply the changes to the doc and save it; a doc that changed meanwhile is read again.
+    The subject names the subject doc and is ignored for the profile.
 
     A removal that matches nothing is ignored. Returns what happened: saved, unchanged or conflict.
     """
@@ -78,11 +80,13 @@ async def save_notes(
         if new_body == _normalized(body):
             return "unchanged"
         try:
-            await context.update_memory(scope, None, new_body, version)
+            await context.update_memory(
+                scope, subject if scope == "subject" else None, new_body, version
+            )
         except httpx2.HTTPStatusError as error:
             if error.response.status_code != 412:
                 raise
-            body, version = await _reread(context, scope)
+            body, version = await _reread(context, scope, subject)
             continue
         return "saved"
     return "conflict"

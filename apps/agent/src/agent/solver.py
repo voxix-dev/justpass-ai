@@ -30,7 +30,7 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 from agent.context import ContextClient
 from agent.formatting import normalize_markdown
 from agent.prompt import feedback_message, round_feedback, task_message
-from agent.roles.curator import curate
+from agent.roles.curator import curate, pick_subject
 from agent.roles.general import Deps, agent
 from shared.agent_run import AgentAnswer, AgentRun
 from shared.context import Memory, Profile
@@ -44,6 +44,7 @@ MAX_OUTPUT_TOKENS = 8_000  # reasoning and answer together, so above the reasoni
 MODEL_TIMEOUT_SECONDS = 60  # one request to the model
 ROUND_TIMEOUT_SECONDS = 180  # a whole round, all its requests
 CURATOR_TIMEOUT_SECONDS = 60  # the notes step after the answer
+SUBJECT_TIMEOUT_SECONDS = 20  # naming the subject of a job
 MAX_MODEL_REQUESTS = 25  # one round: a model that loops on its tools is stopped here
 
 MAX_JOBS = 64  # conversations remembered; the oldest go first
@@ -59,6 +60,8 @@ class Checkpoint:
 
 # job id -> round -> the checkpoint after the answer of that round
 histories: OrderedDict[UUID, dict[int, Checkpoint]] = OrderedDict()
+# job id -> the subject the curator named for it, kept for the later rounds
+job_subjects: OrderedDict[UUID, str] = OrderedDict()
 # job id -> round and lease of the newest run started: only that run publishes its history
 newest_runs: OrderedDict[UUID, tuple[int, UUID | None]] = OrderedDict()
 
@@ -91,7 +94,9 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
             async with asyncio.timeout(ROUND_TIMEOUT_SECONDS):
                 task = await context.get_task()
                 profile = await context.get_profile()
-                subject_memory = await context.get_subject_memory()
+                subject = await _job_subject(body, model, task.text, profile)
+                profile = profile.model_copy(update={"subject": subject})
+                subject_memory = await context.get_subject_memory(subject)
                 feedback = round_feedback(task, body.round)
                 answered = tuple(
                     r.number
@@ -124,6 +129,31 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
                         type(error).__name__,
                     )
             return answer
+
+
+async def _job_subject(body: AgentRun, model: Model, task_text: str, profile: Profile) -> str:
+    """The subject of the job: the one kept from an earlier round, else the one the curator names.
+    A curator that fails leaves the subject the API gave the job."""
+    kept = job_subjects.get(body.job_id)
+    if kept is not None:
+        job_subjects.move_to_end(body.job_id)
+        return kept
+    try:
+        async with asyncio.timeout(SUBJECT_TIMEOUT_SECONDS):
+            subject = await pick_subject(model, task_text, profile.subjects)
+    except Exception as error:
+        logger.warning(
+            "[curator] Round %s of job %s: no subject named (%s)",
+            body.round,
+            body.job_id,
+            type(error).__name__,
+        )
+        return profile.subject
+    if newest_runs.get(body.job_id) == (body.round, body.lease_id):
+        job_subjects[body.job_id] = subject
+        while len(job_subjects) > MAX_JOBS:
+            job_subjects.popitem(last=False)
+    return subject
 
 
 def _register_run(body: AgentRun) -> None:
@@ -183,7 +213,7 @@ async def _answer(
     result = await agent.run(
         prompt,
         model=model,
-        deps=Deps(context),
+        deps=Deps(context, profile.subject if profile else None),
         message_history=history,
         usage_limits=UsageLimits(request_limit=MAX_MODEL_REQUESTS),
     )

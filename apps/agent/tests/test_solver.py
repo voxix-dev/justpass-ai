@@ -42,10 +42,12 @@ def anyio_backend() -> str:
 @pytest.fixture(autouse=True)
 def fresh_memory() -> Iterator[None]:
     solver.histories.clear()
+    solver.job_subjects.clear()
     solver.newest_runs.clear()
     server.runs.clear()
     yield
     solver.histories.clear()
+    solver.job_subjects.clear()
     solver.newest_runs.clear()
     server.runs.clear()
 
@@ -68,8 +70,25 @@ class CuratorStub:
     on_request: Callable[[], None] | None = None
 
 
+@dataclass
+class PickerStub:
+    """What the subject step gets from the fake model: its requests, and what it answers."""
+
+    requests: list[list[ModelMessage]] = field(default_factory=lambda: [])
+    name: str = "math"
+    error: Exception | None = None
+
+
+def is_picker(info: AgentInfo) -> bool:
+    return any("name" in t.parameters_json_schema.get("properties", {}) for t in info.output_tools)
+
+
 def is_curator(info: AgentInfo) -> bool:
-    return any(t.name == "final_result" for t in info.output_tools)
+    return any(t.name == "final_result" for t in info.output_tools) and not is_picker(info)
+
+
+def pick_reply(info: AgentInfo, name: str) -> ModelResponse:
+    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"name": name})])
 
 
 def curation_reply(info: AgentInfo, curation: dict[str, object]) -> ModelResponse:
@@ -82,18 +101,29 @@ def curator() -> CuratorStub:
 
 
 @pytest.fixture
+def picker() -> PickerStub:
+    return PickerStub()
+
+
+@pytest.fixture
 def use_model(
-    monkeypatch: pytest.MonkeyPatch, curator: CuratorStub
+    monkeypatch: pytest.MonkeyPatch, curator: CuratorStub, picker: PickerStub
 ) -> Callable[[Script], list[list[ModelMessage]]]:
     """Replace the model with a script. Returns the messages each answering request carried.
 
-    The curator's requests go to the stub instead, which returns no change unless a test sets one.
+    The curator's requests go to the stub instead, which returns no change unless a test sets one,
+    and the requests that name the subject go to the picker stub, which names math.
     """
 
     def install(script: Script) -> list[list[ModelMessage]]:
         requests: list[list[ModelMessage]] = []
 
         async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            if is_picker(info):
+                picker.requests.append(list(messages))
+                if picker.error:
+                    raise picker.error
+                return pick_reply(info, picker.name)
             if is_curator(info):
                 curator.requests.append(list(messages))
                 if curator.on_request:
@@ -161,7 +191,12 @@ def context_api(
                 }
                 return httpx2.Response(200, json=task)
             case "get_profile":
-                profile = {"level": "high_school", "language": "pl", "subject": "math"}
+                profile = {
+                    "level": "high_school",
+                    "language": "pl",
+                    "subject": "math",
+                    "subjects": ["physics", "math"],
+                }
                 return httpx2.Response(
                     200,
                     json=profile
@@ -172,7 +207,7 @@ def context_api(
                 )
             case "get_subject_memory":
                 memory = {
-                    "subject": "math",
+                    "subject": json.loads(request.content)["subject"] or "math",
                     "content_md": notes["subject_md"],
                     "version": notes["subject_version"],
                 }
@@ -563,6 +598,8 @@ async def test_an_older_lease_delayed_before_its_run_does_not_take_over(
 
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         nonlocal calls
+        if is_picker(info):
+            return pick_reply(info, "math")
         if is_curator(info):
             return curation_reply(info, {"profile": {}, "subject": {}})
         calls += 1
@@ -894,7 +931,7 @@ async def test_the_curator_saves_a_task_line_and_a_standing_request(
         },
         {
             "scope": "subject",
-            "subject": None,
+            "subject": "math",
             "content_md": "- Writes in pencil\n- Task: solve a quadratic equation",
             "base_version": 5,
         },
@@ -1129,3 +1166,117 @@ async def test_a_continued_round_tells_the_model_that_cleared_notes_are_gone(
     assert "Notes on the student now:\n\n(none)" in followup
     assert "Notes on the student in math now:\n\n(none)" in followup
     assert "update_memory" not in followup
+
+
+def memory_reads(seen: list[httpx2.Request]) -> list[str | None]:
+    return [
+        json.loads(r.content)["subject"] for r in seen if r.url.path.endswith("/get_subject_memory")
+    ]
+
+
+async def test_the_subject_the_curator_names_is_used_to_read_and_save_the_notes(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    curator: CuratorStub,
+    picker: PickerStub,
+):
+    picker.name = "physics"
+    curator.curation = change(subject={"add": ["Forgets units"]})
+    requests = use_model(lambda messages, info: text("ok"))
+    await client.post("/run", json=run_body(context=grant()))
+    (pick,) = picker.requests
+    assert "The student's known subjects: physics, math" in prompts(pick)[0]
+    assert "```\nSolve x^2 = 4\n```" in prompts(pick)[0]
+    assert memory_reads(context_api) == ["physics"]
+    assert "Notes on the student in physics:" in prompts(requests[0])[0]
+    assert "Subject: physics\nRound: 1" in prompts(curator.requests[0])[0]
+    (saved,) = saved_bodies(context_api)
+    assert saved["scope"] == "subject"
+    assert saved["subject"] == "physics"
+
+
+async def test_a_later_round_of_the_job_keeps_its_subject_without_naming_it_again(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    picker: PickerStub,
+):
+    picker.name = "physics"
+    use_model(lambda messages, info: text("ok"))
+    job = run_body(context=grant())
+    await client.post("/run", json=job)
+    picker.name = "chemistry"
+    await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
+    assert len(picker.requests) == 1
+    assert memory_reads(context_api) == ["physics", "physics"]
+
+
+async def test_a_curator_that_cannot_name_the_subject_leaves_the_subject_of_the_job(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    picker: PickerStub,
+    caplog: pytest.LogCaptureFixture,
+):
+    picker.error = RuntimeError("model down")
+    use_model(lambda messages, info: text("The answer"))
+    job = run_body(context=grant())
+    response = await client.post("/run", json=job)
+    assert response.json() == {"answer": "The answer"}
+    assert memory_reads(context_api) == ["math"]
+    assert UUID(str(job["job_id"])) not in solver.job_subjects
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any(f"Round 1 of job {job['job_id']}: no subject named" in w for w in warnings)
+
+
+async def test_a_subject_that_takes_too_long_to_name_is_given_up(
+    client: httpx2.AsyncClient,
+    context_api: list[httpx2.Request],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def slow(model: Model, task_text: str, known: list[str]) -> str:
+        await asyncio.sleep(5)
+        return "physics"
+
+    monkeypatch.setattr(solver, "pick_subject", slow)
+    monkeypatch.setattr(solver, "SUBJECT_TIMEOUT_SECONDS", 0.05)
+
+    def make_model(key: SecretStr) -> Model:
+        return FunctionModel(lambda messages, info: text("ok"))
+
+    monkeypatch.setattr(solver, "make_model", make_model)
+    response = await client.post("/run", json=run_body(context=grant()))
+    assert response.json() == {"answer": "ok"}
+    assert memory_reads(context_api) == ["math"]
+
+
+async def test_read_memory_defaults_to_the_subject_of_the_job(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    picker: PickerStub,
+):
+    picker.name = "physics"
+
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not tool_returns(messages):
+            return tool_call("read_memory", request={})
+        return text("ok")
+
+    requests = use_model(script)
+    await client.post("/run", json=run_body(context=grant()))
+    assert memory_reads(context_api) == ["physics", "physics"]
+    assert "subject='physics'" in tool_returns(requests[-1])["read_memory"]
+
+
+async def test_a_job_whose_subject_was_named_by_an_overtaken_run_is_not_remembered(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+):
+    use_model(lambda messages, info: text("ok"))
+    job = run_body(context=grant())
+    solver.newest_runs[UUID(str(job["job_id"]))] = (3, uuid4())
+    await client.post("/run", json={**job, "round": 2})
+    assert solver.job_subjects == {}
