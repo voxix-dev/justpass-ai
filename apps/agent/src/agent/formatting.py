@@ -38,13 +38,16 @@ def _own_lines(match: re.Match[str]) -> str:
     prefix = text[text.rfind("\n", 0, start) + 1 : start]  # what precedes the opening `$$`
     head, rest = inner.split("\n", 1)  # head: text after the opening `$$`
     body, tail = rest.rsplit("\n", 1) if "\n" in rest else (None, rest)  # tail: before closing
-    # Inserted lines continue the block's container: its indent, and its `>` inside a blockquote.
-    cont = tail[: len(tail) - len(tail.lstrip(" \t>" if ">" in prefix else " \t"))]
+    # Inserted lines continue the opening line's container: its `>` markers, and its indent with a
+    # list marker turned into spaces. Indentation inside the math is not a container.
+    container = _CONTAINER.match(prefix)
+    assert container  # the pattern also matches an empty prefix
+    cont = re.sub(r"[^ \t>]", " ", container[0])
     lines = [cont + head.strip()] if head.strip() else []
     if body is not None:
         lines.append(body)
-    if tail[len(cont) :].strip():
-        lines.append(cont + tail[len(cont) :].strip())
+    if tail.removeprefix(cont).strip():
+        lines.append(cont + tail.removeprefix(cont).strip())
     lines.append(cont + "$$")
     before = "" if _CONTAINER.fullmatch(prefix) else "\n" + cont
     after = "\n" + cont if end < len(text) and text[end] != "\n" else ""

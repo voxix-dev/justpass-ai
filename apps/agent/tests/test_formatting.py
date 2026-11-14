@@ -23,6 +23,10 @@ def test_a_dollar_block_opened_mid_line_starts_on_a_new_line():
     assert normalize_markdown("Zatem $$x\n=y$$.") == "Zatem \n$$\nx\n=y\n$$\n."
 
 
+def test_indented_math_does_not_indent_the_closing_dollars():
+    assert normalize_markdown("$$x =\n    1$$\n\nAfter") == "$$\nx =\n1\n$$\n\nAfter"
+
+
 def test_a_dollar_block_in_a_blockquote_stays_in_it():
     text = "> $$\\boxed{\n> x\n> }$$\n"
     assert normalize_markdown(text) == "> $$\n> \\boxed{\n> x\n> }\n> $$\n"
