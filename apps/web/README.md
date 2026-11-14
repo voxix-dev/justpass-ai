@@ -32,7 +32,7 @@ CORS), gets a preview URL per PR from Hosting, and can move to GCS + Cloud CDN u
 
 - `src/auth/auth.ts`: fake signed-in user, to be replaced by Firebase Auth.
 - Jobs come from the real Jobs API, so `pnpm dev` needs the API on localhost:8000: from the repo
-  root, `podman compose up -d --build api` (starts Postgres and the agent, and migrates), or uvicorn as in the
+  root, `docker compose up -d --build api` (starts Postgres and the agent, and migrates), or uvicorn as in the
   [root README](../../README.md#setup).
   The agent is still a fake that answers after 10 seconds; a task with the word "fail" fails.
   `pnpm e2e` waits for it, so one run takes a few minutes.
