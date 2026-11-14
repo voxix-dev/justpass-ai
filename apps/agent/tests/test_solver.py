@@ -746,7 +746,7 @@ async def test_update_memory_sends_the_notes_to_the_context_api(
 ):
     def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if not tool_returns(messages):
-            notes = {"scope": "subject", "subject": None, "content_md": "Show every step"}
+            notes = {"scope": "subject", "content_md": "Show every step"}
             return tool_call("update_memory", notes=notes)
         return text("ok")
 
@@ -759,6 +759,21 @@ async def test_update_memory_sends_the_notes_to_the_context_api(
         "subject": None,
         "content_md": "Show every step",
     }
+
+
+async def test_update_memory_schema_has_no_subject(
+    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+):
+    schemas: dict[str, dict[str, object]] = {}
+
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        schemas.update({t.name: t.parameters_json_schema for t in info.function_tools})
+        return text("ok")
+
+    use_model(script)
+    await client.post("/run", json=run_body())
+    properties = cast(dict[str, object], schemas["update_memory"]["properties"])
+    assert set(properties) == {"scope", "content_md"}
 
 
 async def test_notes_that_are_too_long_are_retried(

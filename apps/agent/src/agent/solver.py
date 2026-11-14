@@ -11,6 +11,7 @@ import asyncio
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Literal
 from uuid import UUID
 
 import httpx2
@@ -45,7 +46,6 @@ from shared.context import (
     Profile,
     SearchHistory,
     Text,
-    UpdateMemory,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,8 +107,15 @@ class MemoryResult(BaseModel):
     message: str
 
 
-async def update_memory(ctx: RunContext[Deps], notes: UpdateMemory) -> MemoryResult:
-    """Save lasting notes on the student, in the profile or in one subject (default: this job's).
+class NotesInput(BaseModel):
+    """Notes to save: the profile doc, or the subject doc of this job."""
+
+    scope: Literal["profile", "subject"]
+    content_md: Text = Field(max_length=10_000)
+
+
+async def update_memory(ctx: RunContext[Deps], notes: NotesInput) -> MemoryResult:
+    """Save lasting notes on the student: scope "profile", or scope "subject" (this job's subject).
 
     This REPLACES the whole doc, so include the earlier notes you keep (read_memory shows them).
     Save only what outlasts this task: how the student writes, the teacher's rules, mistakes they
@@ -117,7 +124,7 @@ async def update_memory(ctx: RunContext[Deps], notes: UpdateMemory) -> MemoryRes
     if ctx.deps.context is None:
         return MemoryResult(saved=False, message=MEMORY_UNAVAILABLE)
     try:
-        await ctx.deps.context.update_memory(notes.scope, notes.subject, notes.content_md)
+        await ctx.deps.context.update_memory(notes.scope, None, notes.content_md)
     except ValidationError as error:
         reasons = "; ".join(f"{e['loc'][-1]}: {e['msg']}" for e in error.errors())
         raise ModelRetry(f"The notes were refused ({reasons}). Fix them and call again.") from error
