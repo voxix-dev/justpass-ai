@@ -1,6 +1,7 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Iterator
+from dataclasses import dataclass, field
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -22,6 +23,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from agent import server, solver
 from agent.context import ContextClient
+from agent.roles import general
 from agent.server import SAMPLE_ANSWER, app
 from shared.agent_run import AgentRun, ContextGrant
 from shared.context import Profile
@@ -55,14 +57,51 @@ async def client() -> AsyncIterator[httpx2.AsyncClient]:
         yield client
 
 
+@dataclass
+class CuratorStub:
+    """What the curator step gets from the fake model: its requests, and what it answers."""
+
+    requests: list[list[ModelMessage]] = field(default_factory=lambda: [])
+    curation: dict[str, object] = field(default_factory=lambda: {"profile": {}, "subject": {}})
+    error: Exception | None = None
+    delay: float = 0
+    on_request: Callable[[], None] | None = None
+
+
+def is_curator(info: AgentInfo) -> bool:
+    return any(t.name == "final_result" for t in info.output_tools)
+
+
+def curation_reply(info: AgentInfo, curation: dict[str, object]) -> ModelResponse:
+    return tool_call(info.output_tools[0].name, **curation)
+
+
 @pytest.fixture
-def use_model(monkeypatch: pytest.MonkeyPatch) -> Callable[[Script], list[list[ModelMessage]]]:
-    """Replace the model with a script. Returns the messages each request carried."""
+def curator() -> CuratorStub:
+    return CuratorStub()
+
+
+@pytest.fixture
+def use_model(
+    monkeypatch: pytest.MonkeyPatch, curator: CuratorStub
+) -> Callable[[Script], list[list[ModelMessage]]]:
+    """Replace the model with a script. Returns the messages each answering request carried.
+
+    The curator's requests go to the stub instead, which returns no change unless a test sets one.
+    """
 
     def install(script: Script) -> list[list[ModelMessage]]:
         requests: list[list[ModelMessage]] = []
 
-        def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            if is_curator(info):
+                curator.requests.append(list(messages))
+                if curator.on_request:
+                    curator.on_request()
+                await asyncio.sleep(curator.delay)
+                if curator.error:
+                    raise curator.error
+                return curation_reply(info, curator.curation)
             requests.append(list(messages))
             return script(messages, info)
 
@@ -259,7 +298,6 @@ async def test_all_tools_are_offered(
         "differentiate",
         "integrate",
         "write_document",
-        "update_memory",
         "read_memory",
         "search_memory",
         "list_history",
@@ -327,7 +365,7 @@ async def test_write_document_without_a_context_api_says_so(
     assert response.json() == {"answer": "No document, here is the answer."}
     returned = tool_returns(requests[-1])["write_document"]
     assert "saved=False" in returned
-    assert solver.DOCUMENTS_UNAVAILABLE in returned
+    assert general.DOCUMENTS_UNAVAILABLE in returned
 
 
 async def test_a_refused_document_is_retried_by_the_model(
@@ -525,6 +563,8 @@ async def test_an_older_lease_delayed_before_its_run_does_not_take_over(
 
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         nonlocal calls
+        if is_curator(info):
+            return curation_reply(info, {"profile": {}, "subject": {}})
         calls += 1
         return text("new" if calls == 1 else "old")  # the new lease answers first
 
@@ -718,7 +758,7 @@ async def test_the_request_to_openrouter_asks_for_the_cheapest_provider(
     http = httpx2.AsyncClient(transport=httpx2.MockTransport(handle))
     model = solver.make_model(SecretStr(KEY), http)
     caplog.set_level("INFO", logger="agent.solver")
-    result = await solver.agent.run("Hi", model=model, deps=solver.Deps(None))
+    result = await general.agent.run("Hi", model=model, deps=general.Deps(None))
     assert result.output == "Hello"
 
     (request,) = sent
@@ -762,133 +802,6 @@ async def test_the_subject_notes_are_in_the_first_message(
     requests = use_model(lambda messages, info: text("ok"))
     await client.post("/run", json=run_body(context=grant()))
     assert "Notes on the student in math:\n\n```\nWrites in pencil\n```" in prompts(requests[0])[0]
-
-
-def save_notes(**notes: object) -> Script:
-    """A script that calls update_memory once with these notes, then answers."""
-
-    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        if not tool_returns(messages):
-            return tool_call("update_memory", notes=notes)
-        return text("ok")
-
-    return script
-
-
-def saved_bodies(context_api: list[httpx2.Request]) -> list[dict[str, object]]:
-    return [json.loads(r.content) for r in context_api if r.url.path.endswith("/update_memory")]
-
-
-async def test_update_memory_adds_to_the_doc_and_keeps_the_earlier_notes(
-    client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
-    context_api: list[httpx2.Request],
-    notes: dict[str, str | int],
-):
-    notes["subject_md"] = "- Writes in pencil\n- Wants every check"
-    requests = use_model(save_notes(scope="subject", add=["Show every step"]))
-    await client.post("/run", json=run_body(context=grant()))
-    result = tool_returns(requests[-1])["update_memory"]
-    assert "saved=True" in result
-    assert "- Show every step" in result
-    assert saved_bodies(context_api) == [
-        {
-            "scope": "subject",
-            "subject": None,
-            "content_md": "- Writes in pencil\n- Wants every check\n- Show every step",
-            "base_version": 5,
-        }
-    ]
-
-
-async def test_update_memory_keeps_a_doc_that_is_not_a_bullet_list(
-    client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
-    context_api: list[httpx2.Request],
-):
-    use_model(save_notes(scope="profile", add=["Prefers bold, not boxed"]))
-    await client.post("/run", json=run_body(context=grant()))
-    assert [b["content_md"] for b in saved_bodies(context_api)] == [
-        "Likes short steps\n- Prefers bold, not boxed"
-    ]
-
-
-async def test_update_memory_does_not_add_a_note_twice(
-    client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
-    context_api: list[httpx2.Request],
-    notes: dict[str, str | int],
-):
-    notes["profile_md"] = "- Likes short steps"
-    use_model(save_notes(scope="profile", add=["likes short steps", "Uses a pen"]))
-    await client.post("/run", json=run_body(context=grant()))
-    assert [b["content_md"] for b in saved_bodies(context_api)] == [
-        "- Likes short steps\n- Uses a pen"
-    ]
-
-
-async def test_update_memory_removes_exactly_the_matched_note(
-    client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
-    context_api: list[httpx2.Request],
-    notes: dict[str, str | int],
-):
-    notes["profile_md"] = "- Likes short steps\n- Uses a pen\n- Likes short steps in physics"
-    use_model(save_notes(scope="profile", remove=["Likes short steps"], add=["Likes long steps"]))
-    await client.post("/run", json=run_body(context=grant()))
-    assert [b["content_md"] for b in saved_bodies(context_api)] == [
-        "- Uses a pen\n- Likes short steps in physics\n- Likes long steps"
-    ]
-
-
-async def test_a_remove_that_matches_no_note_is_retried_and_nothing_is_saved(
-    client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
-    context_api: list[httpx2.Request],
-):
-    requests = use_model(save_notes(scope="profile", remove=["Likes boxes"], add=["Uses a pen"]))
-    await client.post("/run", json=run_body(context=grant()))
-    result = tool_returns(requests[-1])["update_memory"]
-    assert "Likes boxes" in result
-    assert "```\nLikes short steps\n```" in result
-    assert saved_bodies(context_api) == []
-
-
-async def test_update_memory_with_nothing_to_change_is_retried(
-    client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
-    context_api: list[httpx2.Request],
-):
-    requests = use_model(save_notes(scope="profile"))
-    await client.post("/run", json=run_body(context=grant()))
-    assert "Nothing to change" in tool_returns(requests[-1])["update_memory"]
-    assert saved_bodies(context_api) == []
-
-
-async def test_update_memory_schema_has_only_scope_add_and_remove(
-    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
-):
-    schemas: dict[str, dict[str, object]] = {}
-
-    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        schemas.update({t.name: t.parameters_json_schema for t in info.function_tools})
-        return text("ok")
-
-    use_model(script)
-    await client.post("/run", json=run_body())
-    properties = cast(dict[str, object], schemas["update_memory"]["properties"])
-    assert set(properties) == {"scope", "add", "remove"}
-
-
-async def test_notes_that_are_too_long_are_retried(
-    client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
-    context_api: list[httpx2.Request],
-):
-    requests = use_model(save_notes(scope="profile", add=["x" * 501]))
-    await client.post("/run", json=run_body(context=grant()))
-    assert "string_too_long" in tool_returns(requests[-1])["update_memory"]
-    assert saved_bodies(context_api) == []
 
 
 async def test_memory_tools_read_search_and_list(
@@ -948,31 +861,103 @@ async def test_a_continued_round_shows_the_current_notes(
     assert "Notes on the student in math now:\n\n```\nNow uses a pen\n```" in sent[1]
 
 
+def saved_bodies(context_api: list[httpx2.Request]) -> list[dict[str, object]]:
+    return [json.loads(r.content) for r in context_api if r.url.path.endswith("/update_memory")]
+
+
+def change(**scopes: dict[str, list[str]]) -> dict[str, object]:
+    empty: dict[str, object] = {"profile": {}, "subject": {}}
+    return empty | dict[str, object](scopes)
+
+
+async def test_the_curator_saves_a_task_line_and_a_standing_request(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    curator: CuratorStub,
+    notes: dict[str, str | int],
+):
+    notes["subject_md"] = "- Writes in pencil"
+    curator.curation = change(
+        profile={"add": ["Always answer in two sentences"]},
+        subject={"add": ["Task: solve a quadratic equation"]},
+    )
+    use_model(lambda messages, info: text("The roots are $x=\\pm 2$."))
+    response = await client.post("/run", json=run_body(context=grant()))
+    assert response.json() == {"answer": "The roots are $x=\\pm 2$."}
+    assert saved_bodies(context_api) == [
+        {
+            "scope": "profile",
+            "subject": None,
+            "content_md": "Likes short steps\n- Always answer in two sentences",
+            "base_version": 3,
+        },
+        {
+            "scope": "subject",
+            "subject": None,
+            "content_md": "- Writes in pencil\n- Task: solve a quadratic equation",
+            "base_version": 5,
+        },
+    ]
+
+
+async def test_the_curator_reads_the_round_and_the_notes_as_they_are(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    curator: CuratorStub,
+):
+    use_model(lambda messages, info: text("The roots are $x=\\pm 2$."))
+    await client.post("/run", json=run_body(round=2, feedback="Show the check", context=grant()))
+    (request,) = curator.requests
+    sent = prompts(request)[0]
+    assert "Subject: math\nRound: 2" in sent
+    assert "```\nSolve x^2 = 4\n```" in sent
+    assert "```\nShow the check\n```" in sent
+    assert "```\nThe roots are $x=\\pm 2$.\n```" in sent
+    assert "Profile notes now:\n\n```\nLikes short steps\n```" in sent
+    assert "Subject notes now:\n\n```\nWrites in pencil\n```" in sent
+    assert KEY not in repr(request)
+
+
+async def test_the_curator_makes_one_request_per_round_and_the_model_has_no_save_tool(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    curator: CuratorStub,
+):
+    use_model(lambda messages, info: text("ok"))
+    job = run_body(context=grant())
+    await client.post("/run", json=job)
+    await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
+    assert len(curator.requests) == 2
+    assert saved_bodies(context_api) == []  # no change asked, no save
+
+
 async def test_a_save_over_notes_that_changed_is_applied_again_on_the_fresh_doc(
     client: httpx2.AsyncClient,
     use_model: Callable[[Script], list[list[ModelMessage]]],
     context_api: list[httpx2.Request],
+    curator: CuratorStub,
     notes: dict[str, str | int],
 ):
-    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        if not tool_returns(messages):
-            # Another job changes the doc after this round read it.
-            notes.update(profile_md="- Likes short steps\n- Uses a pen", profile_version=4)
-            return tool_call("update_memory", notes={"scope": "profile", "add": ["Mine"]})
-        return text("ok")
+    def other_writer() -> None:  # another job changes the doc after this round read it
+        notes.update(profile_md="- Likes short steps\n- Uses a pen", profile_version=4)
 
-    requests = use_model(script)
-    await client.post("/run", json=run_body(context=grant()))
-    sent = saved_bodies(context_api)
-    assert [s["base_version"] for s in sent] == [3, 4]
+    curator.on_request = other_writer
+    curator.curation = change(profile={"add": ["Mine"]})
+    use_model(lambda messages, info: text("ok"))
+    response = await client.post("/run", json=run_body(context=grant()))
+    assert response.json() == {"answer": "ok"}
+    assert [s["base_version"] for s in saved_bodies(context_api)] == [3, 4]
     assert notes["profile_md"] == "- Likes short steps\n- Uses a pen\n- Mine"
-    assert "saved=True" in tool_returns(requests[-1])["update_memory"]
 
 
 async def test_a_save_that_keeps_finding_the_doc_changed_gives_up_after_three_tries(
     client: httpx2.AsyncClient,
     use_model: Callable[[Script], list[list[ModelMessage]]],
     context_api: list[httpx2.Request],
+    curator: CuratorStub,
     notes: dict[str, str | int],
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -983,18 +968,149 @@ async def test_a_save_that_keeps_finding_the_doc_changed_gives_up_after_three_tr
         notes["profile_version"] = int(notes["profile_version"]) + 1  # changed again meanwhile
         return profile
 
-    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        if not tool_returns(messages):
-            notes["profile_version"] = 4
-            monkeypatch.setattr(ContextClient, "get_profile", busy)
-            return tool_call("update_memory", notes={"scope": "profile", "add": ["Mine"]})
-        return text("ok")
+    def other_writer() -> None:
+        notes["profile_version"] = 4
+        monkeypatch.setattr(ContextClient, "get_profile", busy)
 
-    requests = use_model(script)
-    await client.post("/run", json=run_body(context=grant()))
-    result = tool_returns(requests[-1])["update_memory"]
-    assert "saved=False" in result
+    curator.on_request = other_writer
+    curator.curation = change(profile={"add": ["Mine"]})
+    use_model(lambda messages, info: text("ok"))
+    response = await client.post("/run", json=run_body(context=grant()))
+    assert response.json() == {"answer": "ok"}
     assert len(saved_bodies(context_api)) == 3
+    assert "Mine" not in str(notes["profile_md"])
+
+
+async def test_a_remove_that_matches_no_note_is_ignored(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    curator: CuratorStub,
+):
+    curator.curation = change(profile={"remove": ["Likes boxes"], "add": ["Uses a pen"]})
+    use_model(lambda messages, info: text("ok"))
+    await client.post("/run", json=run_body(context=grant()))
+    assert [b["content_md"] for b in saved_bodies(context_api)] == [
+        "Likes short steps\n- Uses a pen"
+    ]
+
+
+async def test_the_curator_removes_exactly_the_matched_note(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    curator: CuratorStub,
+    notes: dict[str, str | int],
+):
+    notes["profile_md"] = "- Likes short steps\n- Uses a pen\n- Likes short steps in physics"
+    curator.curation = change(
+        profile={"remove": ["Likes short steps"], "add": ["likes long steps"]}
+    )
+    use_model(lambda messages, info: text("ok"))
+    await client.post("/run", json=run_body(context=grant()))
+    assert [b["content_md"] for b in saved_bodies(context_api)] == [
+        "- Uses a pen\n- Likes short steps in physics\n- likes long steps"
+    ]
+
+
+async def test_the_curator_does_not_add_a_note_twice(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    curator: CuratorStub,
+    notes: dict[str, str | int],
+):
+    notes["profile_md"] = "- Likes short steps"
+    curator.curation = change(profile={"add": ["likes short steps"]})
+    use_model(lambda messages, info: text("ok"))
+    await client.post("/run", json=run_body(context=grant()))
+    assert saved_bodies(context_api) == []
+
+
+async def test_a_doc_that_is_too_long_drops_the_oldest_task_lines_first(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    curator: CuratorStub,
+    notes: dict[str, str | int],
+):
+    tasks = [f"- Task: {n:02d} " + "x" * 190 for n in range(48)]
+    notes["subject_md"] = "\n".join(["- Oldest rule", *tasks, "- Newest rule"])
+    curator.curation = change(subject={"add": ["Task: " + "y" * 400]})
+    use_model(lambda messages, info: text("ok"))
+    await client.post("/run", json=run_body(context=grant()))
+    (saved,) = saved_bodies(context_api)
+    body = str(saved["content_md"])
+    assert len(body) <= 10_000
+    lines = body.splitlines()
+    assert lines[0] == "- Oldest rule"
+    assert lines[-2:] == ["- Newest rule", "- Task: " + "y" * 400] or lines[-1].startswith(
+        "- Task: yyy"
+    )
+    assert "- Task: 00 " not in body
+    assert "- Task: 47 " in body
+
+
+@pytest.mark.parametrize("failure", ["error", "timeout", "conflict"])
+async def test_a_curator_failure_still_returns_the_answer(
+    failure: str,
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    curator: CuratorStub,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    curator.curation = change(profile={"add": ["Secret note text"]})
+    if failure == "error":
+        curator.error = RuntimeError("curator model down")
+    elif failure == "timeout":
+        curator.delay = 5
+        monkeypatch.setattr(solver, "CURATOR_TIMEOUT_SECONDS", 0.05)
+    else:
+
+        async def refused(self: ContextClient, *args: object) -> None:
+            request = httpx2.Request("POST", "http://api/v1/context/update_memory")
+            response = httpx2.Response(409, request=request)
+            raise httpx2.HTTPStatusError("round is not current", request=request, response=response)
+
+        monkeypatch.setattr(ContextClient, "update_memory", refused)
+    use_model(lambda messages, info: text("The answer"))
+    job = run_body(context=grant())
+    response = await client.post("/run", json=job)
+    assert response.json() == {"answer": "The answer"}
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any(f"Round 1 of job {job['job_id']}: the notes were not saved" in w for w in warnings)
+    assert "Secret note text" not in caplog.text
+
+
+async def test_there_is_no_curator_without_a_context_api(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    curator: CuratorStub,
+):
+    curator.curation = change(profile={"add": ["Never saved"]})
+    requests = use_model(lambda messages, info: text("ok"))
+    response = await client.post("/run", json=run_body())
+    assert response.json() == {"answer": "ok"}
+    assert len(requests) == 1
+    assert curator.requests == []
+
+
+async def test_a_run_that_was_overtaken_does_not_curate(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    curator: CuratorStub,
+):
+    curator.curation = change(profile={"add": ["Never saved"]})
+    use_model(lambda messages, info: text("ok"))
+    job = run_body(context=grant())
+    solver.newest_runs[UUID(str(job["job_id"]))] = (3, uuid4())  # a newer round owns the job
+    response = await client.post("/run", json={**job, "round": 2})
+    assert response.json() == {"answer": "ok"}
+    assert curator.requests == []
+    assert saved_bodies(context_api) == []
 
 
 async def test_a_continued_round_tells_the_model_that_cleared_notes_are_gone(
@@ -1012,4 +1128,4 @@ async def test_a_continued_round_tells_the_model_that_cleared_notes_are_gone(
     assert "replace any earlier notes" in followup
     assert "Notes on the student now:\n\n(none)" in followup
     assert "Notes on the student in math now:\n\n(none)" in followup
-    assert "save it with update_memory before you write the answer" in followup
+    assert "update_memory" not in followup
