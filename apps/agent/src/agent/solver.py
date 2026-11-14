@@ -119,7 +119,13 @@ class MemoryResult(BaseModel):
 class NotesInput(BaseModel):
     """Notes to save: the profile doc, or the subject doc of this job."""
 
-    scope: Literal["profile", "subject"]
+    scope: Literal["profile", "subject"] = Field(
+        description=(
+            "profile: the student in every subject (how they want answers: length, format; how they"
+            " write). subject: only this job's subject (its teacher's rules, mistakes they repeat"
+            " in it)."
+        )
+    )
     content_md: Text = Field(max_length=10_000)
 
 
@@ -127,6 +133,7 @@ async def update_memory(ctx: RunContext[Deps], notes: NotesInput) -> MemoryResul
     """Save lasting notes on the student: scope "profile", or scope "subject" (this job's subject).
 
     This REPLACES the whole doc, so include the earlier notes you keep (read_memory shows them).
+    Each fact goes in one doc only: never copy notes from one doc into the other.
     Save only what outlasts this task: how the student writes, the teacher's rules, mistakes they
     repeat, what they prefer. Never the task's content or its answer. Keep it short: 2k tokens.
     """
