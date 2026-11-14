@@ -77,6 +77,19 @@ def task_message(
     return "\n\n".join(parts)
 
 
-def feedback_message(feedback: str) -> str:
-    """A later round, sent to the model that already has the job in its message history."""
-    return f"The student asks for changes. Give the complete revised answer.\n\n{fence(feedback)}"
+def feedback_message(feedback: str, profile: Profile | None = None, subject_notes: str = "") -> str:
+    """A later round, sent to the model that already has the job in its message history.
+
+    The notes may have changed since the first message, so the current ones come with it.
+    """
+    parts = [
+        f"The student asks for changes. Give the complete revised answer.\n\n{fence(feedback)}"
+    ]
+    if profile is not None:
+        if profile.profile_md:
+            parts.append(f"Notes on the student now:\n\n{fence(profile.profile_md)}")
+        if subject_notes:
+            parts.append(
+                f"Notes on the student in {profile.subject} now:\n\n{fence(subject_notes)}"
+            )
+    return "\n\n".join(parts)

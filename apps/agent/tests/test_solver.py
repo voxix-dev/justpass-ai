@@ -87,8 +87,14 @@ def task_rounds() -> list[dict[str, object]]:
 
 
 @pytest.fixture
+def notes() -> dict[str, str]:
+    """The notes the fake Context API reports; a test may change them between rounds."""
+    return {"profile_md": "Likes short steps", "subject_md": "Writes in pencil"}
+
+
+@pytest.fixture
 def context_api(
-    monkeypatch: pytest.MonkeyPatch, task_rounds: list[dict[str, object]]
+    monkeypatch: pytest.MonkeyPatch, task_rounds: list[dict[str, object]], notes: dict[str, str]
 ) -> list[httpx2.Request]:
     seen: list[httpx2.Request] = []
     job_id = str(uuid4())
@@ -110,10 +116,10 @@ def context_api(
                 return httpx2.Response(200, json=task)
             case "get_profile":
                 profile = {"level": "high_school", "language": "pl", "subject": "math"}
-                return httpx2.Response(200, json=profile | {"profile_md": "Likes short steps"})
+                return httpx2.Response(200, json=profile | {"profile_md": notes["profile_md"]})
             case "get_subject_memory":
                 return httpx2.Response(
-                    200, json={"subject": "math", "content_md": "Writes in pencil"}
+                    200, json={"subject": "math", "content_md": notes["subject_md"]}
                 )
             case "update_memory":
                 body = json.loads(request.content)
@@ -810,3 +816,20 @@ async def test_memory_is_unavailable_without_a_context_api(
     requests = use_model(script)
     await client.post("/run", json=run_body())
     assert "unavailable" in tool_returns(requests[-1])["search_memory"]
+
+
+async def test_a_continued_round_shows_the_current_notes(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    notes: dict[str, str],
+):
+    requests = use_model(lambda messages, info: text("ok"))
+    job = run_body(context=grant())
+    await client.post("/run", json=job)
+    notes.update(profile_md="Now prefers long proofs", subject_md="Now uses a pen")
+    await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
+    sent = prompts(requests[1])
+    assert "Likes short steps" in sent[0]
+    assert "Notes on the student now:\n\n```\nNow prefers long proofs\n```" in sent[1]
+    assert "Notes on the student in math now:\n\n```\nNow uses a pen\n```" in sent[1]

@@ -124,24 +124,34 @@ async def update_memory(ctx: RunContext[Deps], notes: UpdateMemory) -> MemoryRes
     return MemoryResult(saved=True, message=f"Saved the {notes.scope} notes.")
 
 
-async def read_memory(ctx: RunContext[Deps], request: GetSubjectMemory) -> Memory | str:
+class Unavailable(BaseModel):
+    """What the model is told when a memory tool has no Context API to ask."""
+
+    message: str = MEMORY_UNAVAILABLE
+
+
+async def read_memory(ctx: RunContext[Deps], request: GetSubjectMemory) -> Memory | Unavailable:
     """Read the notes on the student in a subject (default: this job's subject)."""
     if ctx.deps.context is None:
-        return MEMORY_UNAVAILABLE
+        return Unavailable()
     return await ctx.deps.context.get_subject_memory(request.subject)
 
 
-async def search_memory(ctx: RunContext[Deps], request: SearchHistory) -> list[Memory] | str:
+async def search_memory(
+    ctx: RunContext[Deps], request: SearchHistory
+) -> list[Memory] | Unavailable:
     """Search the notes on the student, in every subject, for a word or phrase."""
     if ctx.deps.context is None:
-        return MEMORY_UNAVAILABLE
+        return Unavailable()
     return await ctx.deps.context.search_history(request.query)
 
 
-async def list_history(ctx: RunContext[Deps], request: ListHistory) -> list[HistoryItem] | str:
+async def list_history(
+    ctx: RunContext[Deps], request: ListHistory
+) -> list[HistoryItem] | Unavailable:
     """List the student's other homework, newest first, with the grade they said they got."""
     if ctx.deps.context is None:
-        return MEMORY_UNAVAILABLE
+        return Unavailable()
     return await ctx.deps.context.list_history(request.limit)
 
 
@@ -249,7 +259,10 @@ async def _answer(
     # back that of a failed one. Otherwise the round rebuilds from the task.
     if candidates and body.feedback:
         chosen = max(candidates)
-        prompt, history = feedback_message(body.feedback), checkpoints[chosen].messages
+        prompt = feedback_message(
+            body.feedback, profile, subject_memory.content_md if subject_memory else ""
+        )
+        history = checkpoints[chosen].messages
         rounds = (*checkpoints[chosen].rounds, body.round)
         logger.info("Round %s of job %s continues round %s", body.round, body.job_id, chosen)
     else:
