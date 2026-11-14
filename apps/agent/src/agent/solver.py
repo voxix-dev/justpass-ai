@@ -166,8 +166,15 @@ async def _answer(
     # from its own first attempt, and keeps the feedback of the rounds before it.
     if earlier and body.feedback:
         prompt, history = feedback_message(body.feedback), checkpoints[max(earlier)]
+        logger.info("Round %s of job %s continues round %s", body.round, body.job_id, max(earlier))
     else:
         prompt, history = task_message(text, profile, feedback), None
+        logger.info(
+            "Round %s of job %s starts from the task and %d feedback",
+            body.round,
+            body.job_id,
+            len(feedback),
+        )
     result = await agent.run(
         prompt,
         model=model,

@@ -292,8 +292,11 @@ async def test_a_refused_document_is_retried_by_the_model(
 
 
 async def test_a_feedback_round_continues_the_conversation(
-    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    caplog: pytest.LogCaptureFixture,
 ):
+    caplog.set_level("INFO", logger="agent.solver")
     requests = use_model(lambda messages, info: text(f"Answer {len(prompts(messages))}"))
     job = run_body()
     first = await client.post("/run", json=job)
@@ -305,6 +308,7 @@ async def test_a_feedback_round_continues_the_conversation(
     assert len(sent) == 2
     assert "Solve x^2 = 4" in sent[0]
     assert "Show the check" in sent[1]
+    assert f"Round 2 of job {job['job_id']} continues round 1" in caplog.text
     assert any(
         isinstance(p, TextPart) and p.content == "Answer 1"
         for m in requests[1]
@@ -624,7 +628,9 @@ async def test_the_log_names_tools_and_tokens_but_not_the_key(
     use_model(script)
     caplog.set_level("INFO", logger="agent.solver")
     await client.post("/run", json=run_body())
-    line = next(r.getMessage() for r in caplog.records if r.name == "agent.solver")
+    lines = [r.getMessage() for r in caplog.records if r.name == "agent.solver"]
+    assert any("starts from the task and 0 feedback" in line for line in lines)
+    line = next(line for line in lines if "tokens in" in line)
     assert "['evaluate']" in line
     assert "tokens in" in line
     assert KEY not in caplog.text
