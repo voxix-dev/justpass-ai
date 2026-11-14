@@ -23,9 +23,25 @@ def test_a_dollar_block_opened_mid_line_starts_on_a_new_line():
     assert normalize_markdown("Zatem $$x\n=y$$.") == "Zatem \n$$\nx\n=y\n$$\n."
 
 
+def test_a_dollar_block_in_a_blockquote_stays_in_it():
+    text = "> $$\\boxed{\n> x\n> }$$\n"
+    assert normalize_markdown(text) == "> $$\n> \\boxed{\n> x\n> }\n> $$\n"
+
+
+def test_a_dollar_block_in_a_list_item_stays_in_it():
+    text = "1. $$\\boxed{\n   x\n   }$$\n"
+    assert normalize_markdown(text) == "1. $$\n   \\boxed{\n   x\n   }\n   $$\n"
+
+
 @pytest.mark.parametrize(
     "text",
-    ["A\n\n$$\nx\n=y\n$$\n\nB", "1. Krok\n\n   $$\n   x\n   =y\n   $$\n", "so $$x = 1$$ here"],
+    [
+        "A\n\n$$\nx\n=y\n$$\n\nB",
+        "1. Krok\n\n   $$\n   x\n   =y\n   $$\n",
+        "> $$\n> x\n> $$\n",
+        "- $$\n  x\n\n  y\n  $$\n",
+        "so $$x = 1$$ here",
+    ],
 )
 def test_well_formed_dollar_math_is_unchanged(text: str):
     assert normalize_markdown(text) == text

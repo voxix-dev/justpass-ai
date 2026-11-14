@@ -21,6 +21,10 @@ _SPAN = re.compile(
 )
 
 
+# Indent, blockquote markers and a list marker: what may precede a block's opening `$$`.
+_CONTAINER = re.compile(r"[ \t>]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)?")
+
+
 def _own_lines(match: re.Match[str]) -> str:
     """Put the `$$` of a multi-line block on lines of their own.
 
@@ -31,11 +35,20 @@ def _own_lines(match: re.Match[str]) -> str:
     if "\n" not in inner:
         return match[0]
     text, start, end = match.string, match.start(), match.end()
-    prefix = text[text.rfind("\n", 0, start) + 1 : start]
-    indent = prefix if prefix.isspace() else ""
-    before = "\n" if prefix and not indent else ""
-    after = "\n" if end < len(text) and text[end] != "\n" else ""
-    return f"{before}$$\n{indent}{inner.strip()}\n{indent}$${after}"
+    prefix = text[text.rfind("\n", 0, start) + 1 : start]  # what precedes the opening `$$`
+    head, rest = inner.split("\n", 1)  # head: text after the opening `$$`
+    body, tail = rest.rsplit("\n", 1) if "\n" in rest else (None, rest)  # tail: before closing
+    # Inserted lines continue the block's container: its indent, and its `>` inside a blockquote.
+    cont = tail[: len(tail) - len(tail.lstrip(" \t>" if ">" in prefix else " \t"))]
+    lines = [cont + head.strip()] if head.strip() else []
+    if body is not None:
+        lines.append(body)
+    if tail[len(cont) :].strip():
+        lines.append(cont + tail[len(cont) :].strip())
+    lines.append(cont + "$$")
+    before = "" if _CONTAINER.fullmatch(prefix) else "\n" + cont
+    after = "\n" + cont if end < len(text) and text[end] != "\n" else ""
+    return before + "$$\n" + "\n".join(lines) + after
 
 
 def _replace(match: re.Match[str]) -> str:
