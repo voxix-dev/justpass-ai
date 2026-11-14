@@ -764,30 +764,108 @@ async def test_the_subject_notes_are_in_the_first_message(
     assert "Notes on the student in math:\n\n```\nWrites in pencil\n```" in prompts(requests[0])[0]
 
 
-async def test_update_memory_sends_the_notes_to_the_context_api(
+def save_notes(**notes: object) -> Script:
+    """A script that calls update_memory once with these notes, then answers."""
+
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not tool_returns(messages):
+            return tool_call("update_memory", notes=notes)
+        return text("ok")
+
+    return script
+
+
+def saved_bodies(context_api: list[httpx2.Request]) -> list[dict[str, object]]:
+    return [json.loads(r.content) for r in context_api if r.url.path.endswith("/update_memory")]
+
+
+async def test_update_memory_adds_to_the_doc_and_keeps_the_earlier_notes(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    notes: dict[str, str | int],
+):
+    notes["subject_md"] = "- Writes in pencil\n- Wants every check"
+    requests = use_model(save_notes(scope="subject", add=["Show every step"]))
+    await client.post("/run", json=run_body(context=grant()))
+    result = tool_returns(requests[-1])["update_memory"]
+    assert "saved=True" in result
+    assert "- Show every step" in result
+    assert saved_bodies(context_api) == [
+        {
+            "scope": "subject",
+            "subject": None,
+            "content_md": "- Writes in pencil\n- Wants every check\n- Show every step",
+            "base_version": 5,
+        }
+    ]
+
+
+async def test_update_memory_keeps_a_doc_that_is_not_a_bullet_list(
     client: httpx2.AsyncClient,
     use_model: Callable[[Script], list[list[ModelMessage]]],
     context_api: list[httpx2.Request],
 ):
-    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        if not tool_returns(messages):
-            notes = {"scope": "subject", "content_md": "Show every step"}
-            return tool_call("update_memory", notes=notes)
-        return text("ok")
-
-    requests = use_model(script)
+    use_model(save_notes(scope="profile", add=["Prefers bold, not boxed"]))
     await client.post("/run", json=run_body(context=grant()))
-    assert "saved=True" in tool_returns(requests[-1])["update_memory"]
-    call = next(r for r in context_api if r.url.path.endswith("/update_memory"))
-    assert json.loads(call.content) == {
-        "scope": "subject",
-        "subject": None,
-        "content_md": "Show every step",
-        "base_version": 5,
-    }
+    assert [b["content_md"] for b in saved_bodies(context_api)] == [
+        "Likes short steps\n- Prefers bold, not boxed"
+    ]
 
 
-async def test_update_memory_schema_has_no_subject(
+async def test_update_memory_does_not_add_a_note_twice(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    notes: dict[str, str | int],
+):
+    notes["profile_md"] = "- Likes short steps"
+    use_model(save_notes(scope="profile", add=["likes short steps", "Uses a pen"]))
+    await client.post("/run", json=run_body(context=grant()))
+    assert [b["content_md"] for b in saved_bodies(context_api)] == [
+        "- Likes short steps\n- Uses a pen"
+    ]
+
+
+async def test_update_memory_removes_exactly_the_matched_note(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    notes: dict[str, str | int],
+):
+    notes["profile_md"] = "- Likes short steps\n- Uses a pen\n- Likes short steps in physics"
+    use_model(save_notes(scope="profile", remove=["Likes short steps"], add=["Likes long steps"]))
+    await client.post("/run", json=run_body(context=grant()))
+    assert [b["content_md"] for b in saved_bodies(context_api)] == [
+        "- Uses a pen\n- Likes short steps in physics\n- Likes long steps"
+    ]
+
+
+async def test_a_remove_that_matches_no_note_is_retried_and_nothing_is_saved(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+):
+    requests = use_model(save_notes(scope="profile", remove=["Likes boxes"], add=["Uses a pen"]))
+    await client.post("/run", json=run_body(context=grant()))
+    result = tool_returns(requests[-1])["update_memory"]
+    assert "Likes boxes" in result
+    assert "```\nLikes short steps\n```" in result
+    assert saved_bodies(context_api) == []
+
+
+async def test_update_memory_with_nothing_to_change_is_retried(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+):
+    requests = use_model(save_notes(scope="profile"))
+    await client.post("/run", json=run_body(context=grant()))
+    assert "Nothing to change" in tool_returns(requests[-1])["update_memory"]
+    assert saved_bodies(context_api) == []
+
+
+async def test_update_memory_schema_has_only_scope_add_and_remove(
     client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
 ):
     schemas: dict[str, dict[str, object]] = {}
@@ -799,7 +877,7 @@ async def test_update_memory_schema_has_no_subject(
     use_model(script)
     await client.post("/run", json=run_body())
     properties = cast(dict[str, object], schemas["update_memory"]["properties"])
-    assert set(properties) == {"scope", "content_md"}
+    assert set(properties) == {"scope", "add", "remove"}
 
 
 async def test_notes_that_are_too_long_are_retried(
@@ -807,16 +885,10 @@ async def test_notes_that_are_too_long_are_retried(
     use_model: Callable[[Script], list[list[ModelMessage]]],
     context_api: list[httpx2.Request],
 ):
-    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        if len(messages) == 1:
-            notes = {"scope": "profile", "content_md": "x" * 10_001}
-            return tool_call("update_memory", notes=notes)
-        return text("ok")
-
-    requests = use_model(script)
+    requests = use_model(save_notes(scope="profile", add=["x" * 501]))
     await client.post("/run", json=run_body(context=grant()))
     assert "string_too_long" in tool_returns(requests[-1])["update_memory"]
-    assert not any(r.url.path.endswith("/update_memory") for r in context_api)
+    assert saved_bodies(context_api) == []
 
 
 async def test_memory_tools_read_search_and_list(
@@ -876,45 +948,53 @@ async def test_a_continued_round_shows_the_current_notes(
     assert "Notes on the student in math now:\n\n```\nNow uses a pen\n```" in sent[1]
 
 
-async def test_a_save_over_notes_that_changed_is_refused_until_the_model_merges(
+async def test_a_save_over_notes_that_changed_is_applied_again_on_the_fresh_doc(
     client: httpx2.AsyncClient,
     use_model: Callable[[Script], list[list[ModelMessage]]],
     context_api: list[httpx2.Request],
     notes: dict[str, str | int],
 ):
     def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        saves = [
-            p
-            for m in messages
-            if isinstance(m, ModelRequest)
-            for p in m.parts
-            if isinstance(p, ToolReturnPart) and p.tool_name == "update_memory"
-        ]
-        if not saves:
-            # Another job replaces the doc after this round read it.
-            notes.update(profile_md="Changed elsewhere", profile_version=4)
-            return tool_call("update_memory", notes={"scope": "profile", "content_md": "Mine"})
-        if len(saves) == 1:
-            return tool_call(
-                "update_memory", notes={"scope": "profile", "content_md": "Changed elsewhere, mine"}
-            )
+        if not tool_returns(messages):
+            # Another job changes the doc after this round read it.
+            notes.update(profile_md="- Likes short steps\n- Uses a pen", profile_version=4)
+            return tool_call("update_memory", notes={"scope": "profile", "add": ["Mine"]})
         return text("ok")
 
     requests = use_model(script)
     await client.post("/run", json=run_body(context=grant()))
-    refused, saved = (
-        p.content
-        for m in requests[-1]
-        if isinstance(m, ModelRequest)
-        for p in m.parts
-        if isinstance(p, ToolReturnPart) and p.tool_name == "update_memory"
-    )
-    assert "saved=False" in str(refused)
-    assert "```\\nChanged elsewhere\\n```" in str(refused)
-    assert "saved=True" in str(saved)
-    sent = [json.loads(r.content) for r in context_api if r.url.path.endswith("/update_memory")]
+    sent = saved_bodies(context_api)
     assert [s["base_version"] for s in sent] == [3, 4]
-    assert notes["profile_md"] == "Changed elsewhere, mine"
+    assert notes["profile_md"] == "- Likes short steps\n- Uses a pen\n- Mine"
+    assert "saved=True" in tool_returns(requests[-1])["update_memory"]
+
+
+async def test_a_save_that_keeps_finding_the_doc_changed_gives_up_after_three_tries(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    notes: dict[str, str | int],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    real = ContextClient.get_profile
+
+    async def busy(self: ContextClient) -> Profile:
+        profile = await real(self)
+        notes["profile_version"] = int(notes["profile_version"]) + 1  # changed again meanwhile
+        return profile
+
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not tool_returns(messages):
+            notes["profile_version"] = 4
+            monkeypatch.setattr(ContextClient, "get_profile", busy)
+            return tool_call("update_memory", notes={"scope": "profile", "add": ["Mine"]})
+        return text("ok")
+
+    requests = use_model(script)
+    await client.post("/run", json=run_body(context=grant()))
+    result = tool_returns(requests[-1])["update_memory"]
+    assert "saved=False" in result
+    assert len(saved_bodies(context_api)) == 3
 
 
 async def test_a_continued_round_tells_the_model_that_cleared_notes_are_gone(

@@ -11,11 +11,11 @@ import asyncio
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 import httpx2
-from pydantic import BaseModel, Field, SecretStr, ValidationError
+from pydantic import BaseModel, Field, SecretStr, StringConstraints, ValidationError
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models import Model
@@ -57,6 +57,7 @@ REASONING: OpenRouterReasoning = {"max_tokens": 4_000}  # bounds the thinking be
 MAX_OUTPUT_TOKENS = 8_000  # reasoning and answer together, so above the reasoning budget
 MODEL_TIMEOUT_SECONDS = 60  # one request to the model
 ROUND_TIMEOUT_SECONDS = 180  # a whole round, all its requests
+MAX_SAVE_ATTEMPTS = 3  # a notes save that finds the doc changed meanwhile applies again
 MAX_MODEL_REQUESTS = 25  # one round: a model that loops on its tools is stopped here
 
 MAX_JOBS = 64  # conversations remembered; the oldest go first
@@ -69,13 +70,16 @@ MEMORY_UNAVAILABLE = "Memory is unavailable in this round."
 class Deps:
     """What the tools reach: the Context API of this round, or None when there is none.
 
-    versions holds the version of each notes doc as the model last saw it, which a save is based on.
-    subject is the job's subject, so a read of it refreshes the version.
+    versions and notes hold the version and the text of each notes doc as last known, which a save
+    is based on. subject is the job's subject, so a read of it refreshes them.
     """
 
     context: ContextClient | None
     versions: dict[Literal["profile", "subject"], int] = field(
         default_factory=lambda: dict[Literal["profile", "subject"], int]()
+    )
+    notes: dict[Literal["profile", "subject"], str] = field(
+        default_factory=lambda: dict[Literal["profile", "subject"], str]()
     )
     subject: str | None = None
 
@@ -116,8 +120,11 @@ class MemoryResult(BaseModel):
     message: str
 
 
+Note = Annotated[str, StringConstraints(max_length=500)]  # a NUL is refused by the save
+
+
 class NotesInput(BaseModel):
-    """Notes to save: the profile doc, or the subject doc of this job."""
+    """Notes to add to or remove from the profile doc, or the subject doc of this job."""
 
     scope: Literal["profile", "subject"] = Field(
         description=(
@@ -126,49 +133,108 @@ class NotesInput(BaseModel):
             " in it)."
         )
     )
-    content_md: Text = Field(max_length=10_000)
+    add: list[Note] = Field(
+        default_factory=list,
+        max_length=20,
+        description="New lasting facts, one per item, each a short sentence.",
+    )
+    remove: list[Note] = Field(
+        default_factory=list,
+        max_length=20,
+        description=(
+            "Earlier notes to drop because they are wrong or replaced, copied exactly as shown."
+        ),
+    )
+
+
+def _note_text(line: str) -> str:
+    return line[2:].strip() if line.startswith("- ") else line.strip()
+
+
+def _apply_notes(body: str, add: list[str], remove: list[str]) -> tuple[str, list[str]]:
+    """Apply the changes to a doc of bullet lines: the new doc, and the removals that match none."""
+    dropped = {item.strip().casefold() for item in remove}
+    lines = [line.rstrip() for line in body.splitlines() if line.strip()]
+    present = {_note_text(line).casefold() for line in lines}
+    unmatched = [item for item in remove if item.strip().casefold() not in present]
+    kept = [line for line in lines if _note_text(line).casefold() not in dropped]
+    seen = {_note_text(line).casefold() for line in kept}
+    for item in add:
+        text = " ".join(item.split())
+        if text and text.casefold() not in seen:
+            kept.append(f"- {text}")
+            seen.add(text.casefold())
+    return "\n".join(kept), unmatched
+
+
+def _shown(body: str) -> str:
+    return fence(body) if body else "(none)"
+
+
+async def _refresh_notes(deps: Deps, context: ContextClient, scope: Literal["profile", "subject"]):
+    if scope == "profile":
+        current = await context.get_profile()
+        deps.versions["profile"] = current.profile_version
+        deps.notes["profile"] = current.profile_md
+    else:
+        memory = await context.get_subject_memory()
+        deps.versions["subject"] = memory.version
+        deps.notes["subject"] = memory.content_md
 
 
 async def update_memory(ctx: RunContext[Deps], notes: NotesInput) -> MemoryResult:
-    """Save lasting notes on the student: scope "profile", or scope "subject" (this job's subject).
+    """Add and remove lasting notes on the student: scope "profile", or "subject" (this job's).
 
-    This REPLACES the whole doc, so include the earlier notes you keep (read_memory shows them).
-    Each fact goes in one doc only: never copy notes from one doc into the other.
-    Save only what outlasts this task: how the student writes, the teacher's rules, mistakes they
-    repeat, what they prefer. Never the task's content or its answer. Keep it short: 2k tokens.
+    Give only the facts to add and the earlier notes to remove (read_memory shows them); the rest
+    of the doc stays. Each fact goes in one doc only: never copy notes from one doc into the other.
+    Add only what outlasts this task: how the student writes, the teacher's rules, mistakes they
+    repeat, what they prefer. Never the task's content or its answer. Keep notes short.
     """
     deps = ctx.deps
     context = deps.context
     if context is None:
         return MemoryResult(saved=False, message=MEMORY_UNAVAILABLE)
-    try:
-        saved = await context.update_memory(
-            notes.scope, None, notes.content_md, deps.versions.get(notes.scope, 0)
-        )
-    except ValidationError as error:
-        reasons = "; ".join(f"{e['loc'][-1]}: {e['msg']}" for e in error.errors())
-        raise ModelRetry(f"The notes were refused ({reasons}). Fix them and call again.") from error
-    except httpx2.HTTPStatusError as error:
-        if error.response.status_code != 412:
-            raise
-        if notes.scope == "profile":
-            current = await context.get_profile()
-            deps.versions["profile"] = current.profile_version
-            current_md = current.profile_md
-        else:
-            memory = await context.get_subject_memory()
-            deps.versions["subject"] = memory.version
-            current_md = memory.content_md
+    scope = notes.scope
+    if not notes.add and not notes.remove:
+        raise ModelRetry("Nothing to change: give notes to add, or earlier notes to remove.")
+    for _ in range(MAX_SAVE_ATTEMPTS):
+        body = deps.notes.get(scope, "")
+        new_body, unmatched = _apply_notes(body, notes.add, notes.remove)
+        if unmatched:
+            raise ModelRetry(
+                f"These notes to remove are not in the {scope} notes: {unmatched!r}. "
+                f"The notes are now:\n\n{_shown(body)}\n\n"
+                "Copy the notes to remove exactly, and call again."
+            )
+        if new_body == "\n".join(line for line in body.splitlines() if line.strip()):
+            return MemoryResult(
+                saved=True,
+                message=f"Nothing changed, the {scope} notes already are:\n\n{_shown(body)}",
+            )
+        try:
+            saved = await context.update_memory(scope, None, new_body, deps.versions.get(scope, 0))
+        except ValidationError as error:
+            reasons = "; ".join(f"{e['loc'][-1]}: {e['msg']}" for e in error.errors())
+            raise ModelRetry(
+                f"The notes were refused ({reasons}). Fix them and call again."
+            ) from error
+        except httpx2.HTTPStatusError as error:
+            if error.response.status_code != 412:
+                raise
+            await _refresh_notes(deps, context, scope)  # changed meanwhile: apply again on it
+            continue
+        deps.versions[scope] = saved.version
+        deps.notes[scope] = saved.content_md
         return MemoryResult(
-            saved=False,
-            message=(
-                f"Not saved: the {notes.scope} notes changed since you read them. "
-                f"They are now:\n\n{fence(current_md) if current_md else '(none)'}\n\n"
-                "Merge your change into them and call update_memory again."
-            ),
+            saved=True, message=f"Saved. The {scope} notes are now:\n\n{_shown(saved.content_md)}"
         )
-    deps.versions[notes.scope] = saved.version
-    return MemoryResult(saved=True, message=f"Saved the {notes.scope} notes.")
+    return MemoryResult(
+        saved=False,
+        message=(
+            f"Not saved: the {scope} notes kept changing meanwhile. "
+            f"They are now:\n\n{_shown(deps.notes.get(scope, ''))}\n\nCall update_memory again."
+        ),
+    )
 
 
 class Unavailable(BaseModel):
@@ -184,6 +250,7 @@ async def read_memory(ctx: RunContext[Deps], request: GetSubjectMemory) -> Memor
     memory = await ctx.deps.context.get_subject_memory(request.subject)
     if request.subject is None or request.subject == ctx.deps.subject:
         ctx.deps.versions["subject"] = memory.version
+        ctx.deps.notes["subject"] = memory.content_md
     return memory
 
 
@@ -332,6 +399,7 @@ async def _answer(
     deps = Deps(context)
     if profile is not None and subject_memory is not None:
         deps.versions = {"profile": profile.profile_version, "subject": subject_memory.version}
+        deps.notes = {"profile": profile.profile_md, "subject": subject_memory.content_md}
         deps.subject = profile.subject
     result = await agent.run(
         prompt,
