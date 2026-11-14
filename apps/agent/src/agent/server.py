@@ -1,9 +1,8 @@
 """The HTTP server inside a Substrate actor. The actor runs one job, one POST /run per round.
 
-A round that carries an OpenRouter key and no feedback goes to the model (solver.py), which works
-from the task text alone. A feedback round with a key gets the fixed sample for now. A round
-without a key gets a fake: it waits a while and answers with a fixed solution, so local
-development, the tests and the cluster check run with no model and no cost.
+A round that carries an OpenRouter key goes to the model (solver.py). One without a key gets a
+fake: it waits a while and answers with a fixed solution, so local development, the tests and the
+cluster check run with no model and no cost.
 """
 
 import asyncio
@@ -135,8 +134,6 @@ async def _solve_with_context(grant_url: str, token: str, round_number: int) -> 
 
 async def solve(body: AgentRun) -> AgentAnswer:
     if body.openrouter_key is not None:
-        if body.round > 1 or body.feedback:
-            return AgentAnswer(answer=_answer(_feedback_of(body)))  # the model comes later
         return await solve_with_model(body)
     await asyncio.sleep(SOLVE_SECONDS)
     if body.context:
@@ -203,8 +200,7 @@ async def run(body: AgentRun) -> StreamingResponse:
     body and parses it works unchanged, while one that watches the stream can tell the agent is
     alive. If the work raises, the stream ends without JSON and the caller counts a failed attempt.
 
-    A round with an `openrouter_key` and no feedback is answered by the model, one with feedback by
-    the fixed sample. Without a key, the whole word "fail"
+    A round with an `openrouter_key` is answered by the model. Without one, the whole word "fail"
     in the task, ignoring case, returns an answer of None, and feedback is shown in the answer, in a
     fenced block. A second call for a round that is running or done under the
     same lease joins that run instead of starting another; a call under a new lease starts a new
