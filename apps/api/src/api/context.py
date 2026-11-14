@@ -11,7 +11,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -111,13 +111,16 @@ async def _lock_current(session: AsyncSession, agent: Agent) -> Job:
     return job
 
 
-async def _memory(session: AsyncSession, user_id: str, subject: str | None) -> str:
-    body = await session.scalar(
-        select(MemoryDoc.body).where(
-            MemoryDoc.user_id == user_id, MemoryDoc.subject.is_not_distinct_from(subject)
+async def _memory(session: AsyncSession, user_id: str, subject: str | None) -> tuple[str, int]:
+    """The doc's body and version, or ("", 0) when there is none."""
+    row = (
+        await session.execute(
+            select(MemoryDoc.body, MemoryDoc.version).where(
+                MemoryDoc.user_id == user_id, MemoryDoc.subject.is_not_distinct_from(subject)
+            )
         )
-    )
-    return body or ""
+    ).one_or_none()
+    return (row.body, row.version) if row else ("", 0)
 
 
 @router.post("/get_task")
@@ -195,35 +198,62 @@ async def write_artifact(args: WriteArtifact, agent: Caller, session: Session) -
 @router.post("/get_profile")
 async def get_profile(args: GetProfile, agent: Caller, session: Session) -> Profile:
     job = agent.job
+    profile_md, version = await _memory(session, job.user_id, None)
     return Profile(
         level=job.level,
         language=job.language,
         subject=job.subject,
-        profile_md=await _memory(session, job.user_id, None),
+        profile_md=profile_md,
+        profile_version=version,
     )
 
 
 @router.post("/get_subject_memory")
 async def get_subject_memory(args: GetSubjectMemory, agent: Caller, session: Session) -> Memory:
     subject = args.subject or agent.job.subject
-    return Memory(subject=subject, content_md=await _memory(session, agent.job.user_id, subject))
+    content_md, version = await _memory(session, agent.job.user_id, subject)
+    return Memory(subject=subject, content_md=content_md, version=version)
 
 
 @router.post("/update_memory")
 async def update_memory(args: UpdateMemory, agent: Caller, session: Session) -> Memory:
-    """scope=profile ignores `subject`; scope=subject defaults to the job's subject."""
+    """scope=profile ignores `subject`; scope=subject defaults to the job's subject.
+
+    Compare-and-set: 412 unless the doc is still at `base_version` (0: it does not exist yet), so
+    a job running at the same time cannot lose its notes to this write.
+    """
     job = await _lock_current(session, agent)
     subject = (args.subject or job.subject) if args.scope == "subject" else None
-    await session.execute(
-        insert(MemoryDoc)
-        .values(user_id=job.user_id, subject=subject, body=args.content_md)
-        .on_conflict_do_update(
-            constraint="uq_memory_docs_user_id_subject",
-            set_={"body": args.content_md, "updated_at": func.clock_timestamp()},
+    if args.base_version == 0:
+        stmt = (
+            insert(MemoryDoc)
+            .values(user_id=job.user_id, subject=subject, body=args.content_md)
+            .on_conflict_do_nothing(constraint="uq_memory_docs_user_id_subject")
+            .returning(MemoryDoc.version)
         )
-    )
+    else:
+        stmt = (
+            update(MemoryDoc)
+            .where(
+                MemoryDoc.user_id == job.user_id,
+                MemoryDoc.subject.is_not_distinct_from(subject),
+                MemoryDoc.version == args.base_version,
+            )
+            .values(
+                body=args.content_md,
+                version=MemoryDoc.version + 1,
+                updated_at=func.clock_timestamp(),
+            )
+            .returning(MemoryDoc.version)
+        )
+    version = await session.scalar(stmt)
+    if version is None:
+        raise HTTPException(
+            status.HTTP_412_PRECONDITION_FAILED,
+            "The notes changed since you read them. Read them again and merge your change.",
+        )
     await session.commit()
-    return Memory(subject=subject, content_md=args.content_md)
+    return Memory(subject=subject, content_md=args.content_md, version=version)
 
 
 @router.post("/list_history")
@@ -252,4 +282,4 @@ async def list_history(args: ListHistory, agent: Caller, session: Session) -> li
 async def search_history(args: SearchHistory, agent: Caller, session: Session) -> list[Memory]:
     """Search the student's memory docs."""
     docs = await search_memory(session, agent.job.user_id, args.query)
-    return [Memory(subject=doc.subject, content_md=doc.body) for doc in docs]
+    return [Memory(subject=doc.subject, content_md=doc.body, version=doc.version) for doc in docs]

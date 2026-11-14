@@ -34,6 +34,7 @@ def upgrade() -> None:
         sa.Column("user_id", sa.String(128), nullable=False),
         sa.Column("subject", sa.String(100)),
         sa.Column("body", sa.String(), nullable=False),
+        sa.Column("version", sa.Integer(), server_default="1", nullable=False),
         sa.Column("tsv", postgresql.TSVECTOR(), sa.Computed(TSV, persisted=True), nullable=False),
         sa.Column(
             "updated_at",

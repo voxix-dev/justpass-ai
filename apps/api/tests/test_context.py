@@ -24,7 +24,11 @@ BODIES: dict[str, dict[str, Any]] = {
     "get_subject_memory": {},
     "list_history": {},
     "search_history": {"query": "fractions"},
-    "update_memory": {"scope": "profile", "content_md": "Likes worked examples."},
+    "update_memory": {
+        "scope": "profile",
+        "content_md": "Likes worked examples.",
+        "base_version": 0,
+    },
     "read_artifact": {"artifact_id": str(uuid.uuid4())},
     "write_artifact": {"kind": "draft", "title": "Notes", "content_md": "# Notes"},
 }
@@ -277,7 +281,8 @@ async def test_writes_are_refused_for_a_lease_that_was_taken_over(
     await session.flush()
 
     assert (await call(client, tool, old)).status_code == 409
-    assert (await call(client, tool, auth(job, lease=new_lease))).status_code == 200
+    body = BODIES[tool] | ({"base_version": 1} if tool == "update_memory" else {})
+    assert (await call(client, tool, auth(job, lease=new_lease), **body)).status_code == 200
     # Reads only show the job's own data, so the old run may still make them.
     assert (await call(client, "get_task", old)).status_code == 200
 
@@ -293,6 +298,7 @@ async def test_get_profile(client: httpx2.AsyncClient, session: AsyncSession):
         "language": "pl",
         "subject": "math",
         "profile_md": "Writes informally.",
+        "profile_version": 1,
     }
 
 
@@ -303,45 +309,98 @@ async def test_get_subject_memory(client: httpx2.AsyncClient, session: AsyncSess
     session.add(MemoryDoc(user_id="bob", subject="math", body="Not alice."))
     await session.flush()
     mine = await call(client, "get_subject_memory", auth(job))
-    assert mine.json() == {"subject": "math", "content_md": "Weak at fractions."}
+    assert mine.json() == {"subject": "math", "content_md": "Weak at fractions.", "version": 1}
     empty = await call(client, "get_subject_memory", auth(job), subject="history")
-    assert empty.json() == {"subject": "history", "content_md": ""}
+    assert empty.json() == {"subject": "history", "content_md": "", "version": 0}
 
 
-async def test_update_memory_upserts_the_profile_and_subject_docs(
+async def test_update_memory_creates_and_replaces_the_profile_and_subject_docs(
     client: httpx2.AsyncClient, session: AsyncSession
 ):
     job = await add_job(session, "alice")
-    for text in ("first", "second"):
-        response = await call(client, "update_memory", auth(job), scope="profile", content_md=text)
-        assert response.json() == {"subject": None, "content_md": text}
-    await call(client, "update_memory", auth(job), scope="subject", content_md="math notes")
+    for base, text in ((0, "first"), (1, "second")):
+        response = await call(
+            client, "update_memory", auth(job), scope="profile", content_md=text, base_version=base
+        )
+        assert response.json() == {"subject": None, "content_md": text, "version": base + 1}
     await call(
-        client, "update_memory", auth(job), scope="subject", subject="art", content_md="art notes"
+        client, "update_memory", auth(job), scope="subject", content_md="math", base_version=0
     )
-    await call(client, "update_memory", auth(job), scope="subject", content_md="math notes 2")
+    await call(
+        client,
+        "update_memory",
+        auth(job),
+        scope="subject",
+        subject="art",
+        content_md="art notes",
+        base_version=0,
+    )
+    await call(
+        client, "update_memory", auth(job), scope="subject", content_md="math 2", base_version=1
+    )
     docs = await session.execute(
-        select(MemoryDoc.subject, MemoryDoc.body).where(MemoryDoc.user_id == "alice")
+        select(MemoryDoc.subject, MemoryDoc.body, MemoryDoc.version).where(
+            MemoryDoc.user_id == "alice"
+        )
     )
     assert sorted(docs.all(), key=lambda row: row[0] or "") == [
-        (None, "second"),
-        ("art", "art notes"),
-        ("math", "math notes 2"),
+        (None, "second", 2),
+        ("art", "art notes", 1),
+        ("math", "math 2", 2),
     ]
+
+
+async def test_update_memory_refuses_a_stale_base_version(
+    client: httpx2.AsyncClient, session: AsyncSession
+):
+    job = await add_job(session, "alice")
+    session.add(MemoryDoc(user_id="alice", body="notes", version=3))
+    await session.flush()
+    for base in (0, 2, 4):
+        response = await call(
+            client, "update_memory", auth(job), scope="profile", content_md="new", base_version=base
+        )
+        assert response.status_code == 412
+    assert (await call(client, "get_profile", auth(job))).json()["profile_md"] == "notes"
+    response = await call(
+        client, "update_memory", auth(job), scope="profile", content_md="new", base_version=3
+    )
+    assert response.json()["version"] == 4
+
+
+async def test_versions_count_up_from_zero(client: httpx2.AsyncClient, session: AsyncSession):
+    job = await add_job(session, "alice")
+    assert (await call(client, "get_profile", auth(job))).json()["profile_version"] == 0
+    for base in (0, 1):
+        await call(
+            client,
+            "update_memory",
+            auth(job),
+            scope="profile",
+            content_md="fractions",
+            base_version=base,
+        )
+        got = (await call(client, "get_profile", auth(job))).json()
+        assert got["profile_version"] == base + 1
+        assert (await call(client, "search_history", auth(job))).json()[0]["version"] == base + 1
+    memory = await call(client, "get_subject_memory", auth(job))
+    assert memory.json()["version"] == 0
 
 
 @pytest.mark.parametrize(
     "body",
     [
-        {"scope": "profile", "content_md": "x" * 10_001},
-        {"scope": "profile", "content_md": "x\u0000"},
-        {"scope": "subject", "subject": "x\u0000", "content_md": "x"},
-        {"scope": "subject", "subject": "", "content_md": "x"},
-        {"scope": "team", "content_md": "x"},
+        {"scope": "profile", "content_md": "x" * 10_001, "base_version": 0},
+        {"scope": "profile", "content_md": "x\u0000", "base_version": 0},
+        {"scope": "subject", "subject": "x\u0000", "content_md": "x", "base_version": 0},
+        {"scope": "subject", "subject": "", "content_md": "x", "base_version": 0},
+        {"scope": "team", "content_md": "x", "base_version": 0},
+        {"scope": "profile", "content_md": "x", "base_version": -1},
+        {"scope": "profile", "content_md": "x"},
     ],
 )
 async def test_update_memory_refuses_bad_bodies(
-    client: httpx2.AsyncClient, session: AsyncSession, body: dict[str, str]
+    client: httpx2.AsyncClient, session: AsyncSession, body: dict[str, Any]
 ):
     job = await add_job(session, "alice")
     assert (await call(client, "update_memory", auth(job), **body)).status_code == 422
@@ -372,7 +431,7 @@ async def test_search_history_stays_within_one_student(
     session.add(MemoryDoc(user_id="bob", subject="math", body="Fractions are easy for bob."))
     await session.flush()
     found = (await call(client, "search_history", auth(job))).json()
-    assert found == [{"subject": "math", "content_md": "Struggles with fractions."}]
+    assert found == [{"subject": "math", "content_md": "Struggles with fractions.", "version": 1}]
     assert (await call(client, "search_history", auth(job), query="x" * 201)).status_code == 422
     assert (await call(client, "search_history", auth(job), query="a\u0000")).status_code == 422
 

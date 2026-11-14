@@ -33,6 +33,9 @@ SYSTEM_PROMPT = r"""You solve a student's homework.
 """
 
 
+NONE = "(none)"
+
+
 def fence(text: str) -> str:
     """Put text in a fenced code block longer than any run of backticks inside it.
 
@@ -82,16 +85,18 @@ def task_message(
 def feedback_message(feedback: str, profile: Profile | None = None, subject_notes: str = "") -> str:
     """A later round, sent to the model that already has the job in its message history.
 
-    The notes may have changed since the first message, so the current ones come with it.
+    The notes may have changed since the first message, even been cleared, so the current state of
+    both comes with it.
     """
     parts = [
         f"The student asks for changes. Give the complete revised answer.\n\n{fence(feedback)}"
     ]
     if profile is not None:
-        if profile.profile_md:
-            parts.append(f"Notes on the student now:\n\n{fence(profile.profile_md)}")
-        if subject_notes:
-            parts.append(
-                f"Notes on the student in {profile.subject} now:\n\n{fence(subject_notes)}"
-            )
+        parts.append("These notes on the student replace any earlier notes in this conversation.")
+        profile_notes = fence(profile.profile_md) if profile.profile_md else NONE
+        parts.append(f"Notes on the student now:\n\n{profile_notes}")
+        parts.append(
+            f"Notes on the student in {profile.subject} now:\n\n"
+            f"{fence(subject_notes) if subject_notes else NONE}"
+        )
     return "\n\n".join(parts)

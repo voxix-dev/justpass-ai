@@ -10,7 +10,7 @@ rounds. A process that has lost it (a fresh actor) rebuilds the job from the tas
 import asyncio
 import logging
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 from uuid import UUID
 
@@ -34,6 +34,7 @@ from agent.formatting import normalize_markdown
 from agent.prompt import (
     SYSTEM_PROMPT,
     feedback_message,
+    fence,
     round_feedback,
     task_message,
 )
@@ -66,9 +67,17 @@ MEMORY_UNAVAILABLE = "Memory is unavailable in this round."
 
 @dataclass
 class Deps:
-    """What the tools reach: the Context API of this round, or None when there is none."""
+    """What the tools reach: the Context API of this round, or None when there is none.
+
+    versions holds the version of each notes doc as the model last saw it, which a save is based on.
+    subject is the job's subject, so a read of it refreshes the version.
+    """
 
     context: ContextClient | None
+    versions: dict[Literal["profile", "subject"], int] = field(
+        default_factory=lambda: dict[Literal["profile", "subject"], int]()
+    )
+    subject: str | None = None
 
 
 class DocumentResult(BaseModel):
@@ -121,13 +130,37 @@ async def update_memory(ctx: RunContext[Deps], notes: NotesInput) -> MemoryResul
     Save only what outlasts this task: how the student writes, the teacher's rules, mistakes they
     repeat, what they prefer. Never the task's content or its answer. Keep it short: 2k tokens.
     """
-    if ctx.deps.context is None:
+    deps = ctx.deps
+    context = deps.context
+    if context is None:
         return MemoryResult(saved=False, message=MEMORY_UNAVAILABLE)
     try:
-        await ctx.deps.context.update_memory(notes.scope, None, notes.content_md)
+        saved = await context.update_memory(
+            notes.scope, None, notes.content_md, deps.versions.get(notes.scope, 0)
+        )
     except ValidationError as error:
         reasons = "; ".join(f"{e['loc'][-1]}: {e['msg']}" for e in error.errors())
         raise ModelRetry(f"The notes were refused ({reasons}). Fix them and call again.") from error
+    except httpx2.HTTPStatusError as error:
+        if error.response.status_code != 412:
+            raise
+        if notes.scope == "profile":
+            current = await context.get_profile()
+            deps.versions["profile"] = current.profile_version
+            current_md = current.profile_md
+        else:
+            memory = await context.get_subject_memory()
+            deps.versions["subject"] = memory.version
+            current_md = memory.content_md
+        return MemoryResult(
+            saved=False,
+            message=(
+                f"Not saved: the {notes.scope} notes changed since you read them. "
+                f"They are now:\n\n{fence(current_md) if current_md else '(none)'}\n\n"
+                "Merge your change into them and call update_memory again."
+            ),
+        )
+    deps.versions[notes.scope] = saved.version
     return MemoryResult(saved=True, message=f"Saved the {notes.scope} notes.")
 
 
@@ -141,7 +174,10 @@ async def read_memory(ctx: RunContext[Deps], request: GetSubjectMemory) -> Memor
     """Read the notes on the student in a subject (default: this job's subject)."""
     if ctx.deps.context is None:
         return Unavailable()
-    return await ctx.deps.context.get_subject_memory(request.subject)
+    memory = await ctx.deps.context.get_subject_memory(request.subject)
+    if request.subject is None or request.subject == ctx.deps.subject:
+        ctx.deps.versions["subject"] = memory.version
+    return memory
 
 
 async def search_memory(
@@ -286,10 +322,14 @@ async def _answer(
             body.job_id,
             len(feedback),
         )
+    deps = Deps(context)
+    if profile is not None and subject_memory is not None:
+        deps.versions = {"profile": profile.profile_version, "subject": subject_memory.version}
+        deps.subject = profile.subject
     result = await agent.run(
         prompt,
         model=model,
-        deps=Deps(context),
+        deps=deps,
         message_history=history,
         usage_limits=UsageLimits(request_limit=MAX_MODEL_REQUESTS),
     )

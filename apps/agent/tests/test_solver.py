@@ -87,14 +87,21 @@ def task_rounds() -> list[dict[str, object]]:
 
 
 @pytest.fixture
-def notes() -> dict[str, str]:
+def notes() -> dict[str, str | int]:
     """The notes the fake Context API reports; a test may change them between rounds."""
-    return {"profile_md": "Likes short steps", "subject_md": "Writes in pencil"}
+    return {
+        "profile_md": "Likes short steps",
+        "profile_version": 3,
+        "subject_md": "Writes in pencil",
+        "subject_version": 5,
+    }
 
 
 @pytest.fixture
 def context_api(
-    monkeypatch: pytest.MonkeyPatch, task_rounds: list[dict[str, object]], notes: dict[str, str]
+    monkeypatch: pytest.MonkeyPatch,
+    task_rounds: list[dict[str, object]],
+    notes: dict[str, str | int],
 ) -> list[httpx2.Request]:
     seen: list[httpx2.Request] = []
     job_id = str(uuid4())
@@ -116,16 +123,34 @@ def context_api(
                 return httpx2.Response(200, json=task)
             case "get_profile":
                 profile = {"level": "high_school", "language": "pl", "subject": "math"}
-                return httpx2.Response(200, json=profile | {"profile_md": notes["profile_md"]})
-            case "get_subject_memory":
                 return httpx2.Response(
-                    200, json={"subject": "math", "content_md": notes["subject_md"]}
+                    200,
+                    json=profile
+                    | {
+                        "profile_md": notes["profile_md"],
+                        "profile_version": notes["profile_version"],
+                    },
                 )
+            case "get_subject_memory":
+                memory = {
+                    "subject": "math",
+                    "content_md": notes["subject_md"],
+                    "version": notes["subject_version"],
+                }
+                return httpx2.Response(200, json=memory)
             case "update_memory":
                 body = json.loads(request.content)
-                return httpx2.Response(
-                    200, json={"subject": body["subject"], "content_md": body["content_md"]}
-                )
+                scope = body["scope"]
+                if body["base_version"] != notes[f"{scope}_version"]:
+                    return httpx2.Response(412, json={"detail": "The notes changed"})
+                notes[f"{scope}_md"] = body["content_md"]
+                notes[f"{scope}_version"] = body["base_version"] + 1
+                saved = {
+                    "subject": body["subject"],
+                    "content_md": body["content_md"],
+                    "version": notes[f"{scope}_version"],
+                }
+                return httpx2.Response(200, json=saved)
             case "search_history":
                 return httpx2.Response(
                     200, json=[{"subject": "physics", "content_md": "Forgets units"}]
@@ -758,6 +783,7 @@ async def test_update_memory_sends_the_notes_to_the_context_api(
         "scope": "subject",
         "subject": None,
         "content_md": "Show every step",
+        "base_version": 5,
     }
 
 
@@ -837,7 +863,7 @@ async def test_a_continued_round_shows_the_current_notes(
     client: httpx2.AsyncClient,
     use_model: Callable[[Script], list[list[ModelMessage]]],
     context_api: list[httpx2.Request],
-    notes: dict[str, str],
+    notes: dict[str, str | int],
 ):
     requests = use_model(lambda messages, info: text("ok"))
     job = run_body(context=grant())
@@ -848,3 +874,61 @@ async def test_a_continued_round_shows_the_current_notes(
     assert "Likes short steps" in sent[0]
     assert "Notes on the student now:\n\n```\nNow prefers long proofs\n```" in sent[1]
     assert "Notes on the student in math now:\n\n```\nNow uses a pen\n```" in sent[1]
+
+
+async def test_a_save_over_notes_that_changed_is_refused_until_the_model_merges(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    notes: dict[str, str | int],
+):
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        saves = [
+            p
+            for m in messages
+            if isinstance(m, ModelRequest)
+            for p in m.parts
+            if isinstance(p, ToolReturnPart) and p.tool_name == "update_memory"
+        ]
+        if not saves:
+            # Another job replaces the doc after this round read it.
+            notes.update(profile_md="Changed elsewhere", profile_version=4)
+            return tool_call("update_memory", notes={"scope": "profile", "content_md": "Mine"})
+        if len(saves) == 1:
+            return tool_call(
+                "update_memory", notes={"scope": "profile", "content_md": "Changed elsewhere, mine"}
+            )
+        return text("ok")
+
+    requests = use_model(script)
+    await client.post("/run", json=run_body(context=grant()))
+    refused, saved = (
+        p.content
+        for m in requests[-1]
+        if isinstance(m, ModelRequest)
+        for p in m.parts
+        if isinstance(p, ToolReturnPart) and p.tool_name == "update_memory"
+    )
+    assert "saved=False" in str(refused)
+    assert "```\\nChanged elsewhere\\n```" in str(refused)
+    assert "saved=True" in str(saved)
+    sent = [json.loads(r.content) for r in context_api if r.url.path.endswith("/update_memory")]
+    assert [s["base_version"] for s in sent] == [3, 4]
+    assert notes["profile_md"] == "Changed elsewhere, mine"
+
+
+async def test_a_continued_round_tells_the_model_that_cleared_notes_are_gone(
+    client: httpx2.AsyncClient,
+    use_model: Callable[[Script], list[list[ModelMessage]]],
+    context_api: list[httpx2.Request],
+    notes: dict[str, str | int],
+):
+    requests = use_model(lambda messages, info: text("ok"))
+    job = run_body(context=grant())
+    await client.post("/run", json=job)
+    notes.update(profile_md="", subject_md="")
+    await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
+    followup = prompts(requests[1])[1]
+    assert "replace any earlier notes" in followup
+    assert "Notes on the student now:\n\n(none)" in followup
+    assert "Notes on the student in math now:\n\n(none)" in followup

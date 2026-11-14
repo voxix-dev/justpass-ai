@@ -81,9 +81,15 @@ class ContextClient:
         return Memory.model_validate_json(await self._call("get_subject_memory", arguments))
 
     async def update_memory(
-        self, scope: Literal["profile", "subject"], subject: str | None, content_md: str
+        self,
+        scope: Literal["profile", "subject"],
+        subject: str | None,
+        content_md: str,
+        base_version: int,
     ) -> Memory:
-        arguments = UpdateMemory(scope=scope, subject=subject, content_md=content_md)
+        arguments = UpdateMemory(
+            scope=scope, subject=subject, content_md=content_md, base_version=base_version
+        )
         return Memory.model_validate_json(await self._call("update_memory", arguments))
 
     async def list_history(self, limit: int = 10) -> list[HistoryItem]:

@@ -319,7 +319,7 @@ def context_transport(
                 )
             case "get_profile":
                 content = {"level": "high_school", "language": "en", "subject": "math"}
-                return httpx2.Response(200, json=content | {"profile_md": ""})
+                return httpx2.Response(200, json=content | {"profile_md": "", "profile_version": 0})
             case _:
                 return httpx2.Response(200, json={"artifact_id": str(uuid4())})
 
