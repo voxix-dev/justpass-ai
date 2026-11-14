@@ -18,7 +18,7 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage, UsageLimits
 
-from agent.context import ContextClient
+from agent.context import ContextClient, ContextError
 from agent.formatting import normalize_markdown
 from agent.models import Role, reported_cost, web_searches
 from agent.prompt import worker_message
@@ -34,6 +34,7 @@ WORKER_TIMEOUT_SECONDS = 180  # one worker call, as much as one general run had 
 ROUND_TOKEN_LIMIT = 300_000  # tokens of all roles in a round; past it no new work starts
 ORCHESTRATOR_REQUEST_LIMIT = 10
 PREVIEW_CHARS = 300
+TOKEN_LIMIT_REFUSAL = "Token limit of the round reached, finish now."
 
 ORCHESTRATOR_PROMPT = f"""You lead the work on a student's homework. You plan and delegate; you \
 never write the answer yourself.
@@ -97,6 +98,7 @@ class Result:
     round: int  # the round that produced it
     status: Literal["done", "failed"]
     text: str  # the worker's output, or the error type name
+    inputs: tuple[str, ...] = ()  # ids of the results the worker was given
 
 
 @dataclass
@@ -121,15 +123,17 @@ class RoundState:
     deadline: float  # asyncio loop time when the round ends
     calls: int = 0
     worker_tokens: int = 0
-    cost: float = 0  # USD of all worker runs this round, as OpenRouter reports it
     semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(MAX_PARALLEL))
     log_prefix: str = ""
 
 
 async def run_worker(state: RoundState, role: WorkerRole, brief: str, inputs: list[str]) -> Result:
-    """Run one worker on its brief, without history. A worker that raises gives a failed result."""
+    """Run one worker on its brief, without history. A worker that raises gives a failed result,
+    except for a failed Context API call, which is raised again."""
     # Take the id and keep the result before any await, so calls running at once never collide.
-    result = Result(f"r{len(state.results) + 1}", role, state.job.round, "failed", "Unfinished")
+    result = Result(
+        f"r{len(state.results) + 1}", role, state.job.round, "failed", "Unfinished", tuple(inputs)
+    )
     state.results[result.id] = result
     job = state.job
     message = worker_message(
@@ -145,16 +149,15 @@ async def run_worker(state: RoundState, role: WorkerRole, brief: str, inputs: li
     )  # its own, so failed runs count too and requests never reach the orchestrator's
     messages: list[ModelMessage] | None = None
     try:
-        async with state.semaphore:
-            remaining = state.deadline - asyncio.get_running_loop().time()
-            async with asyncio.timeout(min(WORKER_TIMEOUT_SECONDS, remaining)):
-                run = await WORKERS[role].run(
-                    message,
-                    model=state.models[role],
-                    deps=Deps(job.context, job.profile.subject if job.profile else None),
-                    usage=usage,
-                    usage_limits=UsageLimits(request_limit=REQUEST_LIMITS[role]),
-                )
+        remaining = state.deadline - asyncio.get_running_loop().time()
+        async with asyncio.timeout(min(WORKER_TIMEOUT_SECONDS, remaining)):
+            run = await WORKERS[role].run(
+                message,
+                model=state.models[role],
+                deps=Deps(job.context, job.profile.subject if job.profile else None),
+                usage=usage,
+                usage_limits=UsageLimits(request_limit=REQUEST_LIMITS[role]),
+            )
         text = normalize_markdown(run.output.replace("\x00", "")).strip()
         result.status, result.text = ("done", text) if text else ("failed", "EmptyAnswer")
         messages = run.new_messages()
@@ -165,6 +168,8 @@ async def run_worker(state: RoundState, role: WorkerRole, brief: str, inputs: li
             role, state.log_prefix, result.text, usage.requests,
             usage.input_tokens, usage.output_tokens,
         )  # fmt: skip
+        if isinstance(error, ContextError):
+            raise  # the Context API is down, so the round cannot be trusted to be complete
     finally:
         state.worker_tokens += usage.total_tokens
     # Accounting and logging come after the status is settled and can never change it.
@@ -173,7 +178,6 @@ async def run_worker(state: RoundState, role: WorkerRole, brief: str, inputs: li
             cost = reported_cost(messages)
         except TypeError, ValueError:
             cost = 0.0
-        state.cost += cost
         try:
             _log_worker(state, role, messages, usage, cost)
         except Exception as error:
@@ -207,6 +211,10 @@ def _refused(state: RoundState, role: WorkerRole, reason: str) -> WorkResult:
     return WorkResult(id=None, role=role, status="refused", preview=reason, length=0)
 
 
+def _over_token_limit(ctx: RunContext[RoundState]) -> bool:
+    return ctx.usage.total_tokens + ctx.deps.worker_tokens >= ROUND_TOKEN_LIMIT
+
+
 async def run_agent(ctx: RunContext[RoundState], delegation: Delegation) -> WorkResult:
     """Give a part of the work to a worker: general, math or writer.
 
@@ -216,15 +224,20 @@ async def run_agent(ctx: RunContext[RoundState], delegation: Delegation) -> Work
     role = delegation.role
     if state.calls >= MAX_CALLS:
         return _refused(state, role, "Limit of calls reached, finish now.")
-    if ctx.usage.total_tokens + state.worker_tokens >= ROUND_TOKEN_LIMIT:
-        return _refused(state, role, "Token limit of the round reached, finish now.")
+    if _over_token_limit(ctx):
+        return _refused(state, role, TOKEN_LIMIT_REFUSAL)
     unusable = [
         i for i in delegation.inputs if i not in state.results or state.results[i].status != "done"
     ]
     if unusable:
         return _refused(state, role, f"Unknown or failed inputs: {', '.join(unusable)}.")
     state.calls += 1  # before the await, so calls running at once count each other
-    result = await run_worker(state, role, delegation.brief, delegation.inputs)
+    async with state.semaphore:
+        # Workers that ran while this call waited may have taken the round past the limit.
+        if _over_token_limit(ctx):
+            state.calls -= 1  # refused calls are not counted
+            return _refused(state, role, TOKEN_LIMIT_REFUSAL)
+        result = await run_worker(state, role, delegation.brief, delegation.inputs)
     if result.status == "failed":
         return WorkResult(
             id=result.id, role=role, status="failed", preview=f"Failed: {result.text}.", length=0
@@ -239,7 +252,8 @@ async def run_agent(ctx: RunContext[RoundState], delegation: Delegation) -> Work
 
 
 # run_agent is not sequential, so the calls of one response run at once (pydantic-ai's default
-# 'parallel' mode); the semaphore bounds how many workers run.
+# 'parallel' mode); the semaphore in run_agent bounds how many workers run, and a call that waited
+# for it checks the token limit again before it starts.
 agent = Agent(
     deps_type=RoundState,
     output_type=Final,
@@ -283,12 +297,14 @@ def answer_of(final: Final, results: Mapping[str, Result]) -> str:
 
 
 def fallback_result(state: RoundState) -> Result | None:
-    """The newest done result of general or writer from this round, if there is one."""
-    for result in reversed(state.results.values()):
-        if (
-            result.round == state.job.round
-            and result.status == "done"
-            and result.role in ("general", "writer")
-        ):
-            return result
+    """The newest done general or writer result of this round, if it is a whole answer.
+
+    It is whole when every other result of the round, whatever its status, is among its inputs.
+    Otherwise it is only a part of a split task, and there is no fallback.
+    """
+    this_round = [r for r in state.results.values() if r.round == state.job.round]
+    for result in reversed(this_round):
+        if result.status == "done" and result.role in ("general", "writer"):
+            others = {r.id for r in this_round if r is not result}
+            return result if others <= set(result.inputs) else None
     return None

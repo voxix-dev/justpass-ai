@@ -20,9 +20,10 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import Model
 from pydantic_ai.models.function import AgentInfo, FunctionDef, FunctionModel
+from pydantic_ai.usage import RequestUsage
 
 from agent import server, solver
-from agent.context import ContextClient
+from agent.context import ContextClient, ContextStatusError
 from agent.models import MODEL_TIMEOUT_SECONDS, ROLE_MODELS, Role, make_models
 from agent.roles import REQUEST_LIMITS, general
 from agent.roles.curator import pick_subject
@@ -239,10 +240,17 @@ def notes() -> dict[str, str | int]:
 
 
 @pytest.fixture
+def context_failures() -> dict[str, int]:
+    """The Context API tools that fail, and the status each answers with."""
+    return {}
+
+
+@pytest.fixture
 def context_api(
     monkeypatch: pytest.MonkeyPatch,
     task_rounds: list[dict[str, object]],
     notes: dict[str, str | int],
+    context_failures: dict[str, int],
 ) -> list[httpx2.Request]:
     seen: list[httpx2.Request] = []
     job_id = str(uuid4())
@@ -250,6 +258,8 @@ def context_api(
     def handle(request: httpx2.Request) -> httpx2.Response:
         seen.append(request)
         tool = request.url.path.rsplit("/", 1)[-1]
+        if tool in context_failures:
+            return httpx2.Response(context_failures[tool], json={"detail": "down"})
         match tool:
             case "get_task":
                 task: dict[str, object] = {
@@ -1409,9 +1419,10 @@ async def test_the_results_the_orchestrator_lists_are_the_answer_in_order(
         return final_reply(info, "r2", "r1")
 
     def worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        return text(f"Worker {len(requests)}")
+        # Named by the brief: the two run at once, so their requests come in either order.
+        return text("Worker 1" if "Part one" in "".join(prompts(messages)) else "Worker 2")
 
-    requests = use_model(worker, lead)
+    use_model(worker, lead)
     response = await client.post("/run", json=run_body())
     assert response.json() == {"answer": "Worker 2\n\nWorker 1"}
 
@@ -1599,3 +1610,97 @@ async def test_a_fallback_that_fails_too_fails_the_round(
     use_model(worker, lead)
     with pytest.raises(RuntimeError, match="the fallback"):
         await client.post("/run", json=run_body())
+
+
+async def test_the_round_total_counts_the_responses_of_an_orchestrator_that_failed(
+    client: httpx2.AsyncClient, use_model: UseModel, caplog: pytest.LogCaptureFixture
+):
+    def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            return ModelResponse(
+                parts=[ToolCallPart("run_agent", {"role": "general", "brief": "Do it"})],
+                usage=RequestUsage(input_tokens=1000, output_tokens=500),
+            )
+        raise RuntimeError("orchestrator down")
+
+    def worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(
+            parts=[TextPart("Done")], usage=RequestUsage(input_tokens=100, output_tokens=20)
+        )
+
+    use_model(worker, lead)
+    caplog.set_level("INFO", logger="agent")
+    response = await client.post("/run", json=run_body())
+    assert response.json() == {"answer": "Done"}
+    assert "tokens 1620 (all roles)" in caplog.records[-1].getMessage()  # 1500 + 120
+
+
+async def test_a_context_api_call_that_fails_in_a_worker_fails_the_round(
+    use_model: UseModel,
+    context_api: list[httpx2.Request],
+    context_failures: dict[str, int],
+):
+    context_failures["write_artifact"] = 500
+
+    def worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not tool_returns(messages):
+            return tool_call("write_document", title="Study sheet", content_md="# Roots")
+        return text("See the sheet.")
+
+    use_model(worker)
+    job = AgentRun(
+        job_id=uuid4(),
+        round=1,
+        text="Solve",
+        openrouter_key=SecretStr(KEY),
+        context=ContextGrant(url="http://api:8000", token="tok"),
+    )
+    with pytest.raises(ContextStatusError):
+        await solver.solve_with_model(job)
+
+
+async def test_a_fallback_drops_the_checkpoint_of_the_attempt_it_replaces(
+    client: httpx2.AsyncClient,
+    use_model: UseModel,
+    context_api: list[httpx2.Request],
+    caplog: pytest.LogCaptureFixture,
+):
+    failing = False
+
+    def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if failing:
+            raise RuntimeError("orchestrator down")
+        return default_orchestrator(messages, info)
+
+    use_model(lambda messages, info: text("ok"), lead)
+    caplog.set_level("INFO", logger="agent.solver")
+    job = run_body(context=grant())
+    job_id = UUID(str(job["job_id"]))
+    # Lease A saves a checkpoint, but its answer never reaches the API.
+    await client.post("/run", json={**job, "lease_id": str(uuid4())})
+    assert 1 in solver.histories[job_id]
+    # Round 1 runs again under lease B, which answers with the fallback.
+    failing = True
+    await client.post("/run", json={**job, "lease_id": str(uuid4())})
+    assert 1 not in solver.histories.get(job_id, {})
+    failing = False
+    await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
+    assert f"Round 2 of job {job['job_id']} starts from the task" in caplog.text
+    assert "continues round 1" not in caplog.text
+
+
+async def test_a_task_split_between_workers_is_not_answered_by_one_part(
+    client: httpx2.AsyncClient, use_model: UseModel
+):
+    def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            return two_parts(messages, info)
+        raise RuntimeError("orchestrator down")
+
+    def worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        whole = "Answer the whole task." in prompts(messages)[0]
+        return text("The whole answer" if whole else "One part")
+
+    use_model(worker, lead)
+    response = await client.post("/run", json=run_body())
+    assert response.json() == {"answer": "The whole answer"}

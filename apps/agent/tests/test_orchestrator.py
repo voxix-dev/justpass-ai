@@ -15,6 +15,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import Model
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+from agent.context import ContextClient, ContextError
 from agent.models import Role
 from agent.roles import orchestrator
 from agent.roles.orchestrator import (
@@ -141,7 +142,7 @@ async def test_a_delegation_reaches_the_worker_with_brief_job_and_full_inputs():
     )
     result = await orchestrate("Task", None, s.state)
     assert result.output == Final(answer=["r2"])
-    assert s.state.results["r2"] == Result("r2", "writer", 2, "done", "Writer")
+    assert s.state.results["r2"] == Result("r2", "writer", 2, "done", "Writer", ("r1",))
     prompt = prompt_of(s.workers["writer"].requests[0])
     for part in (
         "Make it shorter",
@@ -300,18 +301,43 @@ async def test_the_orchestrator_sees_only_the_preview_of_a_long_result():
     assert s.state.results["r1"].text == long
 
 
-def test_fallback_picks_the_newest_done_general_or_writer_result_of_this_round():
-    results = {
-        "r1": Result("r1", "general", 1, "done", "Round 1"),
-        "r2": Result("r2", "general", 2, "done", "Older"),
-        "r3": Result("r3", "writer", 2, "done", "Newer"),
-        "r4": Result("r4", "math", 2, "done", "Math"),
-        "r5": Result("r5", "writer", 2, "failed", "TimeoutError"),
-    }
-    job = Job("Task", None, "", [], None, 2)
-    state = RoundState(job, {}, results, 0)
-    assert fallback_result(state) is results["r3"]
+def fallback_state(*results: Result) -> RoundState:
+    return RoundState(Job("Task", None, "", [], None, 2), {}, {r.id: r for r in results}, 0)
+
+
+def test_fallback_of_a_single_whole_result_is_that_result():
+    results = [
+        Result("r1", "general", 1, "done", "Round 1"),
+        Result("r2", "general", 2, "done", "Answer"),
+    ]
+    state = fallback_state(*results)
+    assert fallback_result(state) is results[1]
     state.job.round = 3
+    assert fallback_result(state) is None
+
+
+def test_fallback_of_a_writer_that_used_the_other_result_is_the_writer():
+    results = [
+        Result("r1", "math", 2, "done", "Math"),
+        Result("r2", "writer", 2, "done", "Essay", ("r1",)),
+        Result("r3", "math", 1, "done", "Round 1"),
+    ]
+    assert fallback_result(fallback_state(*results)) is results[1]
+
+
+def test_fallback_of_two_independent_parts_is_none():
+    state = fallback_state(
+        Result("r1", "math", 2, "done", "Math"),
+        Result("r2", "writer", 2, "done", "Essay"),
+    )
+    assert fallback_result(state) is None
+
+
+def test_fallback_is_none_when_an_earlier_attempt_failed_and_is_not_an_input():
+    state = fallback_state(
+        Result("r1", "general", 2, "failed", "TimeoutError"),
+        Result("r2", "general", 2, "done", "Part"),
+    )
     assert fallback_result(state) is None
 
 
@@ -323,7 +349,6 @@ async def test_a_cost_that_is_not_a_number_leaves_the_result_done():
     s.state.models = {**s.state.models, "math": FunctionModel(respond)}
     result = await run_worker(s.state, "math", "Compute", [])
     assert (result.status, result.text) == ("done", "Fine")
-    assert s.state.cost == 0
 
 
 async def test_a_final_that_lists_a_result_twice_makes_the_model_retry():
@@ -357,3 +382,43 @@ async def test_a_final_needs_a_result_of_this_round_but_may_keep_earlier_ones():
         if isinstance(p, ToolReturnPart)
     ]
     assert "produced in this round" in retries[0]
+
+
+async def test_a_queued_worker_is_refused_when_the_limit_was_passed_while_it_waited():
+    async def reply(prompt: str) -> str:
+        s.state.worker_tokens = ROUND_TOKEN_LIMIT  # as if the workers just used everything
+        return "Part"
+
+    calls = [{"role": "general", "brief": f"Part {n}"} for n in range(3)]
+    s = setup([delegate(*calls), final("r1")], replies={"general": reply})
+    await orchestrate("Task", None, s.state)
+    statuses = [w.status for w in work_results(s.orchestrator_requests[1])]
+    assert sorted(statuses) == ["done", "done", "refused"]
+    assert len(s.workers["general"].requests) == 2
+    assert s.state.calls == 2  # the refused call is not counted
+    assert len(s.state.results) == 2
+
+
+class FailingContext(ContextClient):
+    def __init__(self):  # no connection: write_draft always fails
+        pass
+
+    async def write_draft(self, title: str, content_md: str):
+        raise ContextError("Context API returned 500")
+
+
+async def test_a_context_error_in_a_worker_tool_ends_the_round_even_with_parallel_calls():
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            document = {"title": "Sheet", "content_md": "Text"}
+            return ModelResponse(parts=[ToolCallPart("write_document", {"document": document})])
+        return ModelResponse(parts=[TextPart("Done")])
+
+    calls = [{"role": "general", "brief": "Sheet"}, {"role": "math", "brief": "Compute"}]
+    s = setup([delegate(*calls), final("r1", "r2")])
+    s.state.models = {**s.state.models, "general": FunctionModel(respond)}
+    s.state.job.context = FailingContext()
+    with pytest.raises(ContextError) as raised:
+        await orchestrate("Task", None, s.state)
+    assert type(raised.value) is ContextError  # plain, not an ExceptionGroup
+    assert s.state.results["r1"].status == "failed"

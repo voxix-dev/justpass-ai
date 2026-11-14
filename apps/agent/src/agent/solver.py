@@ -21,7 +21,7 @@ from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
 
-from agent.context import ContextClient
+from agent.context import ContextClient, ContextError
 from agent.models import MODEL_TIMEOUT_SECONDS, Role, make_models, reported_cost
 from agent.prompt import feedback_message, round_feedback, task_message
 from agent.roles.curator import curate, pick_subject
@@ -101,16 +101,19 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
     # and the writes of the old lease are refused anyway.
     _register_run(body)
     deadline = asyncio.get_running_loop().time() + ROUND_TIMEOUT_SECONDS
-    spend = Spend()
     # One HTTP client for all the roles of the round, closed with it.
     async with httpx2.AsyncClient(timeout=httpx2.Timeout(MODEL_TIMEOUT_SECONDS, connect=5)) as http:
-        models = make_models(body.openrouter_key, http)
-        curator_model = Metered(models["curator"])
+        # One metered model per role, so the round's total counts every response, failed runs too.
+        metered: dict[Role, Metered] = {
+            role: Metered(model) for role, model in make_models(body.openrouter_key, http).items()
+        }
+        models: dict[Role, Model] = dict(metered)
+        curator_model = metered["curator"]
         if body.context is None:
             async with asyncio.timeout_at(deadline + ROUND_GRACE_SECONDS):
                 feedback = [body.feedback] if body.feedback else []
                 answer = await _answer(
-                    body, models, body.text, None, None, feedback, None, None, deadline, spend
+                    body, models, body.text, None, None, feedback, None, None, deadline
                 )
         else:
             async with ContextClient(body.context.url, body.context.token) as context:
@@ -128,7 +131,7 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
                     )
                     answer = await _answer(
                         body, models, task.text, profile, subject_memory, feedback, context,
-                        answered, deadline, spend,
+                        answered, deadline,
                     )  # fmt: skip
                 # Only the newest run of the job writes notes. A failed curator never fails the
                 # round.
@@ -153,11 +156,9 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
                             body.job_id,
                             type(error).__name__,
                         )
-    spend.tokens += curator_model.spend.tokens
-    spend.cost += curator_model.spend.cost
-    logger.info(
-        "[round] %s: tokens %d (all roles), cost $%.4f", _prefix(body), spend.tokens, spend.cost
-    )
+    tokens = sum(model.spend.tokens for model in metered.values())
+    cost = sum(model.spend.cost for model in metered.values())
+    logger.info("[round] %s: tokens %d (all roles), cost $%.4f", _prefix(body), tokens, cost)
     return answer
 
 
@@ -209,7 +210,6 @@ async def _answer(
     context: ContextClient | None,
     answered: tuple[int, ...] | None,
     deadline: float,
-    spend: Spend,
 ) -> AgentAnswer:
     this_run = (body.round, body.lease_id)
     prefix = _prefix(body)
@@ -247,6 +247,8 @@ async def _answer(
         async with asyncio.timeout_at(deadline):
             run = await orchestrate(prompt, history, state)
         answer = answer_of(run.output, state.results)
+    except ContextError:
+        raise  # a failed Context API call fails the round: the answer could miss what it saved
     except Exception as error:
         # The round's time is up: only a result already done can answer, no new work starts.
         if asyncio.get_running_loop().time() >= deadline and fallback_result(state) is None:
@@ -257,8 +259,6 @@ async def _answer(
         _log_orchestrator(
             state, body, new_messages, run.usage.input_tokens, run.usage.output_tokens
         )
-        spend.tokens += run.usage.total_tokens
-        spend.cost += reported_cost(new_messages)
         # A run that a newer lease or round has overtaken must not replace its conversation.
         if newest_runs.get(body.job_id) == this_run:
             kept = histories.setdefault(body.job_id, {})
@@ -269,9 +269,13 @@ async def _answer(
             while len(histories) > MAX_JOBS:
                 histories.popitem(last=False)
     else:
+        # A checkpoint of an earlier attempt of this round or a later one holds a conversation the
+        # student never saw: the next round must not continue it.
+        if newest_runs.get(body.job_id) == this_run:
+            kept = histories.get(body.job_id, {})
+            for number in [n for n in kept if n >= body.round]:
+                del kept[number]
         answer = await _fall_back(state, prefix, failure)
-    spend.tokens += state.worker_tokens
-    spend.cost += state.cost
     return AgentAnswer(answer=answer or None)
 
 

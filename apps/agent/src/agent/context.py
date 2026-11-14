@@ -28,6 +28,14 @@ HISTORY = TypeAdapter(list[HistoryItem])
 MEMORIES = TypeAdapter(list[Memory])
 
 
+class ContextError(Exception):
+    """A Context API call that failed. It fails the attempt, whichever role made the call."""
+
+
+class ContextStatusError(ContextError, httpx2.HTTPStatusError):
+    """The Context API answered with an error status."""
+
+
 class ContextClient:
     """Calls the tools of one round of one job. A failed call raises, so the attempt fails."""
 
@@ -51,7 +59,10 @@ class ContextClient:
         await self._http.aclose()
 
     async def _call(self, tool: str, arguments: BaseModel) -> bytes:
-        response = await self._http.post(tool, content=arguments.model_dump_json().encode())
+        try:
+            response = await self._http.post(tool, content=arguments.model_dump_json().encode())
+        except httpx2.RequestError as error:
+            raise ContextError(f"{tool} failed: {type(error).__name__}") from error
         if not response.is_success:  # also a redirect: its body is not tool output
             # Keep the Context API's reason, which raise_for_status() drops.
             where = (
@@ -59,7 +70,7 @@ class ContextClient:
                 if "location" in response.headers
                 else ""
             )
-            raise httpx2.HTTPStatusError(
+            raise ContextStatusError(
                 f"{tool} returned {response.status_code}{where}: {response.text[:500]}",
                 request=response.request,
                 response=response,
