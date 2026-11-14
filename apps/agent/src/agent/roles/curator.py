@@ -28,9 +28,12 @@ them better. After each round you return what to add to and remove from two docs
   replaces or contradicts an earlier note, remove that note (copy it exactly).
 - Remove a note only when the student's feedback says it is wrong or states something that
   replaces it. A new task never removes a note: the rule may still hold for other tasks.
-- A teacher's rule or a method holds for one course or topic: start the note with it, e.g.
+- A rule the teacher sets ("the teacher requires", "prowadząca wymaga") holds for that teacher's
+  course only, even when it is about the answer's layout: it goes to subject, never to profile.
+  Start such a note, and a method for one topic, with the course or topic, e.g.
   'Linear algebra (determinants): ...' or 'Discrete maths: ...', taken from the task or the
   feedback. Notes that hold for every task need no prefix.
+- Keep a rule's whole scope and detail: "start each answer with 'Odp.'" stays "each answer".
 - Write the notes in English, keep quoted words of the teacher (such as a required word or
   notation) as they are.
 - Each fact in one doc only, no duplicates, one short sentence per note. Return empty lists when
