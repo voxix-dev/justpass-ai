@@ -1012,3 +1012,4 @@ async def test_a_continued_round_tells_the_model_that_cleared_notes_are_gone(
     assert "replace any earlier notes" in followup
     assert "Notes on the student now:\n\n(none)" in followup
     assert "Notes on the student in math now:\n\n(none)" in followup
+    assert "save it with update_memory before you write the answer" in followup
