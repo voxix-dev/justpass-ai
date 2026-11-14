@@ -35,7 +35,8 @@ them better. After each round you return what to add to and remove from two docs
   sentences. Profile is only for what the student wants for themselves; when unsure, use subject.
   Start such a note, and a method for one topic, with the course or topic, e.g.
   'Linear algebra (determinants): ...' or 'Discrete maths: ...', taken from the task or the
-  feedback. Notes that hold for every task need no prefix.
+  feedback. Name the course by its field, never by a task list's name or number. Notes that
+  hold for every task need no prefix.
 - Keep a rule's whole scope and detail: "start each answer with 'Odp.'" stays "each answer".
 - Write the notes in English, keep quoted words of the teacher (such as a required word or
   notation) as they are.
