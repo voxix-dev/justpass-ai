@@ -15,8 +15,7 @@ FLOCI_URL=http://localhost:4588
 IMAGE=localhost/justpass-api
 tf_dir=deploy/terraform/local
 
-if command -v terraform >/dev/null; then terraform=(terraform); else terraform=(toolbox run -c devops terraform); fi
-tf() { "${terraform[@]}" -chdir="$tf_dir" "$@"; }
+tf() { terraform -chdir="$tf_dir" "$@"; }
 
 down() {
   "$ENGINE" ps -aq --filter name=floci-gcp | xargs -r "$ENGINE" rm -f >/dev/null
