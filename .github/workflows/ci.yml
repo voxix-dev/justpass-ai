@@ -144,7 +144,7 @@ jobs:
         with:
           terraform_version: 1.16.1
           terraform_wrapper: false # the script reads `terraform output`
-      - run: ENGINE=docker deploy/gcp/local-e2e.sh
+      - run: deploy/gcp/local-e2e.sh
       - name: floci-gcp logs
         if: failure()
         run: docker logs floci-gcp

@@ -33,7 +33,7 @@ Cloud targets: [wiki: Architecture](https://github.com/voxix-dev/justpass-ai/wik
   to the people who run Terraform. `terraform output` lists the repository variables `.github/workflows/deploy.yml`
   needs; until `GCP_PROJECT_ID` is set that workflow does nothing. Terraform sets only the first image; CI deploys
   the rest with `gcp/deploy-api.sh`.
-- `terraform/local/`: the module in floci-gcp. `gcp/local-e2e.sh` starts floci-gcp (rootless podman: enable
-  `podman.socket` first; `ENGINE=docker` for Docker), builds the API image, applies this root, deploys with the same
+- `terraform/local/`: the module in floci-gcp. `gcp/local-e2e.sh` starts floci-gcp (`ENGINE=podman` for podman,
+  with `podman.socket` enabled), builds the API image, applies this root, deploys with the same
   script CI uses and checks that the API answers from its database. `gcp/local-e2e.sh down` removes everything.
   CI runs it as `gcp-e2e`.

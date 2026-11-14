@@ -5,11 +5,11 @@
 #   deploy/gcp/local-e2e.sh        from a clean state: start floci-gcp, build, apply, deploy, check, leave it up
 #   deploy/gcp/local-e2e.sh down   remove floci-gcp, its containers and the local Terraform state
 #
-# ENGINE=podman (default) or docker. Needs the engine's socket, curl, jq and Terraform (or the `devops` toolbox).
+# ENGINE=docker (default) or podman. Needs the engine's socket, curl, jq and Terraform.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-ENGINE="${ENGINE:-podman}"
+ENGINE="${ENGINE:-docker}"
 FLOCI_IMAGE=docker.io/floci/floci-gcp:0.12.0
 FLOCI_URL=http://localhost:4588
 IMAGE=localhost/justpass-api
