@@ -32,7 +32,7 @@ def apply_notes(body: str, add: list[str], remove: list[str]) -> tuple[str, list
     kept = [line for line in lines if note_text(line).casefold() not in dropped]
     seen = {note_text(line).casefold() for line in kept}
     for item in add:
-        text = " ".join(item.replace("\x00", "").split())
+        text = " ".join(note_text(item).replace("\x00", "").split())
         if text and text.casefold() not in seen:
             kept.append(f"- {text}")
             seen.add(text.casefold())

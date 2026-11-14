@@ -23,6 +23,11 @@ def test_a_note_already_there_is_not_added_again_whatever_its_case():
     assert body == "- Likes short steps\n- Uses a pen"
 
 
+def test_a_note_added_as_a_bullet_matches_the_same_note_without_one():
+    body, _ = apply_notes("- Likes short steps", ["- likes short steps", "- Uses a pen"], [])
+    assert body == "- Likes short steps\n- Uses a pen"
+
+
 def test_a_removal_drops_exactly_the_matching_line_and_reports_the_rest():
     body = "- Likes short steps\n- Uses a pen\n- Likes short steps in physics"
     new, unmatched = apply_notes(body, [], ["Likes short steps", "- Uses a pen", "Likes boxes"])

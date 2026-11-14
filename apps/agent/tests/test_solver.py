@@ -192,7 +192,7 @@ def context_api(
                 return httpx2.Response(200, json=saved)
             case "search_history":
                 return httpx2.Response(
-                    200, json=[{"subject": "physics", "content_md": "Forgets units"}]
+                    200, json=[{"subject": "physics", "content_md": "Forgets units", "version": 1}]
                 )
             case "list_history":
                 item = {
