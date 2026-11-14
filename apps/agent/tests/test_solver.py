@@ -1007,7 +1007,7 @@ async def test_the_curator_removes_exactly_the_matched_note(
         profile={"remove": ["Likes short steps"], "add": ["likes long steps"]}
     )
     use_model(lambda messages, info: text("ok"))
-    await client.post("/run", json=run_body(context=grant()))
+    await client.post("/run", json=run_body(round=2, feedback="Wrong", context=grant()))
     assert [b["content_md"] for b in saved_bodies(context_api)] == [
         "- Uses a pen\n- Likes short steps in physics\n- likes long steps"
     ]

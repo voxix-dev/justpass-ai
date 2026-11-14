@@ -1,5 +1,15 @@
+from typing import Any, cast
+
+import pytest
+from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+from agent.context import ContextClient
 from agent.notes import MAX_DOC_CHARS, apply_notes, fit
-from agent.roles.curator import Curation, curator_message
+from agent.prompt import task_message
+from agent.roles.curator import Curation, curate, curator_message
+from shared.context import Memory, Profile
+from shared.models import Level
 
 
 def test_a_note_is_added_as_a_bullet_to_a_doc_that_is_not_a_bullet_list():
@@ -63,3 +73,79 @@ def test_the_curator_message_fences_the_texts_and_cuts_a_long_answer():
     assert "a" * 4_001 not in message
     assert "Profile notes now:\n\n(none)" in message
     assert "Subject notes now:\n\n(none)" in message
+
+
+class FakeContext:
+    def __init__(self) -> None:
+        self.saves: list[tuple[str, str]] = []
+
+    async def update_memory(self, scope: str, subject: str | None, body: str, version: int) -> None:
+        self.saves.append((scope, body))
+
+
+def curation_model(payload: dict[str, Any]) -> FunctionModel:
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, payload)])
+
+    return FunctionModel(respond)
+
+
+async def run_curate(payload: dict[str, Any], feedback: str | None) -> FakeContext:
+    context = FakeContext()
+    await curate(
+        curation_model(payload),
+        cast(ContextClient, context),
+        task_text="Solve",
+        subject="general",
+        round_number=1,
+        feedback=feedback,
+        answer=None,
+        profile=Profile(
+            level=Level.COLLEGE,
+            language="pl",
+            subject="general",
+            profile_md="- Likes bold",
+            profile_version=1,
+        ),
+        subject_memory=Memory(subject="general", content_md="- Use Sarrus", version=1),
+    )
+    return context
+
+
+REMOVES = {
+    "profile": {"add": [], "remove": ["Likes bold"]},
+    "subject": {"add": [], "remove": ["Use Sarrus"]},
+}
+
+
+@pytest.mark.anyio
+async def test_without_feedback_the_removals_are_dropped_and_nothing_is_saved():
+    assert (await run_curate(REMOVES, None)).saves == []
+
+
+@pytest.mark.anyio
+async def test_without_feedback_the_additions_are_still_saved():
+    payload = {**REMOVES, "subject": {"add": ["Uses Laplace"], "remove": ["Use Sarrus"]}}
+    saves = (await run_curate(payload, None)).saves
+    assert saves == [("subject", "- Use Sarrus\n- Uses Laplace")]
+
+
+@pytest.mark.anyio
+async def test_with_feedback_the_removals_apply():
+    saves = (await run_curate(REMOVES, "That rule is wrong")).saves
+    assert sorted(saves) == [("profile", ""), ("subject", "")]
+
+
+def test_the_first_message_says_to_answer_in_the_language_of_the_task():
+    message = task_message(
+        "Oblicz",
+        Profile(level=Level.COLLEGE, language="en", subject="x", profile_md="", profile_version=0),
+        [],
+    )
+    assert "in the language the task is written in" in message
+    assert "use the language with code 'en'" in message
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"

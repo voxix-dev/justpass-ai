@@ -38,7 +38,9 @@ def task_message(
     if profile is not None:
         parts.append(
             f"Student: {profile.level} level, {profile.subject}. "
-            f"Write the answer in the language with code {profile.language!r}."
+            "Write the answer in the language the task is written in, unless the notes on the "
+            "student ask for another; if the task's language is unclear, use the language with "
+            f"code {profile.language!r}."
         )
         if profile.profile_md:
             parts.append(f"Notes on the student:\n\n{fence(profile.profile_md)}")
