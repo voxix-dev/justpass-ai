@@ -7,6 +7,7 @@ import logging
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
+from pydantic_ai.models.openrouter import OpenRouterModelSettings
 
 from agent.context import ContextClient
 from agent.notes import Note, Scope, save_notes
@@ -30,6 +31,8 @@ them better. After each round you return what to add to and remove from two docs
   replaces it. A new task never removes a note: the rule may still hold for other tasks.
 - A rule the teacher sets ("the teacher requires", "prowadząca wymaga") holds for that teacher's
   course only, even when it is about the answer's layout: it goes to subject, never to profile.
+  When feedback gives a teacher's rules, every rule in it is the teacher's, also those in later
+  sentences. Profile is only for what the student wants for themselves; when unsure, use subject.
   Start such a note, and a method for one topic, with the course or topic, e.g.
   'Linear algebra (determinants): ...' or 'Discrete maths: ...', taken from the task or the
   feedback. Notes that hold for every task need no prefix.
@@ -55,6 +58,9 @@ kept in one doc per subject.
 """
 
 MAX_ANSWER_CHARS = 4_000
+# Less thinking than an answer needs: a long one ran into the output limit and lost the notes.
+NOTES_SETTINGS = OpenRouterModelSettings(openrouter_reasoning={"max_tokens": 1_500})
+SUBJECT_SETTINGS = OpenRouterModelSettings(openrouter_reasoning={"max_tokens": 300})
 MAX_SUBJECT_TASK_CHARS = 4_000
 
 
@@ -102,7 +108,7 @@ async def pick_subject(model: Model, task_text: str, known: list[str]) -> str:
         f"The student's known subjects: {listed}\n\n"
         f"Task:\n\n{fence(task_text[:MAX_SUBJECT_TASK_CHARS])}"
     )
-    result = await subject_agent.run(message, model=model)
+    result = await subject_agent.run(message, model=model, model_settings=SUBJECT_SETTINGS)
     logger.info("[curator] Job subject: %s", result.output.name)
     return result.output.name
 
@@ -150,7 +156,7 @@ async def curate(
         profile_notes=profile.profile_md,
         subject_notes=subject_memory.content_md,
     )
-    result = await agent.run(message, model=model)
+    result = await agent.run(message, model=model, model_settings=NOTES_SETTINGS)
     curation = result.output
     if not feedback:
         dropped = len(curation.profile.remove) + len(curation.subject.remove)
