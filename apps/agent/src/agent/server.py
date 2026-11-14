@@ -1,20 +1,28 @@
 """The HTTP server inside a Substrate actor. The actor runs one job, one POST /run per round.
 
-The agent is a fake for now: it waits a while and answers with a fixed solution, so the path from
-the API through Substrate and back can be built and tested before any model is involved.
+A round that carries an OpenRouter key and no feedback goes to the model (solver.py), which works
+from the task text alone. A feedback round with a key gets the fixed sample for now. A round
+without a key gets a fake: it waits a while and answers with a fixed solution, so local
+development, the tests and the cluster check run with no model and no cost.
 """
 
 import asyncio
 import logging
 import re
+import sys
 from collections import OrderedDict
 from collections.abc import AsyncGenerator
 from uuid import UUID
 
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 from agent.context import ContextClient
+from agent.prompt import fence, round_feedback
+from agent.solver import solve_with_model
 from shared.agent_run import AgentAnswer, AgentRun
 
 SAMPLE_ANSWER = r"""## Solution
@@ -42,13 +50,58 @@ The sum of the roots is $-\tfrac{b}{a} = 5$ and the product is $\tfrac{c}{a} = 6
 (Vieta's formulas).
 """
 
-SOLVE_SECONDS = 10  # the fake's pretend work; goes away with the fake
+SOLVE_SECONDS = 10  # the fake's pretend work
 HEARTBEAT_SECONDS = 5  # how often /run writes a byte while working, so the API sees it is alive
 
 MAX_RUNS = 64  # finished and running rounds remembered, so a retried /run joins instead of redoing
 
 logger = logging.getLogger(__name__)
+
+
+def _log_to_stdout() -> None:
+    """Send the agent's own INFO logs to stdout, which uvicorn leaves unconfigured."""
+    package = logging.getLogger("agent")
+    package.setLevel(logging.INFO)
+    if not package.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
+        package.addHandler(handler)
+
+
+_log_to_stdout()
 app = FastAPI(title="Agent", version="0.0.0")
+
+
+class ValidationIssue(BaseModel):
+    """One validation error, FastAPI's entry without `input`."""
+
+    type: str
+    loc: list[str | int]
+    msg: str
+    ctx: dict[str, object] | None = None
+    url: str | None = None
+
+
+class ValidationErrorBody(BaseModel):
+    detail: list[ValidationIssue]
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid_request(_: Request, error: RequestValidationError) -> JSONResponse:
+    """Answer 422 without echoing the input, which holds the OpenRouter key."""
+    body = ValidationErrorBody(
+        detail=[
+            ValidationIssue(
+                type=e["type"],
+                loc=list(e["loc"]),
+                msg=e["msg"],
+                ctx=jsonable_encoder(e["ctx"]) if "ctx" in e else None,
+                url=e.get("url"),
+            )
+            for e in error.errors()
+        ]
+    )
+    return JSONResponse(body.model_dump(mode="json", exclude_none=True), status_code=422)
 
 
 @app.get("/readyz")
@@ -57,21 +110,10 @@ def ready() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def _fence(text: str) -> str:
-    """Put text in a fenced code block longer than any run of backticks inside it.
-
-    The student's words are shown as they are: a fence they cannot close keeps them from
-    becoming Markdown of their own.
-    """
-    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
-    fence = "`" * max(3, longest + 1)
-    return f"{fence}\n{text}\n{fence}"
-
-
 def _answer(feedback: list[str]) -> str:
     if not feedback:
         return SAMPLE_ANSWER
-    changes = "\n\n".join(_fence(text) for text in feedback)
+    changes = "\n\n".join(fence(text) for text in feedback)
     return f"{SAMPLE_ANSWER}\n### Changes after your feedback\n\n{changes}\n"
 
 
@@ -83,12 +125,7 @@ async def _solve_with_context(grant_url: str, token: str, round_number: int) -> 
     async with ContextClient(grant_url, token) as context:
         task = await context.get_task()
         profile = await context.get_profile()
-        # A round that failed is left out: the student sees its text again and may send it anew.
-        feedback = [
-            r.feedback
-            for r in task.rounds
-            if r.feedback and (r.outcome == "answered" or r.number == round_number)
-        ]
+        feedback = round_feedback(task, round_number)
         if re.search(r"\bfail\b", task.text, re.IGNORECASE):
             return AgentAnswer(answer=None)
         answer = _answer(feedback)
@@ -97,6 +134,10 @@ async def _solve_with_context(grant_url: str, token: str, round_number: int) -> 
 
 
 async def solve(body: AgentRun) -> AgentAnswer:
+    if body.openrouter_key is not None:
+        if body.round > 1 or body.feedback:
+            return AgentAnswer(answer=_answer(_feedback_of(body)))  # the model comes later
+        return await solve_with_model(body)
     await asyncio.sleep(SOLVE_SECONDS)
     if body.context:
         return await _solve_with_context(body.context.url, body.context.token, body.round)
@@ -155,15 +196,17 @@ async def stream(body: AgentRun) -> AsyncGenerator[bytes]:
 
 @app.post("/run", response_class=StreamingResponse)
 async def run(body: AgentRun) -> StreamingResponse:
-    """Stream a fixed answer after SOLVE_SECONDS, with a heartbeat while it works.
+    """Stream the model's answer, or a fixed one, with a heartbeat while it works.
 
     The reply is 200 application/json whose body is whitespace (one newline per HEARTBEAT_SECONDS)
     followed by an AgentAnswer. Leading whitespace is valid JSON, so a client that reads the whole
     body and parses it works unchanged, while one that watches the stream can tell the agent is
     alive. If the work raises, the stream ends without JSON and the caller counts a failed attempt.
 
-    The whole word "fail" in the task, ignoring case, returns an answer of None. Feedback is shown
-    in the answer, in a fenced block. A second call for a round that is running or done under the
+    A round with an `openrouter_key` and no feedback is answered by the model, one with feedback by
+    the fixed sample. Without a key, the whole word "fail"
+    in the task, ignoring case, returns an answer of None, and feedback is shown in the answer, in a
+    fenced block. A second call for a round that is running or done under the
     same lease joins that run instead of starting another; a call under a new lease starts a new
     run.
     """

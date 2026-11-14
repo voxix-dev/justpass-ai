@@ -18,6 +18,12 @@ from sqlalchemy.pool import NullPool
 ROOT = Path(__file__).resolve().parents[3]
 
 
+@pytest.fixture(autouse=True)
+def no_openrouter_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A key in the developer's environment must not change what the tests expect.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+
+
 async def _run_outside_transaction(url: str, sql: str) -> None:
     engine = create_async_engine(url, isolation_level="AUTOCOMMIT", poolclass=NullPool)
     async with engine.connect() as connection:

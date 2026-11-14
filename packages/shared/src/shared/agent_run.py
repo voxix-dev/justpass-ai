@@ -2,7 +2,10 @@
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, SerializationInfo, field_serializer
+
+# The serialization context that makes a model show its secrets: only the wire format sets it.
+WIRE = {"reveal_secrets": True}
 
 
 class ContextGrant(BaseModel):
@@ -32,6 +35,20 @@ class AgentRun(BaseModel):
     lease_id: uuid.UUID | None = None
     # None when there is no Context API to reach: the agent works from text and feedback alone.
     context: ContextGrant | None = None
+    # The key for the model provider, or None when the round has no model: the agent then answers
+    # with a fixed sample. A secret: dumps, reprs and logs show it as asterisks, and only
+    # to_wire_json() writes it out.
+    openrouter_key: SecretStr | None = Field(default=None, repr=False)
+
+    @field_serializer("openrouter_key", when_used="json")
+    def _hide_key(self, key: SecretStr | None, info: SerializationInfo) -> str | None:
+        if key is None:
+            return None
+        return key.get_secret_value() if info.context == WIRE else str(key)
+
+    def to_wire_json(self) -> str:
+        """The JSON to POST to the agent, the one place the key is written out."""
+        return self.model_dump_json(context=WIRE)
 
 
 class AgentAnswer(BaseModel):

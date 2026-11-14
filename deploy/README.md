@@ -12,6 +12,8 @@
   `deploy.sh` (`e2e.sh` checks that the two agree).
   After a host reboot the agent pods get new IPs while Substrate still holds the old ones (the router answers 503):
   `deploy/local/workers.sh --fix` recreates the pods (`deploy.sh` runs it; without `--fix` it only checks).
+  The API container gets `OPENROUTER_API_KEY` from `.env`. When it is set, each actor's egress policy also allows
+  openrouter.ai:443 (TLS passthrough).
   See [wiki: Local development](https://github.com/voxix-dev/justpass-ai/wiki/Local-development).
 - `substrate/`: what the agents need on Substrate. `agent-pool.yaml` (a kustomize base) is the worker pool;
   `agents.yaml` is the atespace, access policy and actor template, which `api.substrate_sync` creates in

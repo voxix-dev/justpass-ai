@@ -35,6 +35,7 @@ BUSY_WAIT = 60.0  # how long a job waits for a free worker before it counts as a
 BUSY_RETRY_DELAY = 2.0
 ACCESS_POLICY_NAME = "default"  # every atespace has one policy, and Substrate fixes its name
 EGRESS_POLICY_NAME = "default"  # so does every actor, for its egress policy
+OPENROUTER_HOST = "openrouter.ai"  # the model provider, allowed when the API has a key for it
 
 
 # What Substrate accepts as a hostname in an egress rule: a lowercase DNS-1123 subdomain. It refuses
@@ -56,29 +57,37 @@ def _rule_hostname(url: str, hostname: str) -> str:
     )
 
 
-def egress_rules(url: str) -> list[ate_pb2.EgressRule]:
-    """The one destination an actor may reach, the Context API: its host and port, over its scheme.
+def egress_rules(url: str, openrouter: bool = False) -> list[ate_pb2.EgressRule]:
+    """The destinations an actor may reach: the Context API, and the model provider if `openrouter`.
 
-    http is matched per request by the gateway, which dials the name itself. https is forwarded
-    untouched, matched on the SNI. An empty URL means no Context API and so no destination.
+    The Context API's rule is its host and port, over its scheme. http is matched per request by the
+    gateway, which dials the name itself. https is forwarded untouched, matched on the SNI. An empty
+    URL means no Context API and so no rule for it. OpenRouter is https on port 443, forwarded
+    untouched.
     Raise ValueError for any other URL, and for a host Substrate refuses in a rule (an IP address,
     a trailing dot).
     """
-    if not url:
-        return []
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise ValueError(f"CONTEXT_API_URL must be an http or https URL, got {url!r}")
-    https = parts.scheme == "https"
-    ports = ate_pb2.Ports(numbers=[parts.port or (443 if https else 80)])
-    hostnames = [_rule_hostname(url, parts.hostname)]
-    if https:
-        return [
-            ate_pb2.EgressRule(
-                tls_passthrough=ate_pb2.TlsPassthroughRule(hostnames=hostnames, ports=ports)
+    rules: list[ate_pb2.EgressRule] = []
+    if url:
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError(f"CONTEXT_API_URL must be an http or https URL, got {url!r}")
+        https = parts.scheme == "https"
+        ports = ate_pb2.Ports(numbers=[parts.port or (443 if https else 80)])
+        hostnames = [_rule_hostname(url, parts.hostname)]
+        if https:
+            rule = ate_pb2.TlsPassthroughRule(hostnames=hostnames, ports=ports)
+            rules.append(ate_pb2.EgressRule(tls_passthrough=rule))
+        else:
+            rules.append(
+                ate_pb2.EgressRule(http=ate_pb2.HttpRule(hostnames=hostnames, ports=ports))
             )
-        ]
-    return [ate_pb2.EgressRule(http=ate_pb2.HttpRule(hostnames=hostnames, ports=ports))]
+    if openrouter:
+        rule = ate_pb2.TlsPassthroughRule(
+            hostnames=[OPENROUTER_HOST], ports=ate_pb2.Ports(numbers=[443])
+        )
+        rules.append(ate_pb2.EgressRule(tls_passthrough=rule))
+    return rules
 
 
 class Agents(Protocol):
@@ -109,7 +118,7 @@ async def _post_run(
     """
     response = await client.post(
         f"{url}/run",
-        content=run.model_dump_json(),
+        content=run.to_wire_json(),
         headers={"content-type": "application/json", **(headers or {})},
     )
     response.raise_for_status()
@@ -276,16 +285,16 @@ class SubstrateAgents:
     async def solve(self, run: AgentRun) -> AgentAnswer:
         """Create or reuse the job's actor and send it a round through the router.
 
-        An actor with no egress policy can reach nothing, so a policy for the Context API is created
-        before the first request wakes the actor. Retry router 503 responses until busy_wait
-        seconds have elapsed; other HTTP errors and actor or policy creation errors other than
-        ALREADY_EXISTS propagate, as do transport and reply validation errors. A 503 at or after
-        the deadline also propagates.
+        An actor with no egress policy can reach nothing, so a policy for the Context API (and the
+        model provider, with a key) is created before the first request wakes the actor. Retry
+        router 503 responses until busy_wait seconds have elapsed; other HTTP errors and actor or
+        policy creation errors other than ALREADY_EXISTS propagate, as do transport and reply
+        validation errors. A 503 at or after the deadline also propagates.
         """
         actor = _actor_name(run.job_id)
         await _created(self.control.create_actor(self.atespace, actor, self.template))
-        if self.egress:  # a retry after a half-done create finds the actor but not its policy
-            await self._set_egress(actor)
+        # Also with no rules: an actor made under other settings must lose its old destinations.
+        await self._set_egress(actor)
         target = {"ate-target-actor": f"{self.atespace}/{actor}"}
         deadline = asyncio.get_running_loop().time() + self.busy_wait
         async with self.router() as client:
@@ -302,10 +311,10 @@ class SubstrateAgents:
     async def _set_egress(self, actor: str) -> None:
         """Give the actor its policy, or bring the one it has up to date.
 
-        An actor made before CONTEXT_API_URL changed keeps the old rules until a round comes in, so
-        a policy that exists is compared with the wanted rules and replaced if they differ. The
-        update carries the uid and version just read: if another request got there first, Substrate
-        refuses it and the attempt fails and is retried.
+        An actor made before CONTEXT_API_URL or the key changed keeps the old rules until a round
+        comes in, so a policy that exists is compared with the wanted rules and replaced if they
+        differ. The update carries the uid and version just read: if another request got there
+        first, Substrate refuses it and the attempt fails and is retried.
         """
         try:
             await self.control.create_egress_policy(self.atespace, actor, self.egress)
@@ -351,7 +360,9 @@ def _substrate_from_env(router_url: str) -> SubstrateAgents:
         router_url=router_url,
         atespace=os.environ["ATE_ATESPACE"],
         template=os.environ["ATE_TEMPLATE"],
-        egress=egress_rules(os.environ.get("CONTEXT_API_URL", "")),
+        egress=egress_rules(
+            os.environ.get("CONTEXT_API_URL", ""), bool(os.environ.get("OPENROUTER_API_KEY"))
+        ),
     )
 
 

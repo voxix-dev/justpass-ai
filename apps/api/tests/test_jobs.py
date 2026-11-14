@@ -1095,6 +1095,23 @@ async def test_the_agent_gets_the_lease_without_a_context_api(
     assert (agents.runs[0].context, agents.runs[0].lease_id) == (None, lease)
 
 
+async def test_the_agent_gets_the_openrouter_key_from_the_environment(
+    dispatcher: StepDispatcher, agents: FakeAgents, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-dummy-key-for-tests")
+    await dispatcher._solve(
+        AgentRun(job_id=uuid.uuid4(), round=1, text="Solve"), "alice", uuid.uuid4()
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    await dispatcher._solve(
+        AgentRun(job_id=uuid.uuid4(), round=1, text="Solve"), "alice", uuid.uuid4()
+    )
+    keys = [run.openrouter_key for run in agents.runs]
+    assert keys[0] is not None
+    assert keys[0].get_secret_value() == "sk-or-dummy-key-for-tests"
+    assert keys[1] is None
+
+
 async def test_a_release_waits_for_a_context_write_in_progress(engine: AsyncEngine):
     """Real connections: the shared test one cannot show one transaction waiting for another."""
     holder = uuid.uuid4()

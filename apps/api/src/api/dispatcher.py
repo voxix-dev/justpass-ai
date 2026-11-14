@@ -22,6 +22,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import SecretStr
 from sqlalchemy import and_, case, func, literal_column, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -334,6 +335,12 @@ class Dispatcher:
             ContextGrant(url=url, token=mint_token(job_id, user_id, number, lease)) if url else None
         )
 
+    @staticmethod
+    def _openrouter_key() -> SecretStr | None:
+        """The model provider's key from the environment, or None (unset or empty) for no model."""
+        key = os.environ.get("OPENROUTER_API_KEY", "")
+        return SecretStr(key) if key else None
+
     async def _solve(self, run: AgentRun, user_id: str, lease: uuid.UUID) -> str | None:
         """Return the answer, or None if the agent gives none or both attempts raise an error.
 
@@ -345,7 +352,13 @@ class Dispatcher:
                 grant = self._grant(run.job_id, user_id, run.round, lease)
                 return (
                     await self.agents.solve(
-                        run.model_copy(update={"context": grant, "lease_id": lease})
+                        run.model_copy(
+                            update={
+                                "context": grant,
+                                "lease_id": lease,
+                                "openrouter_key": self._openrouter_key(),
+                            }
+                        )
                     )
                 ).answer
             except Exception:

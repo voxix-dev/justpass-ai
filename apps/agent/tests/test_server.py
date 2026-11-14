@@ -101,6 +101,19 @@ async def test_run_refuses_unknown_fields(client: httpx2.AsyncClient):
     assert (await client.post("/run", json=body("Solve", extra=1))).status_code == 422
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [{"openrouter_key": "sk-secret", "extra": 1}, {"openrouter_key": {"value": "sk-secret"}}],
+)
+async def test_validation_error_does_not_echo_the_key(
+    client: httpx2.AsyncClient, fields: dict[str, object]
+):
+    response = await client.post("/run", json=body("Solve", **fields))
+    assert response.status_code == 422
+    assert response.json()["detail"]
+    assert "sk-secret" not in response.text
+
+
 async def test_two_calls_for_one_round_solve_once(
     client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ):
