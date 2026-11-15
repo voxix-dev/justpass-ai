@@ -28,7 +28,8 @@ Cloud targets: [wiki: Architecture](https://github.com/voxix-dev/justpass-ai/wik
   references become a TCP connection and plain environment values. Its tests: `terraform test` in that directory.
 - `terraform/bootstrap/`: what the deploy workflow needs before it can run Terraform, and what Google cannot delete
   again: the Firebase project, its default Hosting site, the Workload Identity pool (only `main` of this repository
-  gets a token) and the `github-terraform` service account that applies `prod`. Apply it by hand once:
+  gets a token) and the `github-terraform` service account that applies `prod`, which only the deploy workflow's
+  infra job (environment `production`) can impersonate. Apply it by hand once:
   1. Make the state bucket by hand, with versioning and uniform bucket-level access. The state holds the secrets
      (database password, `DATABASE_URL`, token secret), so give read access only to the people who run Terraform.
   2. `terraform init -backend-config=bucket=<bucket> -backend-config=prefix=bootstrap`.

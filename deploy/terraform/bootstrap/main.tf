@@ -50,7 +50,6 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   attribute_mapping = {
     "google.subject"       = "assertion.sub"
     "attribute.repository" = "assertion.repository"
-    "attribute.ref"        = "assertion.ref"
   }
   # Only the deploy workflow of this repository, on main, can get a token. The numeric ids stay the same if
   # the repository or the organisation is renamed, and a different one that takes over the old name fails them.
@@ -82,8 +81,9 @@ resource "google_project_iam_member" "terraform_owner" {
   member  = "serviceAccount:${google_service_account.terraform.email}"
 }
 
+# Only the infra job's `production` environment gets the owner account; the other jobs (which run npm installs) never do.
 resource "google_service_account_iam_member" "terraform_from_github" {
   service_account_id = google_service_account.terraform.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repository}"
+  member             = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject/repo:${var.github_repository}:environment:production"
 }

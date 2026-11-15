@@ -45,7 +45,6 @@ module "api" {
   image               = var.image
   emulator            = true
   deletion_protection = false
-  min_instances       = 1
   env = {
     AGENT_URL = "http://agent.invalid" # the API needs one to start; no agent runs here
   }
@@ -57,10 +56,6 @@ output "project_id" {
 
 output "region" {
   value = "europe-west1"
-}
-
-output "service_name" {
-  value = module.api.service_name
 }
 
 output "service_uri" {

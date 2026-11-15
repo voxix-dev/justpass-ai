@@ -28,6 +28,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
       && vars.GCP_PROJECT_ID != ''
     runs-on: ubuntu-latest
+    environment: production # the owner service account trusts only this environment's token
     permissions:
       contents: read
       id-token: write # the OIDC token that Workload Identity Federation exchanges; no key files
@@ -118,13 +119,12 @@ jobs:
           REGION: ${{ vars.GCP_REGION }}
           ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
 
-  web:
-    needs: [infra, api]
+  web-build:
+    needs: api
     if: needs.api.result == 'success'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      id-token: write
+      contents: read # no id-token: dependency install scripts must not be able to mint a token
     defaults:
       run:
         working-directory: apps/web
@@ -143,17 +143,38 @@ jobs:
           cache-dependency-path: apps/web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ needs.infra.outputs.deployer }}
       - name: Point the /api/** rewrite at the Cloud Run region
         env:
           REGION: ${{ vars.GCP_REGION }}
         run: |
           jq --arg region "$REGION" '(.hosting.rewrites[] | select(.run) | .run.region) = $region' firebase.json > firebase.json.new
           mv firebase.json.new firebase.json
+      - uses: actions/upload-artifact@v5
+        with:
+          name: web
+          path: |
+            apps/web/dist
+            apps/web/firebase.json
+          if-no-files-found: error
+
+  web:
+    needs: [infra, web-build]
+    if: needs.web-build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: web
+          path: apps/web # the artifact's root is apps/web, the two paths' common directory
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ needs.infra.outputs.deployer }}
       - name: Deploy to Firebase Hosting
         env:
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+        working-directory: apps/web
         run: npx --yes firebase-tools@15.36.0 deploy --only hosting --project "$PROJECT_ID" --non-interactive

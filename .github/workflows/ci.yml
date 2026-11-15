@@ -147,7 +147,7 @@ jobs:
       - run: deploy/gcp/local-e2e.sh
       - name: floci-gcp logs
         if: failure()
-        run: docker logs floci-gcp
+        run: docker logs justpass-floci-gcp
 
   secrets:
     runs-on: ubuntu-latest

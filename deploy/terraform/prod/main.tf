@@ -87,6 +87,13 @@ resource "google_project_iam_member" "deployer_firebase" {
   member  = "serviceAccount:${google_service_account.deployer.email}"
 }
 
+# The deploy script polls the deploy operation. Cloud Run checks run.operations.get on the project, not the service.
+resource "google_project_iam_member" "deployer_reads_operations" {
+  project = var.project_id
+  role    = "roles/run.viewer"
+  member  = "serviceAccount:${google_service_account.deployer.email}"
+}
+
 resource "google_cloud_run_v2_service_iam_member" "deployer_deploys" {
   location = var.region
   name     = module.api.service_name
