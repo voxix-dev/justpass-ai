@@ -130,10 +130,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: substrate-src/go.mod
-          cache: false # no caches in this privileged workflow: one it writes could be poisoned
       - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: false
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: 1.16.1
@@ -249,7 +246,9 @@ jobs:
           version: 12
       - uses: actions/setup-node@v4
         with:
-          node-version: 22 # no dependency cache, as in the cluster job
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Point the /api/** rewrite at the Cloud Run region
