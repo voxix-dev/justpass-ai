@@ -59,7 +59,7 @@ Cloud targets: [wiki: Architecture](https://github.com/voxix-dev/justpass-ai/wik
   `substrate` database through the Cloud SQL Auth Proxy, as the `substrate_admin` user Terraform creates (the
   roles and schema ate-api needs). Then it runs `gke/sync.sh` against the cluster, with the agent image CI pushed for
   the commit, pinned by digest: it applies Substrate (v1.0.0) and the agents, issues the API's ate-api token and the router CA, and adds them as new
-  versions of the secrets. The token lives 48 hours, so a daily schedule (or a manual run) reruns only this job,
+  versions of the secrets. The token lives 48 hours, so the `refresh` workflow (daily, or a manual run) reruns only this job,
   reading the cluster from the Terraform state without applying.
 - The API on Cloud Run reaches ate-api and the router through the internal load balancers, by their
   `ate-system.svc` names in the private DNS zone. It presents a router client certificate from our CA and

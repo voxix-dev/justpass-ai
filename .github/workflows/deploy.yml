@@ -3,8 +3,9 @@ name: deploy
 # After ci passes on main, applies the production Terraform (deploy/terraform/prod) for the tip of main, then applies
 # Substrate to the GKE cluster it made (after preparing its database) and stores the API's cluster credentials in
 # Secret Manager (`cluster` job), then deploys the API to Cloud Run and the web app to Firebase Hosting, which rewrites
-# /api/** to Cloud Run. The credentials expire after 48 hours, so a daily schedule (and a manual run) skips the apply
-# and the deploys and only reruns the `cluster` job against the cluster Terraform already made. The API image is the
+# /api/** to Cloud Run. The credentials expire after 48 hours, so the `refresh` workflow (daily and on demand) runs
+# this one too, which then skips the apply and the deploys and only reruns the `cluster` job against the cluster
+# Terraform already made. The API image is the
 # one ci's `images` job pushed to GHCR; it is deployed by digest through the Artifact Registry remote repository that
 # proxies GHCR. Terraform ignores the Cloud Run image, so applying never rolls a deploy back. Without GCP_PROJECT_ID
 # nothing runs. The repository variables are the outputs of deploy/terraform/bootstrap, applied by hand once, and the
@@ -13,12 +14,9 @@ name: deploy
 
 on:
   workflow_run:
-    workflows: [ci]
+    workflows: [ci, refresh]
     types: [completed]
     branches: [main]
-  schedule:
-    - cron: "17 4 * * *"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,8 +29,10 @@ concurrency:
 jobs:
   infra:
     if: >-
-      (github.event_name != 'workflow_run'
-      || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
+      github.event.workflow_run.conclusion == 'success'
+      && (github.event.workflow_run.name == 'ci' && github.event.workflow_run.event == 'push'
+      || github.event.workflow_run.name == 'refresh'
+      && contains(fromJSON('["schedule", "workflow_dispatch"]'), github.event.workflow_run.event))
       && vars.GCP_PROJECT_ID != ''
     runs-on: ubuntu-latest
     environment: production # the owner service account trusts only this environment's token
@@ -45,14 +45,13 @@ jobs:
       deployer: ${{ steps.out.outputs.deployer }}
       image_repository: ${{ steps.out.outputs.image_repository }}
     steps:
-      # An older ci run that finishes late must not roll back a newer deploy. A scheduled or manual run has no such risk.
+      # An older run that finishes late must not roll back a newer deploy.
       - id: tip
         name: Skip unless this is the tip of main
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" != workflow_run ]; then echo "current=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
           if [ "$tip" = "$SHA" ]; then echo "current=true" >> "$GITHUB_OUTPUT"; else
             echo "::notice::Skipping the deploy of $SHA: main is at $tip"
@@ -60,7 +59,7 @@ jobs:
       - if: steps.tip.outputs.current == 'true'
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
       - if: steps.tip.outputs.current == 'true'
         uses: google-github-actions/auth@v3
@@ -79,7 +78,7 @@ jobs:
         run: |
           terraform -chdir=deploy/terraform/prod init -input=false \
             -backend-config=bucket="$STATE_BUCKET" -backend-config=prefix=prod
-      - if: steps.tip.outputs.current == 'true' && github.event_name == 'workflow_run'
+      - if: steps.tip.outputs.current == 'true' && github.event.workflow_run.name == 'ci'
         name: Apply the production Terraform
         env:
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -110,7 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
       - uses: actions/checkout@v7
         with:
@@ -163,7 +162,7 @@ jobs:
       - id: agent
         name: Resolve the digest of the agent image
         env:
-          REF: ghcr.io/voxix-dev/justpass-ai/agent:${{ github.event.workflow_run.head_sha || github.sha }}
+          REF: ghcr.io/voxix-dev/justpass-ai/agent:${{ github.event.workflow_run.head_sha }}
         run: |
           digest=$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r '
             if .manifests then .manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")
@@ -190,7 +189,7 @@ jobs:
   api:
     needs: [infra, cluster]
     if: >-
-      github.event_name == 'workflow_run' && needs.infra.result == 'success' && needs.infra.outputs.current == 'true'
+      github.event.workflow_run.name == 'ci' && needs.infra.result == 'success' && needs.infra.outputs.current == 'true'
       && needs.cluster.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -229,7 +228,7 @@ jobs:
 
   web-build:
     needs: api
-    if: github.event_name == 'workflow_run' && needs.api.result == 'success'
+    if: needs.api.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read # no id-token: dependency install scripts must not be able to mint a token
