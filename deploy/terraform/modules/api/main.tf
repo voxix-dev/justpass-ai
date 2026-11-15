@@ -96,6 +96,11 @@ resource "google_secret_manager_secret_version" "api" {
   for_each    = local.secret_names
   secret      = google_secret_manager_secret.api[each.key].id
   secret_data = local.secret_values[each.key]
+
+  # The serving revision is pinned to the old version until Cloud Run has moved to the new one.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Only production reads secrets from Secret Manager and connects through Cloud SQL.

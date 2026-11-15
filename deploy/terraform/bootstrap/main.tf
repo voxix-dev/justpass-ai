@@ -50,6 +50,8 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   attribute_mapping = {
     "google.subject"       = "assertion.sub"
     "attribute.repository" = "assertion.repository"
+    # Only jobs that run in a GitHub environment have the claim.
+    "attribute.environment" = "has(assertion.environment) ? assertion.environment : 'none'"
   }
   # Only the deploy workflow of this repository, on main, can get a token. The numeric ids stay the same if
   # the repository or the organisation is renamed, and a different one that takes over the old name fails them.
@@ -85,5 +87,6 @@ resource "google_project_iam_member" "terraform_owner" {
 resource "google_service_account_iam_member" "terraform_from_github" {
   service_account_id = google_service_account.terraform.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject/repo:${var.github_repository}:environment:production"
+  # By attribute, not by subject: the subject's format is a repository setting (this one uses immutable subjects).
+  member = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.environment/production"
 }
