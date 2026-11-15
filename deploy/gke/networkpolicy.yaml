@@ -1,0 +1,19 @@
+# ate-system denies all ingress; this lets the API on Cloud Run (sync.sh sets its range) reach ate-api.
+# The router's own policy already accepts any source.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ate-api-server-from-run
+  namespace: ate-system
+spec:
+  podSelector:
+    matchLabels:
+      app: ate-api-server
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - ipBlock:
+        cidr: 0.0.0.0/32
+    ports:
+    - protocol: TCP
+      port: 443

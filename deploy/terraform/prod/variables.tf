@@ -31,14 +31,15 @@ variable "bootstrap_image" {
   default     = "us-docker.pkg.dev/cloudrun/container/hello"
 }
 
-variable "agent_url" {
-  type        = string
-  description = "Where the API reaches an agent (AGENT_URL). The API does not start without it or the ATE_* settings."
-  default     = "http://agent.invalid" # no agent yet: the API serves, rounds fail until the cluster runs
-}
-
 variable "env" {
   type        = map(string)
-  description = "More environment for the API: CONTEXT_API_URL, GCS_BUCKET, ..."
+  description = "More environment for the API: GCS_BUCKET, ..."
   default     = {}
+}
+
+variable "openrouter_api_key" {
+  type        = string
+  description = "Key of the model provider (OPENROUTER_API_KEY). The deploy workflow passes it as TF_VAR_openrouter_api_key."
+  default     = ""
+  sensitive   = true
 }

@@ -2,8 +2,6 @@
 # and gives the actors a way to the Context API (and to nothing else on this machine):
 #   docker compose -f compose.yaml -f deploy/local/compose.yaml up -d --build --wait api context-uds context-relay
 # deploy.sh does this, after identity.sh and forward.sh. Relative paths start at the repo root.
-# Every compose command with this file needs ATE_TEMPLATE, which deploy.sh sets. Any value will do for
-# `logs` or `down`.
 services:
   api:
     # Host network to reach the port-forwards, which listen on 127.0.0.1 only, and the published Postgres.
@@ -28,7 +26,7 @@ services:
       ATE_ROUTER_URL: https://atenet-router.ate-system.svc:${ATE_ROUTER_PORT:-9443}
       ATE_API_TARGET: api.ate-system.svc:${ATE_API_PORT:-8443}
       ATE_ATESPACE: justpass-agents
-      ATE_TEMPLATE: ${ATE_TEMPLATE:?deploy.sh sets it}
+      ATE_TEMPLATE_FILE: /run/ate/template
       ATE_CA_FILE: /run/ate/trust-bundle.pem
       ATE_CLIENT_CERT_FILE: /run/ate/credential-bundle.pem
       ATE_TOKEN_FILE: /run/ate/token

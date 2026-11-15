@@ -16,7 +16,7 @@ variable "image" {
 
 variable "env" {
   type        = map(string)
-  description = "Plain environment variables for the API (AGENT_URL, CONTEXT_API_URL, FIREBASE_PROJECT_ID, ...)."
+  description = "Plain environment variables for the API (CONTEXT_API_URL, FIREBASE_PROJECT_ID, ...)."
   default     = {}
 }
 
@@ -51,4 +51,33 @@ variable "max_instances" {
   type        = number
   description = "Upper bound on instances."
   default     = 3
+}
+
+variable "vpc" {
+  type = object({
+    network    = string
+    subnetwork = string
+  })
+  description = "VPC and subnet for direct VPC egress, which sends only private-range traffic into the VPC. Null: no VPC access. Ignored when emulator."
+  default     = null
+}
+
+variable "secret_files" {
+  type = map(object({
+    secret_id = string
+    path      = string
+  }))
+  description = <<-E
+    Secrets to mount as files, by a label of your choice: the secret's id and the file's path. Each file gets its own
+    directory, so no two may share one. The latest version is read, and the runtime account may access it.
+    Ignored when emulator.
+  E
+  default     = {}
+}
+
+variable "openrouter_api_key" {
+  type        = string
+  description = "Key of the model provider (OPENROUTER_API_KEY), kept in Secret Manager. Empty: the API gets none."
+  default     = ""
+  sensitive   = true
 }

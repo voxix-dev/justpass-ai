@@ -1,0 +1,12 @@
+# The identity the API on Cloud Run takes in Substrate: its token is this account's, and the router
+# accepts a client certificate that names it (see substrate-install.yaml).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: homework
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api
+  namespace: homework

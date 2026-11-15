@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Test the production setup on this machine against floci-gcp, a GCP emulator that runs Cloud SQL and Cloud Run
-# as containers: the Terraform module, then the deploy script, then the API serving requests from its database.
+# Test the production setup on this machine against floci-gcp, a GCP emulator that runs Cloud SQL, Cloud Run and
+# GKE (a k3s) as containers: the Terraform modules, then the deploy script, then the API serving requests from its
+# database.
 #
 #   deploy/gcp/local-e2e.sh        from a clean state: start floci-gcp, build, apply, deploy, check, leave it up
 #   deploy/gcp/local-e2e.sh down   remove floci-gcp, its containers and the local Terraform state
 #
-# ENGINE=docker (default) or podman. Needs the engine's socket, curl, jq and Terraform.
+# ENGINE=docker (default) or podman. Needs the engine's socket, curl, jq, kubectl and Terraform.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -33,6 +34,18 @@ down
 if [ "$ENGINE" = podman ]; then
   socket=$(podman info --format '{{.Host.RemoteSocket.Path}}')
   engine_args=(--network podman --security-opt label=disable)
+  # The kubelet of the GKE k3s needs this config to start in a rootless container.
+  k3s_image=localhost/justpass-k3s-rootless
+  podman build -q -t $k3s_image - >/dev/null <<'EOF'
+FROM docker.io/rancher/k3s:v1.34.1-k3s1
+COPY <<CONF /etc/rancher/k3s/config.yaml
+kubelet-arg:
+  - feature-gates=KubeletInUserNamespace=true
+  - cgroups-per-qos=false
+  - enforce-node-allocatable=
+CONF
+EOF
+  engine_args+=(-e "FLOCI_GCP_SERVICES_GKE_DEFAULT_IMAGE=$k3s_image")
 else
   socket=/var/run/docker.sock
   engine_args=(--network bridge)
@@ -50,6 +63,17 @@ done
 
 tf init -input=false
 tf apply -input=false -auto-approve -var "image=$IMAGE:dev"
+
+# The GKE cluster is a k3s that takes any bearer token as cluster-admin.
+cluster=$(tf output -json cluster)
+cluster_url="$FLOCI_URL/container/v1/projects/$(jq -r .project_id <<<"$cluster")/locations/$(jq -r .location <<<"$cluster")/clusters/$(jq -r .name <<<"$cluster")"
+kube_server=$(curl -fsS "$cluster_url" | jq -r .endpoint)
+deadline=$((SECONDS + 120))
+until kubectl --server "https://$kube_server" --token floci --insecure-skip-tls-verify --request-timeout=5s \
+  get nodes >/dev/null 2>&1; do
+  [ "$SECONDS" -lt "$deadline" ] || { echo "the GKE cluster did not answer kubectl at $kube_server within 2 minutes" >&2; exit 1; }
+  sleep 2
+done
 
 # The deploy script is the one CI runs. floci-gcp's engine client can hold a connection the engine has closed
 # while idle, which fails the first call with "Broken pipe": a second attempt works.

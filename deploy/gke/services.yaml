@@ -1,0 +1,42 @@
+# Internal load balancers in front of ate-api and the router for the API on Cloud Run. sync.sh sets the
+# addresses and the source range. Local keeps the client's address, which the NetworkPolicy and the
+# source range match.
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-internal
+  namespace: ate-system
+  annotations:
+    networking.gke.io/load-balancer-type: Internal
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  loadBalancerIP: 0.0.0.0
+  loadBalancerSourceRanges: [0.0.0.0/32]
+  selector:
+    app: ate-api-server
+  ports:
+  - name: grpc
+    port: 443
+    targetPort: 443
+    protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atenet-router-internal
+  namespace: ate-system
+  annotations:
+    networking.gke.io/load-balancer-type: Internal
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  loadBalancerIP: 0.0.0.0
+  loadBalancerSourceRanges: [0.0.0.0/32]
+  selector:
+    app: atenet-router
+  ports:
+  - name: https
+    port: 443
+    targetPort: 8443
+    protocol: TCP

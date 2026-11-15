@@ -14,7 +14,6 @@ for attempt in {1..60}; do
 done
 deploy/local/workers.sh # stale worker registrations make the router answer 503
 tool=${CONTAINER_TOOL:-docker}
-export ATE_TEMPLATE=${ATE_TEMPLATE:-not-used-here} # compose.yaml wants one; nothing here starts the api
 compose=("$tool" compose -f compose.yaml -f deploy/local/compose.yaml)
 # The Service context-api points at the relay's address, which is new whenever the container is
 # recreated; deploy.sh writes it down.
@@ -51,7 +50,7 @@ drafts() { # job id: how many draft artifacts the agent has written through the 
 # either way (the token is made up); what matters is why.
 actor_error() { # job id, url
   local actor=e2e-egress-$RANDOM template
-  template=$("${compose[@]}" exec -T api printenv ATE_TEMPLATE)
+  template=$(cat deploy/local/.identity/mounted/template)
   kubectl ate create actor "$actor" -a justpass-agents --template "$template" > /dev/null 2>&1
   kubectl ate get egress-policy "job-$1" -a justpass-agents -o json 2> /dev/null | jq -c '{rules}' |
     kubectl ate create egress-policy "$actor" -a justpass-agents -f - > /dev/null 2>&1

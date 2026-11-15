@@ -1,0 +1,37 @@
+diff --git manifests/ate-install/atenet-router.yaml manifests/ate-install/atenet-router.yaml
+index 35b630c4..0cb151af 100644
+--- manifests/ate-install/atenet-router.yaml
++++ manifests/ate-install/atenet-router.yaml
+@@ -229,7 +229,7 @@ spec:
+         # carries none: cmd/ate-setup appends --ingress-allowed-spiffe-ids from
+         # its own --ingress-allowed-spiffe-ids (ATE_INGRESS_ALLOWED_SPIFFE_IDS).
+         # Without one the router serves no traffic.
+-        - "--ingress-client-ca-file=/run/podidentity.podcert.ate.dev/trust-bundle.pem"
++        - "--ingress-client-ca-file=/run/ingress-client-ca/ca.pem"
+         # - "--ingress-allowed-spiffe-ids=spiffe://cluster.local/ns/ate-system/sa/atenet-client"
+         # Client auth to ateapi (mtls): verify the serving cert against the
+         # servicedns trust bundle and present the podidentity client cert.
+@@ -316,6 +316,9 @@ spec:
+         # releasing Envoy's preStop poll.
+         - name: "drain-signal"
+           mountPath: "/var/run/atenet"
++        - name: ingress-client-ca
++          mountPath: /run/ingress-client-ca
++          readOnly: true
+       - name: envoy
+         # ENVOY_DATAPLANE_IMAGE is substituted for the image URI by ate-setup
+         image: ${ENVOY_DATAPLANE_IMAGE}
+@@ -374,7 +377,13 @@ spec:
+         - name: "drain-signal"
+           mountPath: "/var/run/atenet"
+           readOnly: true
++        - name: ingress-client-ca
++          mountPath: /run/ingress-client-ca
++          readOnly: true
+       volumes:
++      - name: ingress-client-ca
++        configMap:
++          name: atenet-router-client-ca
+       - name: envoy-config
+         configMap:
+           name: atenet-router-envoy-config

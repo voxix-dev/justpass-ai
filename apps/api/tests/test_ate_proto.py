@@ -9,10 +9,10 @@ from google.protobuf import descriptor_pb2 as pb
 from grpc_tools import protoc
 
 # Bump to follow upstream, then fix whatever this test reports.
-UPSTREAM_COMMIT = "52386bd54c6965deeebac1b1a6b6de40e9c1c33a"
+UPSTREAM_COMMIT = "b34fbee742906494b5eb4f1f36987176bf8770a4"
 UPSTREAM_URL = (
     "https://raw.githubusercontent.com/agent-substrate/substrate/"
-    f"{UPSTREAM_COMMIT}/pkg/proto/ateapipb/ateapi.proto"
+    f"{UPSTREAM_COMMIT}/api/ateapi/v1/ateapi.proto"
 )
 OURS = Path(__file__).parents[1] / "src/api/ate.proto"
 

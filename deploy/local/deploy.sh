@@ -59,10 +59,14 @@ done
 owner_token=deploy/local/.identity/owner-token
 trap 'rm -f deploy/local/.identity/owner-token' EXIT
 (umask 077 && kubectl -n ate-system create token ate-client --audience api.ate-system.svc --duration 10m > "$owner_token")
-ATE_TEMPLATE=$(uv run python -m api.substrate_sync deploy/substrate/agents.yaml \
+# The API rereads the file on every job. The temporary file starts inside the directory so that it gets
+# the label the container can read, and mv replaces the file in one step.
+template_tmp=$(mktemp deploy/local/.identity/mounted/.template.XXXXXX)
+uv run python -m api.substrate_sync deploy/substrate/agents.yaml \
   --agent-image "$AGENT_IMAGE" --target "127.0.0.1:$ATE_API_PORT" --server-name api.ate-system.svc \
-  --ca-file deploy/local/.identity/mounted/trust-bundle.pem --token-file "$owner_token")
-export ATE_TEMPLATE
+  --ca-file deploy/local/.identity/mounted/trust-bundle.pem --token-file "$owner_token" > "$template_tmp"
+chmod 644 "$template_tmp"
+mv "$template_tmp" deploy/local/.identity/mounted/template
 
 compose=("$tool" compose -f compose.yaml -f deploy/local/compose.yaml)
 "${compose[@]}" up -d --build --wait api context-uds context-relay
