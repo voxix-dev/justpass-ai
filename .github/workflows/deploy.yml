@@ -229,7 +229,7 @@ jobs:
 
   web-build:
     needs: api
-    if: needs.api.result == 'success'
+    if: github.event_name == 'workflow_run' && needs.api.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read # no id-token: dependency install scripts must not be able to mint a token
