@@ -1,0 +1,180 @@
+name: deploy
+
+# After ci passes on main, applies the production Terraform (deploy/terraform/prod) for the tip of main, then deploys
+# the API to Cloud Run and the web app to Firebase Hosting, which rewrites /api/** to Cloud Run. The API image is the
+# one ci's `images` job pushed to GHCR; it is deployed by digest through the Artifact Registry remote repository that
+# proxies GHCR. Terraform ignores the Cloud Run image, so applying never rolls a deploy back. Without GCP_PROJECT_ID
+# nothing runs. The repository variables are the outputs of deploy/terraform/bootstrap, applied by hand once, and the
+# bucket that holds the Terraform state:
+#   GCP_PROJECT_ID, GCP_REGION, GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_TERRAFORM_SERVICE_ACCOUNT, GCP_TF_STATE_BUCKET
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+  queue: max # with one pending slot, a late older run would replace the tip's pending run and then skip
+
+jobs:
+  infra:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+      && vars.GCP_PROJECT_ID != ''
+    runs-on: ubuntu-latest
+    environment: production # the owner service account trusts only this environment's token
+    permissions:
+      contents: read
+      id-token: write # the OIDC token that Workload Identity Federation exchanges; no key files
+    outputs:
+      current: ${{ steps.tip.outputs.current }}
+      deployer: ${{ steps.out.outputs.deployer }}
+      image_repository: ${{ steps.out.outputs.image_repository }}
+    steps:
+      # An older ci run that finishes late must not roll back a newer deploy.
+      - id: tip
+        name: Skip unless this is the tip of main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$tip" = "$SHA" ]; then echo "current=true" >> "$GITHUB_OUTPUT"; else
+            echo "::notice::Skipping the deploy of $SHA: main is at $tip"
+          fi
+      - if: steps.tip.outputs.current == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - if: steps.tip.outputs.current == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_SERVICE_ACCOUNT }}
+      - if: steps.tip.outputs.current == 'true'
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.16.1
+          terraform_wrapper: false # the step below reads `terraform output`
+      - if: steps.tip.outputs.current == 'true'
+        name: Apply the production Terraform
+        env:
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          STATE_BUCKET: ${{ vars.GCP_TF_STATE_BUCKET }}
+        run: |
+          terraform -chdir=deploy/terraform/prod init -input=false \
+            -backend-config=bucket="$STATE_BUCKET" -backend-config=prefix=prod
+          terraform -chdir=deploy/terraform/prod apply -input=false -auto-approve \
+            -var project_id="$PROJECT_ID" -var region="$REGION"
+      - if: steps.tip.outputs.current == 'true'
+        id: out
+        run: |
+          out() { terraform -chdir=deploy/terraform/prod output -raw "$1"; }
+          echo "deployer=$(out GCP_DEPLOYER_SERVICE_ACCOUNT)" >> "$GITHUB_OUTPUT"
+          echo "image_repository=$(out GCP_IMAGE_REPOSITORY)" >> "$GITHUB_OUTPUT"
+
+  api:
+    needs: infra
+    if: needs.infra.result == 'success' && needs.infra.outputs.current == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ needs.infra.outputs.deployer }}
+          token_format: access_token
+      - id: image
+        name: Resolve the digest of the image ci pushed
+        env:
+          REF: ghcr.io/voxix-dev/justpass-ai/api:${{ github.event.workflow_run.head_sha }}
+        # Cloud Run swaps an index digest for its linux/amd64 image's, so take that one or the revision check fails.
+        run: |
+          digest=$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r '
+            if .manifests then .manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")
+            | .digest else .digest end')
+          case "$digest" in sha256:*) ;; *) echo "::error::No image $REF; did the ci images job push it?"; exit 1 ;; esac
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Deploy to Cloud Run
+        run: deploy/gcp/deploy-api.sh
+        env:
+          # By digest, not by tag: a tag can move, so the revision check proves this exact build is serving.
+          IMAGE: ${{ needs.infra.outputs.image_repository }}@${{ steps.image.outputs.digest }}
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+
+  web-build:
+    needs: api
+    if: needs.api.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # no id-token: dependency install scripts must not be able to mint a token
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Point the /api/** rewrite at the Cloud Run region
+        env:
+          REGION: ${{ vars.GCP_REGION }}
+        run: |
+          jq --arg region "$REGION" '(.hosting.rewrites[] | select(.run) | .run.region) = $region' firebase.json > firebase.json.new
+          mv firebase.json.new firebase.json
+      - uses: actions/upload-artifact@v5
+        with:
+          name: web
+          path: |
+            apps/web/dist
+            apps/web/firebase.json
+          if-no-files-found: error
+
+  web:
+    needs: [infra, web-build]
+    if: needs.web-build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: web
+          path: apps/web # the artifact's root is apps/web, the two paths' common directory
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ needs.infra.outputs.deployer }}
+      - name: Deploy to Firebase Hosting
+        env:
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+        working-directory: apps/web
+        run: npx --yes firebase-tools@15.36.0 deploy --only hosting --project "$PROJECT_ID" --non-interactive
