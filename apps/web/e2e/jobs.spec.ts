@@ -401,3 +401,21 @@ test.describe('email link', () => {
     await other.context().close()
   })
 })
+
+test('a photo task shows its photo on the result page', async ({ page }) => {
+  await signInAsGuest(page)
+  await page.goto('/new')
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  )
+  await page.getByLabel('Photo files').setInputFiles({ name: 'task.png', mimeType: 'image/png', buffer: png })
+  await expect(page.getByRole('button', { name: 'Remove photo 1' })).toBeVisible()
+  await expect(page.getByRole('img', { name: 'Uploading photo 1' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Do it for me' }).click()
+  await expect(page).toHaveURL(/\/jobs\/[0-9a-f-]{36}$/)
+  await expect(page.getByRole('heading', { name: 'Photo task' })).toBeVisible()
+  const photo = page.getByRole('img', { name: 'Photo 1 of the task' })
+  await expect(photo).toBeVisible()
+  await expect(photo).toHaveJSProperty('naturalWidth', 1)
+})

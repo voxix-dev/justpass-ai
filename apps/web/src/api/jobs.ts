@@ -1,11 +1,12 @@
-// Jobs API used by the screens, called through the generated client. Photos are not supported yet:
-// a job is text only. Every function throws an ApiError with a message fit to show the student.
+// Jobs API used by the screens, called through the generated client. A job is text,
+// photos or both. Every function throws an ApiError with a message fit to show the student.
 import { api } from './client'
 import type { components } from './schema.gen'
 
 export type Job = components['schemas']['JobOut']
 export type JobStatus = Job['status']
 export type NewJob = components['schemas']['JobCreate']
+export type FileOut = components['schemas']['FileOut']
 
 /** A failed request. status is 0 when no usable response arrived at all. */
 export class ApiError extends Error {
@@ -22,6 +23,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 function message(error: unknown, status: number): string {
   const detail = (error as { detail?: unknown } | undefined)?.detail
   if (typeof detail === 'string') return detail
+  if (status === 413) return 'That photo is too big. Try a smaller one.'
+  if (status === 415) return 'That file is not a photo JustPass can read. Use a JPEG, PNG or WebP image.'
   if (status !== 422) return `Something went wrong (${status}). Try again.`
   const tooLong = (detail as { type: string; ctx?: { max_length?: number } }[] | undefined)?.find((e) => e.type === 'string_too_long')
   if (tooLong?.ctx?.max_length) return `That is too long. Keep it under ${tooLong.ctx.max_length.toLocaleString('en')} characters.`
@@ -77,4 +80,25 @@ export async function acceptJob(id: string, round: number): Promise<Job> {
  */
 export async function sendFeedback(id: string, round: number, feedback: string): Promise<Job> {
   return unwrap(api.POST('/jobs/{job_id}/feedback', { params: { path: { job_id: id } }, body: { text: feedback, round } }))
+}
+
+/** Upload one photo as its raw bytes and return its file record. */
+export async function uploadPhoto(blob: Blob): Promise<FileOut> {
+  return unwrap(
+    api.POST('/files', {
+      // The body is the image itself, not JSON; the types call it a string.
+      body: blob as unknown as string,
+      bodySerializer: (b) => b as unknown as BodyInit,
+      headers: { 'Content-Type': blob.type },
+    }),
+  )
+}
+
+/**
+ * Fetch a photo through the client, so the bearer token is added like on every other call.
+ * @throws {ApiError} If the photo is unknown or not the user's (404).
+ */
+export async function loadPhoto(id: string): Promise<Blob> {
+  if (!UUID.test(id)) throw new ApiError('Photo not found', 404)
+  return unwrap(api.GET('/files/{file_id}', { params: { path: { file_id: id } }, parseAs: 'blob' }))
 }

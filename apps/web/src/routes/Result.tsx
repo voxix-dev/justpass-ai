@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronLeft, FlaskConical, LoaderCircle } from 'lucide-react'
 import { acceptJob, sendFeedback, type Job } from '@/api/jobs'
+import { PhotoImg } from '@/components/PhotoImg'
 import { ErrorState, Skeleton, StatusBadge } from '@/components/bits'
 import { Button } from '@/components/ui/button'
 import { ago, isConflict, isNotFound, isPending, useJob } from '@/lib/jobs'
@@ -119,10 +120,17 @@ function JobDetail({ job }: { job: Job }) {
         {job.round > 1 && !pending && <p className="mt-3 text-muted-foreground">Revised answer, round {job.round}.</p>}
       </header>
 
-      {job.text !== job.title && (
+      {(job.text !== job.title || job.photos.length > 0) && (
         <section aria-labelledby="q" className="mt-6 rounded-2xl border-2 border-border bg-card p-4">
           <h2 id="q" className="text-xl">The full task</h2>
-          <p dir="auto" className="mt-2 whitespace-pre-wrap break-words">{job.text}</p>
+          {job.text && (job.text !== job.title || job.photos.length > 0) && <p dir="auto" className="mt-2 whitespace-pre-wrap break-words">{job.text}</p>}
+          {job.photos.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-3">
+              {job.photos.map((id, i) => (
+                <PhotoImg key={id} id={id} alt={`Photo ${i + 1} of the task`} className="h-40 max-w-full rounded-xl border-2 border-border bg-muted object-cover" />
+              ))}
+            </div>
+          )}
         </section>
       )}
 

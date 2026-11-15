@@ -11,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.context_token import mint_token
 from api.db import get_session
 from api.main import app
-from api.tables import Artifact, Job, JobRound, MemoryDoc, User
+from api.storage import LocalStorage
+from api.tables import Artifact, File, Job, JobRound, MemoryDoc, User
 from shared.models import ArtifactKind, JobStatus, Level
 
 pytestmark = pytest.mark.anyio
@@ -147,6 +148,7 @@ async def test_get_task(client: httpx2.AsyncClient, session: AsyncSession):
         "language": "en",
         "text": "Solve x^2 = 4",
         "round": 4,
+        "photos": [],
         "rounds": [
             {
                 "number": 1,
@@ -456,3 +458,60 @@ async def test_an_agent_sees_nothing_of_another_student(
     assert task["rounds"][0]["artifacts"] == []
     assert (await call(client, "get_profile", auth(alice))).json()["profile_md"] == ""
     assert (await call(client, "list_history", auth(alice))).json() == []
+
+
+async def add_photo(
+    session: AsyncSession, storage: LocalStorage, user_id: str, data: bytes = b"\xff\xd8\xffjpeg"
+) -> File:
+    if await session.get(User, user_id) is None:
+        session.add(User(id=user_id, is_anonymous=True))
+        await session.flush()
+    file = File(
+        user_id=user_id,
+        storage_key=f"users/{user_id}/uploads/{uuid.uuid4()}.jpg",
+        mime_type="image/jpeg",
+        size_bytes=len(data),
+    )
+    session.add(file)
+    await session.flush()
+    await storage.put(file.storage_key, data, file.mime_type)
+    return file
+
+
+async def test_get_task_lists_the_photos_in_order(
+    client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage
+):
+    first = await add_photo(session, storage, "alice")
+    second = await add_photo(session, storage, "alice")
+    await add_photo(session, storage, "alice")  # not this job's
+    job = await add_job(session, "alice", photo_keys=[second.storage_key, first.storage_key])
+    task = (await call(client, "get_task", auth(job))).json()
+    assert task["photos"] == [str(second.id), str(first.id)]
+
+
+async def test_read_file_returns_the_jobs_own_photos_only(
+    client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage
+):
+    mine = await add_photo(session, storage, "alice", b"\xff\xd8\xffmine")
+    other_photo = await add_photo(session, storage, "alice")
+    theirs = await add_photo(session, storage, "bob")
+    job = await add_job(session, "alice", photo_keys=[mine.storage_key])
+
+    response = await client.get(f"/v1/context/files/{mine.id}", headers=auth(job))
+    assert response.status_code == 200
+    assert response.content == b"\xff\xd8\xffmine"
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    for file_id in (other_photo.id, theirs.id, uuid.uuid4()):
+        response = await client.get(f"/v1/context/files/{file_id}", headers=auth(job))
+        assert response.status_code == 404
+
+
+async def test_read_file_needs_a_valid_token(
+    client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage
+):
+    photo = await add_photo(session, storage, "alice")
+    await add_job(session, "alice", photo_keys=[photo.storage_key])
+    response = await client.get(f"/v1/context/files/{photo.id}")
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"

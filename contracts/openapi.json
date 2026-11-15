@@ -22,6 +22,31 @@
         "title": "FeedbackCreate",
         "type": "object"
       },
+      "FileOut": {
+        "description": "An uploaded photo. Give its id to POST /jobs.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "mimeType": {
+            "title": "Mimetype",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "mimeType",
+          "size"
+        ],
+        "title": "FileOut",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -38,16 +63,30 @@
       "JobCreate": {
         "additionalProperties": false,
         "properties": {
+          "photos": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Photos",
+            "type": "array"
+          },
           "text": {
-            "maxLength": 20000,
-            "minLength": 1,
-            "title": "Text",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
           }
         },
-        "required": [
-          "text"
-        ],
         "title": "JobCreate",
         "type": "object"
       },
@@ -101,6 +140,14 @@
             "title": "Id",
             "type": "string"
           },
+          "photos": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Photos",
+            "type": "array"
+          },
           "result": {
             "anyOf": [
               {
@@ -141,6 +188,7 @@
           "createdAt",
           "title",
           "text",
+          "photos",
           "result",
           "error",
           "accepted",
@@ -235,6 +283,168 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/files": {
+      "post": {
+        "description": "Store a photo sent as the request body, with its image type as the Content-Type.",
+        "operationId": "upload_file_files_post",
+        "requestBody": {
+          "content": {
+            "image/jpeg": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "image/png": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "image/webp": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The photo is over 8 MiB"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not a JPEG, PNG or WebP photo"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body is empty"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The database cannot be reached"
+          }
+        },
+        "summary": "Upload File",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/files/{file_id}": {
+      "get": {
+        "description": "One of the dev user's photos; 404 for a missing one or another user's.",
+        "operationId": "get_file_files__file_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The photo"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No such photo for this user"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The database cannot be reached"
+          }
+        },
+        "summary": "Get File",
+        "tags": [
+          "files"
+        ]
+      }
+    },
     "/health": {
       "get": {
         "description": "Whether the process is up. /ready also checks the database.",

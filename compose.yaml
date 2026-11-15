@@ -44,6 +44,13 @@ services:
       interval: 2s
       retries: 15
 
+  uploads-init:
+    image: python:3.14.10-slim-trixie
+    user: root
+    command: chown 10001 /data/uploads  # the api runs as uid 10001; a new volume belongs to root
+    volumes:
+      - uploads:/data/uploads
+
   api:
     build:
       context: .
@@ -54,6 +61,8 @@ services:
         condition: service_healthy
       agent:
         condition: service_healthy
+      uploads-init:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql+asyncpg://app:app@db:5432/app
       AGENT_URL: http://agent
@@ -62,6 +71,9 @@ services:
       FIREBASE_AUTH_EMULATOR_HOST: auth:9099  # accepts the emulator's tokens; the API does not call it
       CONTEXT_TOKEN_SECRET: ${CONTEXT_TOKEN_SECRET:?see .env.example}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}  # empty: the agent gives the fixed sample answer
+      STORAGE_DIR: /data/uploads
+    volumes:
+      - uploads:/data/uploads
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"  # the emulator's tokens are accepted: keep it off the network
     healthcheck:
@@ -72,3 +84,4 @@ services:
 volumes:
   db-data:
   auth-npm:
+  uploads:

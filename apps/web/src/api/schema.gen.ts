@@ -4,6 +4,46 @@
  */
 
 export interface paths {
+    "/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload File
+         * @description Store a photo sent as the request body, with its image type as the Content-Type.
+         */
+        post: operations["upload_file_files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get File
+         * @description One of the dev user's photos; 404 for a missing one or another user's.
+         */
+        get: operations["get_file_files__file_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -147,6 +187,21 @@ export interface components {
             /** Text */
             text: string;
         };
+        /**
+         * FileOut
+         * @description An uploaded photo. Give its id to POST /jobs.
+         */
+        FileOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Mimetype */
+            mimeType: string;
+            /** Size */
+            size: number;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -154,8 +209,13 @@ export interface components {
         };
         /** JobCreate */
         JobCreate: {
+            /**
+             * Photos
+             * @default []
+             */
+            photos: string[];
             /** Text */
-            text: string;
+            text?: string | null;
         };
         /**
          * JobOut
@@ -180,6 +240,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Photos */
+            photos: string[];
             /** Result */
             result: string | null;
             /** Round */
@@ -232,6 +294,119 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    upload_file_files_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "image/jpeg": string;
+                "image/png": string;
+                "image/webp": string;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileOut"];
+                };
+            };
+            /** @description The photo is over 8 MiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a JPEG, PNG or WebP photo */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The body is empty */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The database cannot be reached */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_file_files__file_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The photo */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": string;
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            /** @description No such photo for this user */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The database cannot be reached */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     health_health_get: {
         parameters: {
             query?: never;

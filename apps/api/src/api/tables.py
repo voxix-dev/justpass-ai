@@ -87,6 +87,22 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class File(Base):
+    """A photo a student uploaded. The bytes are in object storage under `storage_key`; a job
+    lists the keys of its photos in `photo_keys`."""
+
+    __tablename__ = "files"
+    __table_args__ = (Index(None, "user_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    storage_key: Mapped[str] = mapped_column(unique=True)
+    mime_type: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int]
+    extracted_text: Mapped[str | None]  # what OCR read from the photo, filled in later
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class Job(Base):
     """One homework request."""
 

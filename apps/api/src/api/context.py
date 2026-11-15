@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -17,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.context_token import InvalidToken, verify_token
 from api.db import get_session
-from api.tables import Artifact, Job, JobRound, MemoryDoc, search_memory
+from api.storage import NotFound, Storage, get_storage
+from api.tables import Artifact, File, Job, JobRound, MemoryDoc, search_memory
 from shared.context import (
     ArtifactContent,
     ArtifactRef,
@@ -151,6 +152,12 @@ async def get_task(args: GetTask, agent: Caller, session: Session) -> Task:
                 artifacts=[ArtifactRef(id=a.id, kind=a.kind, title=a.title) for a in mine],
             )
         )
+    files = await session.execute(
+        select(File.id, File.storage_key).where(
+            File.user_id == job.user_id, File.storage_key.in_(job.photo_keys)
+        )
+    )
+    by_key = {key: file_id for file_id, key in files}
     return Task(
         job_id=job.id,
         subject=job.subject,
@@ -159,7 +166,32 @@ async def get_task(args: GetTask, agent: Caller, session: Session) -> Task:
         text=job.input_text or "",
         round=agent.round,
         rounds=infos,
+        photos=[by_key[key] for key in job.photo_keys if key in by_key],
     )
+
+
+@router.get("/files/{file_id}")
+async def read_file(
+    file_id: uuid.UUID,
+    agent: Caller,
+    session: Session,
+    storage: Annotated[Storage, Depends(get_storage)],
+) -> Response:
+    """A photo of this job. Any other file 404s, like a missing one."""
+    file = await session.scalar(
+        select(File).where(
+            File.id == file_id,
+            File.user_id == agent.job.user_id,
+            File.storage_key.in_(agent.job.photo_keys),
+        )
+    )
+    if file is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
+    try:
+        data = await storage.get(file.storage_key)
+    except NotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found") from None
+    return Response(data, media_type=file.mime_type, headers={"X-Content-Type-Options": "nosniff"})
 
 
 @router.post("/read_artifact")

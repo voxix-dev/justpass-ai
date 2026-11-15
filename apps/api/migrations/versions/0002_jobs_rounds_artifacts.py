@@ -1,4 +1,4 @@
-"""jobs, job_rounds, artifacts
+"""files, jobs, job_rounds, artifacts
 
 Revision ID: 0002
 Revises: 0001
@@ -33,10 +33,22 @@ def timestamp(name: str, default: str = "now()") -> sa.Column[Any]:
 
 
 def upgrade() -> None:
-    """Create jobs, job_rounds, and artifacts with their constraints and indexes.
+    """Create files, jobs, job_rounds, and artifacts with their constraints and indexes.
 
     Database errors propagate to the caller.
     """
+    op.create_table(
+        "files",
+        sa.Column("id", sa.Uuid(), primary_key=True),
+        sa.Column("user_id", sa.String(128), nullable=False),
+        sa.Column("storage_key", sa.String(), nullable=False, unique=True),
+        sa.Column("mime_type", sa.String(64), nullable=False),
+        sa.Column("size_bytes", sa.Integer(), nullable=False),
+        sa.Column("extracted_text", sa.String()),
+        timestamp("created_at"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+    )
+    op.create_index("ix_files_user_id", "files", ["user_id"])
     op.create_table(
         "jobs",
         sa.Column("id", sa.Uuid(), primary_key=True),
@@ -113,10 +125,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop artifacts, job_rounds, and jobs, including their indexes and all their data.
+    """Drop artifacts, job_rounds, jobs, and files, including their indexes and all their data.
 
     Database errors propagate to the caller.
     """
     # Dropping a table drops its indexes too.
-    for table in ("artifacts", "job_rounds", "jobs"):
+    for table in ("artifacts", "job_rounds", "jobs", "files"):
         op.drop_table(table)

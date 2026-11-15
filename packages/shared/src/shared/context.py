@@ -105,6 +105,7 @@ class Task(BaseModel):
     text: str  # the student's question
     round: int  # the round this token is for
     rounds: list[RoundInfo]  # every round, oldest first, with the current one last
+    photos: list[uuid.UUID] = []  # file ids of the student's photos, in order
 
 
 class ArtifactContent(BaseModel):
