@@ -23,11 +23,6 @@ variable "github_owner_id" {
   default = "203257071" # gh api repos/voxix-dev/justpass-ai -q .owner.id
 }
 
-variable "firebase_project_id" {
-  type        = string
-  description = "Firebase project whose ID tokens the API accepts (FIREBASE_PROJECT_ID)."
-}
-
 variable "bootstrap_image" {
   type        = string
   description = "Image of the first revision. CI deploys the real one."

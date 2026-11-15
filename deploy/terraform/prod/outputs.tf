@@ -17,9 +17,18 @@ output "GCP_DEPLOYER_SERVICE_ACCOUNT" {
 }
 
 output "GCP_IMAGE_REPOSITORY" {
-  value = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.images.repository_id}/api"
+  value = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.ghcr.repository_id}/${var.github_repository}/api"
 }
 
 output "api_url" {
   value = module.api.service_uri
+}
+
+output "firebase_web_config" {
+  value = {
+    apiKey     = data.google_firebase_web_app_config.web.api_key
+    authDomain = data.google_firebase_web_app_config.web.auth_domain
+    projectId  = var.project_id
+    appId      = google_firebase_web_app.web.app_id
+  }
 }

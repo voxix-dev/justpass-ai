@@ -1,15 +1,21 @@
-# Production on GCP: the API on Cloud Run, Postgres on Cloud SQL, and what lets GitHub Actions deploy it
-# without a key file. Substrate is the only thing that runs on Kubernetes, so none of it is here.
+# Production on GCP: the API on Cloud Run (pulling the image CI pushes to GHCR through an Artifact Registry
+# remote repository), Postgres on Cloud SQL, Firebase (Auth and Hosting) in the same project, and what lets
+# GitHub Actions deploy the API and the web app without a key file. Substrate is the only thing that runs on
+# Kubernetes, so none of it is here.
 # Test the module locally first: deploy/gcp/local-e2e.sh.
 
 locals {
   apis = [
     "artifactregistry.googleapis.com",
     "cloudresourcemanager.googleapis.com",
+    "firebase.googleapis.com",
+    "firebasehosting.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
+    "identitytoolkit.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
+    "serviceusage.googleapis.com",
     "sqladmin.googleapis.com",
     "sts.googleapis.com",
   ]
@@ -27,17 +33,63 @@ module "api" {
   project_id = var.project_id
   region     = var.region
   image      = var.bootstrap_image
-  env        = merge({ AGENT_URL = var.agent_url, FIREBASE_PROJECT_ID = var.firebase_project_id }, var.env)
+  env        = merge({ AGENT_URL = var.agent_url, FIREBASE_PROJECT_ID = var.project_id }, var.env)
 
   depends_on = [google_project_service.api]
 }
 
-resource "google_artifact_registry_repository" "images" {
-  repository_id = "justpass"
+# Cloud Run cannot pull from ghcr.io, so it pulls through this repository, which fetches from the public GHCR package.
+resource "google_artifact_registry_repository" "ghcr" {
+  repository_id = "ghcr"
   location      = var.region
   format        = "DOCKER"
+  mode          = "REMOTE_REPOSITORY"
+
+  remote_repository_config {
+    docker_repository {
+      custom_repository {
+        uri = "https://ghcr.io"
+      }
+    }
+  }
 
   depends_on = [google_project_service.api]
+}
+
+resource "google_firebase_project" "main" {
+  provider = google-beta
+
+  depends_on = [google_project_service.api]
+}
+
+resource "google_identity_platform_config" "auth" {
+  provider = google-beta
+
+  authorized_domains = ["localhost", "${var.project_id}.firebaseapp.com", "${var.project_id}.web.app"]
+
+  depends_on = [google_firebase_project.main]
+}
+
+resource "google_firebase_web_app" "web" {
+  provider = google-beta
+
+  display_name = "web"
+
+  depends_on = [google_firebase_project.main]
+}
+
+data "google_firebase_web_app_config" "web" {
+  provider = google-beta
+
+  web_app_id = google_firebase_web_app.web.app_id
+}
+
+resource "google_firebase_hosting_site" "default" {
+  provider = google-beta
+
+  site_id = var.project_id
+
+  depends_on = [google_firebase_project.main]
 }
 
 # GitHub Actions deploys as this service account, with a short-lived token from its OIDC identity.
@@ -84,11 +136,24 @@ resource "google_service_account_iam_member" "deployer_from_github" {
   member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repository}"
 }
 
-resource "google_artifact_registry_repository_iam_member" "deployer_pushes" {
-  repository = google_artifact_registry_repository.images.name
+# Cloud Run checks that whoever deploys an image can read it.
+resource "google_artifact_registry_repository_iam_member" "deployer_reads" {
+  repository = google_artifact_registry_repository.ghcr.name
   location   = var.region
-  role       = "roles/artifactregistry.writer"
+  role       = "roles/artifactregistry.reader"
   member     = "serviceAccount:${google_service_account.deployer.email}"
+}
+
+# `firebase deploy --only hosting` as the deployer.
+resource "google_project_iam_member" "deployer_firebase" {
+  for_each = toset([
+    "roles/firebasehosting.admin",
+    "roles/serviceusage.apiKeysViewer",
+    "roles/serviceusage.serviceUsageConsumer",
+  ])
+  project = var.project_id
+  role    = each.key
+  member  = "serviceAccount:${google_service_account.deployer.email}"
 }
 
 resource "google_cloud_run_v2_service_iam_member" "deployer_deploys" {
