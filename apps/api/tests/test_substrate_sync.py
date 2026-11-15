@@ -8,7 +8,7 @@ import yaml
 from pydantic import ValidationError
 
 from api import ate_pb2
-from api.agents import ACCESS_POLICY_NAME, Control
+from api.agents import ACCESS_POLICY_NAME, Control, file_token
 from api.substrate_sync import (
     AgentsSpec,
     GoldenSnapshotFailed,
@@ -21,6 +21,7 @@ from api.substrate_sync import (
     sync,
     template_name,
     wait_for_golden,
+    with_editors,
 )
 
 pytestmark = pytest.mark.anyio
@@ -332,7 +333,9 @@ async def test_wait_times_out_and_names_the_last_read_error(spec: AgentsSpec):
 
 async def test_fake_admin_stands_in_for_control(spec: AgentsSpec, tmp_path: Path):
     """Control must have every call that sync makes."""
-    control = Control(lambda: grpc.aio.insecure_channel("127.0.0.1:1"), tmp_path / "token")
+    control = Control(
+        lambda: grpc.aio.insecure_channel("127.0.0.1:1"), file_token(tmp_path / "token")
+    )
     for method in vars(FakeAdmin):
         if method.startswith(("create_", "get_", "update_")):
             assert hasattr(control, method), method
@@ -368,3 +371,36 @@ def test_the_sandbox_fits_inside_its_worker(spec: AgentsSpec):
     assert sandbox.cpu_millicores <= quantity(worker["cpu"]) * 1000
     assert sandbox.memory_bytes <= quantity(worker["memory"])
     assert pool["metadata"]["labels"].items() >= spec.template.worker_selector.match_labels.items()
+
+
+def editors(spec: AgentsSpec) -> list[str]:
+    [binding] = [b for b in spec.access_policy.bindings if b.role == "editor"]
+    return binding.members
+
+
+def test_editor_adds_a_member_to_the_editor_binding(spec: AgentsSpec):
+    wanted = with_editors(spec, ["user:123", "user:456"])
+    assert editors(wanted) == [*editors(spec), "user:123", "user:456"]
+    assert with_editors(wanted, ["user:123"]) == wanted
+    assert with_editors(spec, []) == spec
+
+
+def test_editor_creates_the_binding_if_the_file_has_none(spec: AgentsSpec):
+    bare = spec.model_copy(
+        update={"access_policy": spec.access_policy.model_copy(update={"bindings": []})}
+    )
+    assert editors(with_editors(bare, ["user:123"])) == ["user:123"]
+
+
+async def test_a_rerun_with_a_new_editor_updates_the_stored_policy(spec: AgentsSpec):
+    admin = FakeAdmin()
+    await ensure_policy(admin, with_editors(spec, ["user:1"]))
+    admin.calls.clear()
+
+    await ensure_policy(admin, with_editors(spec, ["user:2"]))
+
+    assert admin.calls == ["update_access_policy"]
+    assert admin.policy is not None
+    assert [(b.role, sorted(b.members)) for b in admin.policy.bindings] == [
+        ("editor", sorted([*editors(spec), "user:2"]))
+    ]

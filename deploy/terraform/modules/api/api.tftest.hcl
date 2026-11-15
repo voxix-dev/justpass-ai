@@ -49,6 +49,11 @@ run "production_uses_the_cloud_sql_volume_and_secret_references" {
   }
 
   assert {
+    condition     = output.runtime_service_account_unique_id == google_service_account.runtime.unique_id
+    error_message = "The runtime account's numeric id must be an output."
+  }
+
+  assert {
     condition     = google_sql_database_instance.db.settings[0].ip_configuration[0].ssl_mode == "ENCRYPTED_ONLY"
     error_message = "Cloud SQL must refuse unencrypted connections."
   }

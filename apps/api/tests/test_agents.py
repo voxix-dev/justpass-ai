@@ -1,4 +1,6 @@
+import asyncio
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -6,11 +8,21 @@ from pathlib import Path
 
 import grpc
 import httpx2
+import jwt
 import pytest
 from pydantic import SecretStr, ValidationError
 
 from api import ate_pb2
-from api.agents import Control, SingleAgent, SubstrateAgents, agents_from_env, egress_rules
+from api.agents import (
+    ID_TOKEN_URL,
+    Control,
+    GoogleIdToken,
+    SingleAgent,
+    SubstrateAgents,
+    agents_from_env,
+    egress_rules,
+    file_token,
+)
 from shared.agent_run import AgentAnswer, AgentRun
 
 pytestmark = pytest.mark.anyio
@@ -89,7 +101,7 @@ def substrate(ate_api: FakeAteApi, tmp_path: Path) -> SubstrateAgents:
     return SubstrateAgents(
         control=Control(
             lambda: grpc.aio.insecure_channel(f"127.0.0.1:{ate_api.port}"),
-            token,
+            file_token(token),
         ),
         router=lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(answer)),
         router_url="https://router",
@@ -577,4 +589,104 @@ def test_agents_from_env_needs_one_or_the_other(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.delenv("AGENT_URL", raising=False)
     monkeypatch.delenv("ATE_ROUTER_URL", raising=False)
     with pytest.raises(RuntimeError, match="AGENT_URL"):
+        agents_from_env()
+
+
+def id_token(exp: float) -> str:
+    return jwt.encode({"exp": exp}, "k" * 32, algorithm="HS256")
+
+
+def metadata_server(tokens: list[str]) -> tuple[httpx2.MockTransport, list[httpx2.Request]]:
+    requests: list[httpx2.Request] = []
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        return httpx2.Response(200, text=tokens[min(len(requests), len(tokens)) - 1] + "\n")
+
+    return httpx2.MockTransport(answer), requests
+
+
+async def test_google_id_token_is_fetched_from_the_metadata_server():
+    first = id_token(time.time() + 3600)
+    transport, requests = metadata_server([first])
+    assert await GoogleIdToken("https://ate", transport)() == first
+    [request] = requests
+    assert request.url == f"{ID_TOKEN_URL}?audience=https%3A%2F%2Fate"
+    assert request.headers["Metadata-Flavor"] == "Google"
+
+
+async def test_google_id_token_is_cached_until_five_minutes_before_expiry():
+    transport, requests = metadata_server([id_token(time.time() + 3600)])
+    source = GoogleIdToken("aud", transport)
+    await asyncio.gather(*(source() for _ in range(5)))
+    await source()
+    assert len(requests) == 1
+
+
+async def test_google_id_token_is_fetched_again_near_expiry():
+    stale = id_token(time.time() + 200)
+    fresh = id_token(time.time() + 3600)
+    transport, requests = metadata_server([stale, fresh])
+    source = GoogleIdToken("aud", transport)
+    assert await source() == stale
+    assert await source() == fresh
+    assert await source() == fresh
+    assert len(requests) == 2
+
+
+async def test_google_id_token_fails_when_the_metadata_server_does():
+    source = GoogleIdToken("aud", httpx2.MockTransport(lambda _: httpx2.Response(404)))
+    with pytest.raises(httpx2.HTTPStatusError):
+        await source()
+
+
+async def test_file_token_reads_the_file_on_each_call(tmp_path: Path):
+    path = tmp_path / "token"
+    path.write_text("one\n")
+    source = file_token(path)
+    assert await source() == "one"
+    path.write_text("two\n")
+    assert await source() == "two"
+
+
+def set_substrate_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENT_URL", raising=False)
+    for name, value in {
+        "ATE_ROUTER_URL": "https://router",
+        "ATE_API_TARGET": "api:443",
+        "ATE_CA_FILE": "/ca",
+        "ATE_CLIENT_CERT_FILE": "/cert",
+        "ATE_ATESPACE": "homework",
+        "ATE_TEMPLATE_FILE": "/template",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+
+def test_agents_from_env_uses_google_id_tokens_when_an_audience_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    set_substrate_env(monkeypatch)
+    monkeypatch.setenv("ATE_TOKEN_FILE", "/token")
+    monkeypatch.setenv("ATE_ID_TOKEN_AUDIENCE", "https://ate")
+    agents = agents_from_env()
+    assert isinstance(agents, SubstrateAgents)
+    source = agents.control.token_source
+    assert isinstance(source, GoogleIdToken)
+    assert source.audience == "https://ate"
+
+
+def test_agents_from_env_uses_the_token_file_without_an_audience(monkeypatch: pytest.MonkeyPatch):
+    set_substrate_env(monkeypatch)
+    monkeypatch.setenv("ATE_TOKEN_FILE", "/token")
+    monkeypatch.delenv("ATE_ID_TOKEN_AUDIENCE", raising=False)
+    agents = agents_from_env()
+    assert isinstance(agents, SubstrateAgents)
+    assert not isinstance(agents.control.token_source, GoogleIdToken)
+
+
+def test_agents_from_env_needs_a_token_file_without_an_audience(monkeypatch: pytest.MonkeyPatch):
+    set_substrate_env(monkeypatch)
+    monkeypatch.delenv("ATE_TOKEN_FILE", raising=False)
+    monkeypatch.delenv("ATE_ID_TOKEN_AUDIENCE", raising=False)
+    with pytest.raises(KeyError, match="ATE_TOKEN_FILE"):
         agents_from_env()

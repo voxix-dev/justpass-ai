@@ -61,7 +61,7 @@ output "router_client_ca_pem" {
 }
 
 output "secret_ids" {
-  description = "Secret Manager ids by name: the three the cluster sync writes, and the router client certificate."
+  description = "Secret Manager ids by name: the ones the cluster sync writes, and the router client certificate."
   value       = { for k, s in google_secret_manager_secret.api : k => s.secret_id }
 
   # Cloud Run does not start a revision that mounts a secret with no version.

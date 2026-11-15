@@ -8,6 +8,10 @@ from ATE_TEMPLATE_FILE. Running it again with the same file and image changes no
 the same name. Needs ate-api's address, its CA and a token: --target, --ca-file, --token-file, or
 ATE_API_TARGET, ATE_CA_FILE and ATE_TOKEN_FILE (the settings the API itself uses, see agents.py).
 
+The access policy is put in line with the file on every run, so a rerun with another --editor
+changes it. --editor MEMBER (repeatable) adds a member to the file's editor binding, for an identity
+that isn't known to the file: on Cloud Run the API's Google identity, as user:<numeric id>.
+
 RIGHTS. The token must belong to an identity that may create atespaces (global owner) and write
 the atespace's access policy (atespace owner, which a global owner also is). The API's own identity
 is only an editor of its atespace, by design, so it can't do this. Locally deploy.sh mints a token
@@ -35,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from api import ate_pb2
-from api.agents import ACCESS_POLICY_NAME, Control
+from api.agents import ACCESS_POLICY_NAME, Control, file_token
 
 log = logging.getLogger("substrate_sync")
 
@@ -264,6 +268,23 @@ async def sync(
     return name
 
 
+def with_editors(spec: AgentsSpec, editors: list[str]) -> AgentsSpec:
+    """Add members to the editor binding, creating it if the file has none."""
+    if not editors:
+        return spec
+    bindings = list(spec.access_policy.bindings)
+    for i, binding in enumerate(bindings):
+        if binding.role == "editor":
+            members = [*binding.members, *(m for m in editors if m not in binding.members)]
+            bindings[i] = binding.model_copy(update={"members": members})
+            break
+    else:
+        bindings.append(Binding(role="editor", members=editors))
+    return spec.model_copy(
+        update={"access_policy": spec.access_policy.model_copy(update={"bindings": bindings})}
+    )
+
+
 def _control(target: str, ca_file: Path, token_file: Path, server_name: str | None) -> Control:
     # A port-forward reaches ate-api as 127.0.0.1, but its certificate names the service.
     options = [("grpc.ssl_target_name_override", server_name)] if server_name else None
@@ -272,7 +293,7 @@ def _control(target: str, ca_file: Path, token_file: Path, server_name: str | No
         credentials = grpc.ssl_channel_credentials(ca_file.read_bytes())
         return grpc.aio.secure_channel(target, credentials, options=options)
 
-    return Control(open_channel, token_file)
+    return Control(open_channel, file_token(token_file))
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -296,6 +317,13 @@ def _parser() -> argparse.ArgumentParser:
         default=env("ATE_API_SERVER_NAME"),
         help="name on ate-api's certificate, if --target is not that name (ATE_API_SERVER_NAME)",
     )
+    parser.add_argument(
+        "--editor",
+        action="append",
+        default=[],
+        metavar="MEMBER",
+        help="add MEMBER (e.g. user:<id>) to the editor binding; repeatable",
+    )
     return parser
 
 
@@ -307,7 +335,11 @@ def main(argv: list[str] | None = None) -> None:
         if getattr(args, flag) is None:
             parser.error(f"--{flag.replace('_', '-')} or its ATE_* setting is required")
     control = _control(args.target, args.ca_file, args.token_file, args.server_name)
-    print(asyncio.run(sync(control, load_spec(args.spec), args.agent_image)))
+    print(
+        asyncio.run(
+            sync(control, with_editors(load_spec(args.spec), args.editor), args.agent_image)
+        )
+    )
 
 
 if __name__ == "__main__":

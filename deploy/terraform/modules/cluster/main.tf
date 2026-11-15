@@ -22,8 +22,9 @@ locals {
   # The router accepts the API by this SPIFFE ID (the sync passes it as an allowed ingress ID).
   router_client_spiffe_id = "spiffe://cluster.local/ns/homework/sa/api"
 
-  # Secrets the API reads. The cluster sync adds the versions of the first three; Terraform only makes the first.
-  sync_secrets = toset(["ATE_TOKEN", "ATE_CA", "ATE_TEMPLATE"])
+  # Secrets the API reads. The cluster sync adds their versions. The token is for clusters where the API has no Google
+  # identity: production authenticates with Google ID tokens it fetches itself.
+  sync_secrets = toset(concat(["ATE_CA", "ATE_TEMPLATE"], var.emulator ? ["ATE_TOKEN"] : []))
 }
 
 # floci-gcp has no Cloud Billing API to answer this read; the number only names Workload Identity principals, which the

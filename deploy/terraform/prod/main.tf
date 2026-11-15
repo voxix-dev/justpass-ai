@@ -29,7 +29,6 @@ data "google_project" "this" {}
 locals {
   ate_files = {
     ca          = "/secrets/ate-ca/ca.pem"
-    token       = "/secrets/ate-token/token"
     client_cert = "/secrets/ate-client/client.pem"
     template    = "/secrets/ate-template/template"
   }
@@ -46,13 +45,13 @@ module "api" {
     FIREBASE_PROJECT_ID = var.project_id
 
     # Substrate's ate-api and router, on internal load balancers in the cluster's VPC (names: modules/cluster).
-    ATE_ROUTER_URL       = "https://atenet-router.ate-system.svc"
-    ATE_API_TARGET       = "api.ate-system.svc:443"
-    ATE_ATESPACE         = "justpass-agents"
-    ATE_CA_FILE          = local.ate_files.ca
-    ATE_TOKEN_FILE       = local.ate_files.token
-    ATE_CLIENT_CERT_FILE = local.ate_files.client_cert
-    ATE_TEMPLATE_FILE    = local.ate_files.template
+    ATE_ROUTER_URL        = "https://atenet-router.ate-system.svc"
+    ATE_API_TARGET        = "api.ate-system.svc:443"
+    ATE_ATESPACE          = "justpass-agents"
+    ATE_CA_FILE           = local.ate_files.ca
+    ATE_ID_TOKEN_AUDIENCE = "api.ate-system.svc" # Google ID tokens from the metadata server; the sync trusts the account
+    ATE_CLIENT_CERT_FILE  = local.ate_files.client_cert
+    ATE_TEMPLATE_FILE     = local.ate_files.template
 
     # The agents call the API back at its own URL, which cannot be read from the service without a cycle.
     CONTEXT_API_URL = "https://api-${data.google_project.this.number}.${var.region}.run.app"
@@ -66,7 +65,6 @@ module "api" {
   # The cluster sync writes these; the files are read at their latest version.
   secret_files = {
     ca          = { secret_id = module.cluster.secret_ids["ATE_CA"], path = local.ate_files.ca }
-    token       = { secret_id = module.cluster.secret_ids["ATE_TOKEN"], path = local.ate_files.token }
     client_cert = { secret_id = module.cluster.secret_ids["ATE_CLIENT_CERT"], path = local.ate_files.client_cert }
     template    = { secret_id = module.cluster.secret_ids["ATE_TEMPLATE"], path = local.ate_files.template }
   }

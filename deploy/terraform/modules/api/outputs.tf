@@ -11,6 +11,11 @@ output "runtime_service_account_name" {
   value       = google_service_account.runtime.name
 }
 
+output "runtime_service_account_unique_id" {
+  description = "Numeric id of the service account the API runs as: the `sub` of the Google ID tokens it fetches."
+  value       = google_service_account.runtime.unique_id
+}
+
 output "cloud_sql_instance_name" {
   value = google_sql_database_instance.db.name
 }

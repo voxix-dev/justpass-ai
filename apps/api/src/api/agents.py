@@ -9,8 +9,9 @@ import ipaddress
 import os
 import re
 import ssl
+import time
 import uuid
-from collections.abc import Callable, Coroutine, Iterable
+from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -18,6 +19,7 @@ from urllib.parse import urlsplit
 
 import grpc
 import httpx2
+import jwt
 from google.protobuf import empty_pb2
 from google.protobuf.message import Message
 
@@ -143,20 +145,71 @@ class SingleAgent:
         pass
 
 
+TokenSource = Callable[[], Awaitable[str]]
+"""Gives the bearer token for ate-api; called on every request, so it may hand out a fresh one."""
+
+ID_TOKEN_URL = (
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity"
+)
+ID_TOKEN_MARGIN = 300  # seconds before expiry at which a new ID token is fetched
+
+
+def file_token(path: Path) -> TokenSource:
+    """Read the token file again on each call: Kubernetes rotates the token on disk."""
+
+    async def token() -> str:
+        return path.read_text().strip()
+
+    return token
+
+
+class GoogleIdToken:
+    """ID tokens for one audience from the metadata server (Cloud Run); they renew themselves.
+
+    A token is kept until it is within ID_TOKEN_MARGIN seconds of its expiry, then a new one is
+    fetched. Concurrent callers share one fetch.
+    """
+
+    def __init__(self, audience: str, transport: httpx2.AsyncBaseTransport | None = None) -> None:
+        self.audience = audience
+        self.transport = transport
+        self._token = ""
+        self._expires = 0.0
+        self._lock = asyncio.Lock()
+
+    async def __call__(self) -> str:
+        async with self._lock:
+            if time.time() >= self._expires - ID_TOKEN_MARGIN:
+                await self._fetch()
+            return self._token
+
+    async def _fetch(self) -> None:
+        async with httpx2.AsyncClient(timeout=CONTROL_TIMEOUT, transport=self.transport) as client:
+            response = await client.get(
+                ID_TOKEN_URL,
+                params={"audience": self.audience},
+                headers={"Metadata-Flavor": "Google"},
+            )
+        response.raise_for_status()
+        token = response.text.strip()
+        claims = jwt.decode(token, options={"verify_signature": False})
+        self._token, self._expires = token, float(claims["exp"])
+
+
 @dataclass
 class Control:
     """The ate-api calls we need. ate-api speaks only gRPC, so these are not plain HTTP.
 
-    Each call opens its own channel and reads the token again: calls are few, and the token and the
-    CA rotate on disk.
+    Each call opens its own channel and asks the token source again: calls are few, and the token
+    and the CA rotate.
     """
 
     open_channel: Callable[[], grpc.aio.Channel]
-    token_file: Path
+    token_source: TokenSource
 
     async def call[R: Message](self, method: str, request: Message, reply: type[R]) -> R:
-        """Call ate-api with the current token; file and gRPC errors propagate."""
-        token = self.token_file.read_text().strip()
+        """Call ate-api with the current token; token, file and gRPC errors propagate."""
+        token = await self.token_source()
         async with self.open_channel() as channel:
             call = channel.unary_unary(
                 f"/substrate.ateapi.v1.Control/{method}",
@@ -357,8 +410,12 @@ def _substrate_from_env(router_url: str) -> SubstrateAgents:
         tls.load_cert_chain(client_cert)
         return httpx2.AsyncClient(verify=tls, timeout=RUN_TIMEOUT)
 
+    audience = os.environ.get("ATE_ID_TOKEN_AUDIENCE")
+    token_source = (
+        GoogleIdToken(audience) if audience else file_token(Path(os.environ["ATE_TOKEN_FILE"]))
+    )
     return SubstrateAgents(
-        control=Control(open_channel, Path(os.environ["ATE_TOKEN_FILE"])),
+        control=Control(open_channel, token_source),
         router=router,
         router_url=router_url,
         atespace=os.environ["ATE_ATESPACE"],

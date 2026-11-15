@@ -149,12 +149,12 @@ run "the_router_client_is_a_spiffe_identity" {
   }
 
   assert {
-    condition     = toset(keys(google_secret_manager_secret.api)) == toset(["ATE_TOKEN", "ATE_CA", "ATE_TEMPLATE", "ATE_CLIENT_CERT"])
-    error_message = "The sync's three secrets and the client certificate need a secret each."
+    condition     = toset(keys(google_secret_manager_secret.api)) == toset(["ATE_CA", "ATE_TEMPLATE", "ATE_CLIENT_CERT"])
+    error_message = "The sync's two secrets and the client certificate need a secret each, and no token."
   }
 
   assert {
-    condition     = length(google_secret_manager_secret_version.placeholder) == 3
+    condition     = length(google_secret_manager_secret_version.placeholder) == 2
     error_message = "The sync's secrets need a first version for the first revision to start."
   }
 }
@@ -176,6 +176,11 @@ run "emulator_skips_what_floci_cannot_do" {
       && length(google_sql_user.ate_api) == 0
     )
     error_message = "The emulator has no Cloud DNS, project IAM or Cloud SQL IAM users."
+  }
+
+  assert {
+    condition     = toset(keys(google_secret_manager_secret.api)) == toset(["ATE_TOKEN", "ATE_CA", "ATE_TEMPLATE", "ATE_CLIENT_CERT"])
+    error_message = "The emulator keeps the token secret."
   }
 
   assert {

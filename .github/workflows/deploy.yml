@@ -1,11 +1,10 @@
 name: deploy
 
 # After ci passes on main, applies the production Terraform (deploy/terraform/prod) for the tip of main, then applies
-# Substrate to the GKE cluster it made (after preparing its database) and stores the API's cluster credentials in
-# Secret Manager (`cluster` job), then deploys the API to Cloud Run and the web app to Firebase Hosting, which rewrites
-# /api/** to Cloud Run. The credentials expire after 48 hours, so the `refresh` workflow (daily and on demand) runs
-# this one too, which then skips the apply and the deploys and only issues new credentials from the cluster as it
-# is (deploy/gke/credentials.sh): it applies nothing, so it never needs an image or a manifest of an undeployed commit.
+# Substrate to the GKE cluster it made (after preparing its database) and stores what the API reads from the cluster
+# in Secret Manager (`cluster` job), then deploys the API to Cloud Run and the web app to Firebase Hosting, which
+# rewrites /api/** to Cloud Run. The API authenticates to Substrate with Google ID tokens it fetches itself from the
+# Cloud Run metadata server, so nothing expires between deploys.
 # The API image is the one ci's `images` job pushed to GHCR; it is deployed by digest through the Artifact Registry
 # remote repository that proxies GHCR. Terraform ignores the Cloud Run image, so applying never rolls a deploy back.
 # Without GCP_PROJECT_ID nothing runs. The repository variables are the outputs of deploy/terraform/bootstrap, applied
@@ -14,7 +13,7 @@ name: deploy
 
 on:
   workflow_run:
-    workflows: [ci, refresh]
+    workflows: [ci]
     types: [completed]
     branches: [main]
 
@@ -29,10 +28,7 @@ concurrency:
 jobs:
   infra:
     if: >-
-      github.event.workflow_run.conclusion == 'success'
-      && (github.event.workflow_run.name == 'ci' && github.event.workflow_run.event == 'push'
-      || github.event.workflow_run.name == 'refresh'
-      && contains(fromJSON('["schedule", "workflow_dispatch"]'), github.event.workflow_run.event))
+      github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
       && vars.GCP_PROJECT_ID != ''
     runs-on: ubuntu-latest
     environment: production # the owner service account trusts only this environment's token
@@ -78,7 +74,7 @@ jobs:
         run: |
           terraform -chdir=deploy/terraform/prod init -input=false \
             -backend-config=bucket="$STATE_BUCKET" -backend-config=prefix=prod
-      - if: steps.tip.outputs.current == 'true' && github.event.workflow_run.name == 'ci'
+      - if: steps.tip.outputs.current == 'true'
         name: Apply the production Terraform
         env:
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -95,8 +91,7 @@ jobs:
           echo "image_repository=$(out GCP_IMAGE_REPOSITORY)" >> "$GITHUB_OUTPUT"
           echo "cluster=$(terraform -chdir=deploy/terraform/prod output -json cluster | jq -c .)" >> "$GITHUB_OUTPUT"
 
-  # Applies Substrate to the cluster and rotates the API's credentials (secret ids only in the output, no values). A
-  # refresh run only rotates the credentials.
+  # Applies Substrate to the cluster and stores what the API reads from it (secret ids only in the output, no values).
   cluster:
     needs: infra
     if: needs.infra.result == 'success' && needs.infra.outputs.current == 'true'
@@ -107,14 +102,12 @@ jobs:
       id-token: write
     env:
       CLUSTER: ${{ needs.infra.outputs.cluster }}
-      DEPLOY: ${{ github.event.workflow_run.name == 'ci' }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - if: env.DEPLOY == 'true'
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           repository: agent-substrate/substrate
           ref: v1.0.0
@@ -129,21 +122,17 @@ jobs:
           project_id: ${{ fromJSON(needs.infra.outputs.cluster).project_id }}
           cluster_name: ${{ fromJSON(needs.infra.outputs.cluster).name }}
           location: ${{ fromJSON(needs.infra.outputs.cluster).location }}
-      - if: env.DEPLOY == 'true'
-        uses: actions/setup-go@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: substrate-src/go.mod
-      - if: env.DEPLOY == 'true'
-        uses: astral-sh/setup-uv@v6
-      - if: env.DEPLOY == 'true'
-        uses: hashicorp/setup-terraform@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: 1.16.1
           terraform_wrapper: false # the step below reads `terraform output`
       # ate-api cannot start before its roles and schema exist, and neither ate-setup nor Terraform makes them. The
       # script is idempotent; it runs as the admin user Terraform creates, through the Cloud SQL Auth Proxy.
-      - if: env.DEPLOY == 'true'
-        name: Prepare Substrate's database
+      - name: Prepare Substrate's database
         env:
           STATE_BUCKET: ${{ vars.GCP_TF_STATE_BUCKET }}
           PROXY_URL: https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.27.0/cloud-sql-proxy.linux.amd64
@@ -166,8 +155,7 @@ jobs:
           psql -h 127.0.0.1 -p 5433 -U substrate_admin -d "$(jq -r .cloudsql_database <<<"$CLUSTER")" \
             -v ON_ERROR_STOP=1 -v iam_user="${gsa%.gserviceaccount.com}" -f deploy/gke/substrate-db.sql
       # The image ci pushed for this commit, by digest: the actor template pins it.
-      - if: env.DEPLOY == 'true'
-        id: agent
+      - id: agent
         name: Resolve the digest of the agent image
         env:
           REF: ghcr.io/voxix-dev/justpass-ai/agent:${{ github.event.workflow_run.head_sha }}
@@ -177,34 +165,23 @@ jobs:
             | .digest else .digest end')
           case "$digest" in sha256:*) ;; *) echo "::error::No image $REF; did the ci images job push it?"; exit 1 ;; esac
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-      - if: env.DEPLOY == 'true'
-        name: Apply Substrate and the agents
+      - name: Apply Substrate and the agents
         env:
           SUBSTRATE_DIR: ${{ github.workspace }}/substrate-src
           AGENT_IMAGE: ghcr.io/voxix-dev/justpass-ai/agent@${{ steps.agent.outputs.digest }}
         run: |
           OUT_DIR="$RUNNER_TEMP/cluster" deploy/gke/sync.sh
-          echo "::add-mask::$(cat "$RUNNER_TEMP/cluster/token")"
-      - if: env.DEPLOY != 'true'
-        name: Issue new credentials
+      - name: Store what the API reads in Secret Manager
         run: |
-          mkdir -p "$RUNNER_TEMP/cluster"
-          deploy/gke/credentials.sh "$RUNNER_TEMP/cluster"
-          echo "::add-mask::$(cat "$RUNNER_TEMP/cluster/token")"
-      - name: Store the credentials in Secret Manager
-        env:
-          FILES: ${{ env.DEPLOY == 'true' && 'token ca.crt template' || 'token ca.crt' }}
-        run: |
-          for f in $FILES; do
-            case $f in ca.crt) key=ca ;; *) key=$f ;; esac
+          for key in $(jq -r '.secrets | keys[]' <<<"$CLUSTER"); do
+            case $key in ca) f=ca.crt ;; *) f=$key ;; esac
             gcloud secrets versions add "$(jq -r ".secrets.$key" <<<"$CLUSTER")" --data-file="$RUNNER_TEMP/cluster/$f" >/dev/null
           done
 
   api:
     needs: [infra, cluster]
     if: >-
-      github.event.workflow_run.name == 'ci' && needs.infra.result == 'success' && needs.infra.outputs.current == 'true'
-      && needs.cluster.result == 'success'
+      needs.infra.result == 'success' && needs.infra.outputs.current == 'true' && needs.cluster.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read

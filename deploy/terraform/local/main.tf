@@ -100,6 +100,7 @@ output "cluster" {
     cloudsql_database     = module.cluster.cloudsql_database
     cloudsql_gsa          = module.cluster.cloudsql_gsa
     router_client_ca_pem  = module.cluster.router_client_ca_pem
+    api_google_subject    = ""
     secrets = {
       token    = module.cluster.secret_ids["ATE_TOKEN"]
       ca       = module.cluster.secret_ids["ATE_CA"]
