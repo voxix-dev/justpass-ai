@@ -123,9 +123,9 @@ jobs:
         with:
           terraform_version: 1.16.1
       - run: terraform fmt -check -recursive deploy/terraform
-      - name: Validate the production and local roots
+      - name: Validate the bootstrap, production and local roots
         run: |
-          for d in prod local; do
+          for d in bootstrap prod local; do
             terraform -chdir=deploy/terraform/$d init -backend=false -input=false
             terraform -chdir=deploy/terraform/$d validate
           done

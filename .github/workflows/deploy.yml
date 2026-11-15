@@ -1,12 +1,12 @@
 name: deploy
 
-# After ci passes on main, deploys the tip of main: the API to Cloud Run, then the web app to Firebase Hosting, which
-# rewrites /api/** to Cloud Run. The API image is the one ci's `images` job pushed to GHCR; it is deployed by digest
-# through the Artifact Registry remote repository that proxies GHCR. Terraform (deploy/terraform/prod) creates the
-# service, the Firebase project and the identity used here; it prints the repository variables below. Without
-# GCP_PROJECT_ID nothing runs.
-#   GCP_PROJECT_ID, GCP_REGION, GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_DEPLOYER_SERVICE_ACCOUNT
-#   GCP_IMAGE_REPOSITORY (<region>-docker.pkg.dev/<project>/ghcr/voxix-dev/justpass-ai/api)
+# After ci passes on main, applies the production Terraform (deploy/terraform/prod) for the tip of main, then deploys
+# the API to Cloud Run and the web app to Firebase Hosting, which rewrites /api/** to Cloud Run. The API image is the
+# one ci's `images` job pushed to GHCR; it is deployed by digest through the Artifact Registry remote repository that
+# proxies GHCR. Terraform ignores the Cloud Run image, so applying never rolls a deploy back. Without GCP_PROJECT_ID
+# nothing runs. The repository variables are the outputs of deploy/terraform/bootstrap, applied by hand once, and the
+# bucket that holds the Terraform state:
+#   GCP_PROJECT_ID, GCP_REGION, GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_TERRAFORM_SERVICE_ACCOUNT, GCP_TF_STATE_BUCKET
 
 on:
   workflow_run:
@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  api:
+  infra:
     if: >-
       github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
       && vars.GCP_PROJECT_ID != ''
@@ -32,6 +32,8 @@ jobs:
       id-token: write # the OIDC token that Workload Identity Federation exchanges; no key files
     outputs:
       current: ${{ steps.tip.outputs.current }}
+      deployer: ${{ steps.out.outputs.deployer }}
+      image_repository: ${{ steps.out.outputs.image_repository }}
     steps:
       # An older ci run that finishes late must not roll back a newer deploy.
       - id: tip
@@ -50,14 +52,52 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
       - if: steps.tip.outputs.current == 'true'
-        id: auth
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
-          token_format: access_token
+          service_account: ${{ vars.GCP_TERRAFORM_SERVICE_ACCOUNT }}
       - if: steps.tip.outputs.current == 'true'
-        id: image
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.16.1
+          terraform_wrapper: false # the step below reads `terraform output`
+      - if: steps.tip.outputs.current == 'true'
+        name: Apply the production Terraform
+        env:
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          STATE_BUCKET: ${{ vars.GCP_TF_STATE_BUCKET }}
+        run: |
+          terraform -chdir=deploy/terraform/prod init -input=false \
+            -backend-config=bucket="$STATE_BUCKET" -backend-config=prefix=prod
+          terraform -chdir=deploy/terraform/prod apply -input=false -auto-approve \
+            -var project_id="$PROJECT_ID" -var region="$REGION"
+      - if: steps.tip.outputs.current == 'true'
+        id: out
+        run: |
+          out() { terraform -chdir=deploy/terraform/prod output -raw "$1"; }
+          echo "deployer=$(out GCP_DEPLOYER_SERVICE_ACCOUNT)" >> "$GITHUB_OUTPUT"
+          echo "image_repository=$(out GCP_IMAGE_REPOSITORY)" >> "$GITHUB_OUTPUT"
+
+  api:
+    needs: infra
+    if: needs.infra.result == 'success' && needs.infra.outputs.current == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ needs.infra.outputs.deployer }}
+          token_format: access_token
+      - id: image
         name: Resolve the digest of the image ci pushed
         env:
           REF: ghcr.io/voxix-dev/justpass-ai/api:${{ github.event.workflow_run.head_sha }}
@@ -68,19 +108,18 @@ jobs:
             | .digest else .digest end')
           case "$digest" in sha256:*) ;; *) echo "::error::No image $REF; did the ci images job push it?"; exit 1 ;; esac
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-      - if: steps.tip.outputs.current == 'true'
-        name: Deploy to Cloud Run
+      - name: Deploy to Cloud Run
         run: deploy/gcp/deploy-api.sh
         env:
           # By digest, not by tag: a tag can move, so the revision check proves this exact build is serving.
-          IMAGE: ${{ vars.GCP_IMAGE_REPOSITORY }}@${{ steps.image.outputs.digest }}
+          IMAGE: ${{ needs.infra.outputs.image_repository }}@${{ steps.image.outputs.digest }}
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           REGION: ${{ vars.GCP_REGION }}
           ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
 
   web:
-    needs: api
-    if: needs.api.result == 'success' && needs.api.outputs.current == 'true'
+    needs: [infra, api]
+    if: needs.api.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -106,7 +145,7 @@ jobs:
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+          service_account: ${{ needs.infra.outputs.deployer }}
       - name: Point the /api/** rewrite at the Cloud Run region
         env:
           REGION: ${{ vars.GCP_REGION }}

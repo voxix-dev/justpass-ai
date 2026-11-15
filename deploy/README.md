@@ -26,19 +26,24 @@ Cloud targets: [wiki: Architecture](https://github.com/voxix-dev/justpass-ai/wik
 - `terraform/modules/api/`: Cloud SQL (Postgres 18), the runtime service account, the secrets and the Cloud Run
   service. `emulator = true` switches only what floci-gcp cannot do: the Cloud SQL volume and Secret Manager
   references become a TCP connection and plain environment values. Its tests: `terraform test` in that directory.
+- `terraform/bootstrap/`: what the deploy workflow needs before it can run Terraform, and what Google cannot delete
+  again: the Firebase project, its default Hosting site, the Workload Identity pool (only `main` of this repository
+  gets a token) and the `github-terraform` service account that applies `prod`. Apply it by hand once:
+  1. Make the state bucket by hand, with versioning and uniform bucket-level access. The state holds the secrets
+     (database password, `DATABASE_URL`, token secret), so give read access only to the people who run Terraform.
+  2. If the project was made in the Firebase console, import what it made:
+     `terraform import google_firebase_project.main <project>` and
+     `terraform import google_firebase_hosting_site.default <project>/<project>`.
+  3. `terraform init -backend-config=bucket=<bucket> -backend-config=prefix=bootstrap`, then
+     `terraform apply -var project_id=<project>`.
+  4. Set the repository variables `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER` and
+     `GCP_TERRAFORM_SERVICE_ACCOUNT` from `terraform output`, and `GCP_TF_STATE_BUCKET` to the bucket.
 - `terraform/prod/`: the module plus an Artifact Registry remote repository that proxies GHCR, where CI's `images`
-  job pushes the API image (Cloud Run cannot pull from GHCR; deploys pull it through the proxy by digest), Firebase
-  (the project, Auth via Identity Platform, the web app and Hosting), Workload Identity Federation for GitHub Actions
-  (only `main` of this repository) and the deployer service account. If the project was made in the Firebase
-  console, import what it made first:
-  `terraform import google_firebase_project.main <project>` and
-  `terraform import google_firebase_hosting_site.default <project>/<project>`. State is in a GCS bucket:
-  `terraform init -backend-config="bucket=<bucket>"`. The state holds the secrets (database password, `DATABASE_URL`,
-  token secret), so make that bucket by hand with versioning and uniform bucket-level access, and give read access only
-  to the people who run Terraform. `terraform output` lists the repository variables `.github/workflows/deploy.yml`
-  needs; until `GCP_PROJECT_ID` is set that workflow does nothing. Terraform sets only the first image; CI deploys
-  the rest with `gcp/deploy-api.sh`, then builds the web app and deploys it to Firebase Hosting, which rewrites
-  `/api/**` to Cloud Run.
+  job pushes the API image (Cloud Run cannot pull from GHCR; deploys pull it through the proxy by digest) and the
+  deployer service account. `.github/workflows/deploy.yml` applies it on every merge after `ci` passes (state prefix
+  `prod`), then deploys the API with `gcp/deploy-api.sh` and the web app to Firebase Hosting, which rewrites `/api/**`
+  to Cloud Run. Until `GCP_PROJECT_ID` is set that workflow does nothing. Terraform sets only the first image and
+  ignores it afterwards, so applying never rolls a deploy back.
 - `terraform/local/`: the module in floci-gcp. `gcp/local-e2e.sh` starts floci-gcp (`ENGINE=podman` for podman,
   with `podman.socket` enabled), builds the API image, applies this root, deploys with the same
   script CI uses and checks that the API answers from its database. `gcp/local-e2e.sh down` removes everything.

@@ -67,6 +67,6 @@ done
 curl -fsS -H "Host: $host" "$FLOCI_URL/ready"; echo
 
 # /ready runs SELECT 1; also show that the container's start-up migrations ran in the Cloud SQL database.
-version=$("$ENGINE" exec floci-gcp-cloudsql-local-project-api psql -U postgres -d app -tAc 'select version_num from alembic_version')
+version=$("$ENGINE" exec "floci-gcp-cloudsql-local-project-$(tf output -raw cloud_sql_instance_name)" psql -U postgres -d app -tAc 'select version_num from alembic_version')
 [ -n "$version" ] || { echo "migrations did not run" >&2; exit 1; }
 echo "e2e passed: the API serves from Cloud SQL (migration $version) on image $IMAGE:e2e"

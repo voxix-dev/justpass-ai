@@ -33,8 +33,13 @@ resource "random_password" "context_token" {
   special = false
 }
 
+# A deleted Cloud SQL instance name cannot be reused for about a week.
+resource "random_id" "db" {
+  byte_length = 2
+}
+
 resource "google_sql_database_instance" "db" {
-  name                = "api"
+  name                = "api-${random_id.db.hex}"
   project             = var.project_id
   region              = var.region
   database_version    = "POSTGRES_18"

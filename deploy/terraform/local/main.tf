@@ -66,3 +66,7 @@ output "service_name" {
 output "service_uri" {
   value = module.api.service_uri
 }
+
+output "cloud_sql_instance_name" {
+  value = module.api.cloud_sql_instance_name
+}

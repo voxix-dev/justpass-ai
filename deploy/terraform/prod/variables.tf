@@ -13,14 +13,16 @@ variable "github_repository" {
   default     = "voxix-dev/justpass-ai"
 }
 
-variable "github_repository_id" {
-  type    = string
-  default = "1430335211" # gh api repos/voxix-dev/justpass-ai -q .id
+variable "workload_identity_pool_id" {
+  type        = string
+  description = "The Workload Identity pool that deploy/terraform/bootstrap made."
+  default     = "github"
 }
 
-variable "github_owner_id" {
-  type    = string
-  default = "203257071" # gh api repos/voxix-dev/justpass-ai -q .owner.id
+variable "deletion_protection" {
+  type        = bool
+  description = "Refuse to destroy the database and the Cloud Run service."
+  default     = true
 }
 
 variable "bootstrap_image" {
