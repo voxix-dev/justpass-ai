@@ -61,8 +61,11 @@ jobs:
         name: Resolve the digest of the image ci pushed
         env:
           REF: ghcr.io/voxix-dev/justpass-ai/api:${{ github.event.workflow_run.head_sha }}
+        # Cloud Run swaps an index digest for its linux/amd64 image's, so take that one or the revision check fails.
         run: |
-          digest=$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r .digest)
+          digest=$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r '
+            if .manifests then .manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")
+            | .digest else .digest end')
           case "$digest" in sha256:*) ;; *) echo "::error::No image $REF; did the ci images job push it?"; exit 1 ;; esac
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - if: steps.tip.outputs.current == 'true'
