@@ -179,7 +179,7 @@ resource "google_cloud_run_v2_service" "api" {
           value_source {
             secret_key_ref {
               secret  = google_secret_manager_secret.api[env.key].secret_id
-              version = "latest"
+              version = google_secret_manager_secret_version.api[env.key].version # a new secret is a new revision
             }
           }
         }
@@ -213,7 +213,8 @@ resource "google_cloud_run_v2_service" "api" {
   ]
 }
 
-# The API checks Firebase ID tokens itself, so Cloud Run lets everyone call it.
+# Firebase Hosting calls the API without a Google identity, so Cloud Run lets everyone call it. Until the API checks
+# Firebase ID tokens, every caller is the same development user.
 resource "google_cloud_run_v2_service_iam_member" "public" {
   project  = var.project_id
   location = var.region

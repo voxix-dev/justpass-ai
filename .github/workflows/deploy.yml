@@ -20,6 +20,7 @@ permissions:
 concurrency:
   group: deploy-api
   cancel-in-progress: false
+  queue: max # with one pending slot, a late older run would replace the tip's pending run and then skip
 
 jobs:
   infra:

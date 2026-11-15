@@ -31,11 +31,11 @@ Cloud targets: [wiki: Architecture](https://github.com/voxix-dev/justpass-ai/wik
   gets a token) and the `github-terraform` service account that applies `prod`. Apply it by hand once:
   1. Make the state bucket by hand, with versioning and uniform bucket-level access. The state holds the secrets
      (database password, `DATABASE_URL`, token secret), so give read access only to the people who run Terraform.
-  2. If the project was made in the Firebase console, import what it made:
-     `terraform import google_firebase_project.main <project>` and
-     `terraform import google_firebase_hosting_site.default <project>/<project>`.
-  3. `terraform init -backend-config=bucket=<bucket> -backend-config=prefix=bootstrap`, then
-     `terraform apply -var project_id=<project>`.
+  2. `terraform init -backend-config=bucket=<bucket> -backend-config=prefix=bootstrap`.
+  3. If the project was made in the Firebase console, import what it made:
+     `terraform import -var project_id=<project> google_firebase_project.main <project>` and
+     `terraform import -var project_id=<project> google_firebase_hosting_site.default <project>/<project>`.
+     Then `terraform apply -var project_id=<project>`.
   4. Set the repository variables `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER` and
      `GCP_TERRAFORM_SERVICE_ACCOUNT` from `terraform output`, and `GCP_TF_STATE_BUCKET` to the bucket.
 - `terraform/prod/`: the module plus an Artifact Registry remote repository that proxies GHCR, where CI's `images`

@@ -12,14 +12,16 @@ cd "$(dirname "$0")/../.."
 ENGINE="${ENGINE:-docker}"
 FLOCI_IMAGE=docker.io/floci/floci-gcp:0.12.0
 FLOCI_URL=http://localhost:4588
+FLOCI_NAME=justpass-floci-gcp
+NAMESPACE=justpass-e2e
 IMAGE=localhost/justpass-api
 tf_dir=deploy/terraform/local
 
 tf() { terraform -chdir="$tf_dir" "$@"; }
 
 down() {
-  "$ENGINE" ps -aq --filter name=floci-gcp | xargs -r "$ENGINE" rm -f >/dev/null
-  "$ENGINE" volume ls -q --filter name=floci-gcp | xargs -r "$ENGINE" volume rm >/dev/null
+  "$ENGINE" ps -aq --filter "name=^$FLOCI_NAME\$" --filter "name=^floci-gcp-$NAMESPACE-" | xargs -r "$ENGINE" rm -fv >/dev/null
+  "$ENGINE" volume ls -q --filter "name=^floci-gcp-$NAMESPACE-" | xargs -r "$ENGINE" volume rm >/dev/null
   rm -f "$tf_dir/terraform.tfstate" "$tf_dir/terraform.tfstate.backup"
 }
 
@@ -35,8 +37,8 @@ else
   socket=/var/run/docker.sock
   engine_args=(--network bridge)
 fi
-"$ENGINE" run -d --name floci-gcp "${engine_args[@]}" -p 127.0.0.1:4588:4588 \
-  -v "$socket:/var/run/docker.sock" "$FLOCI_IMAGE" >/dev/null
+"$ENGINE" run -d --name $FLOCI_NAME "${engine_args[@]}" -p 127.0.0.1:4588:4588 \
+  -e FLOCI_GCP_DOCKER_RESOURCE_NAMESPACE=$NAMESPACE -v "$socket:/var/run/docker.sock" "$FLOCI_IMAGE" >/dev/null
 for i in $(seq 60); do
   [ "$(curl -s -o /dev/null -w '%{http_code}' $FLOCI_URL/)" != 000 ] && break
   [ "$i" -lt 60 ] || { echo "floci-gcp did not answer on $FLOCI_URL within 60 s" >&2; exit 1; }
@@ -67,6 +69,6 @@ done
 curl -fsS -H "Host: $host" "$FLOCI_URL/ready"; echo
 
 # /ready runs SELECT 1; also show that the container's start-up migrations ran in the Cloud SQL database.
-version=$("$ENGINE" exec "floci-gcp-cloudsql-local-project-$(tf output -raw cloud_sql_instance_name)" psql -U postgres -d app -tAc 'select version_num from alembic_version')
+version=$("$ENGINE" exec "floci-gcp-$NAMESPACE-cloudsql-local-project-$(tf output -raw cloud_sql_instance_name)" psql -U postgres -d app -tAc 'select version_num from alembic_version')
 [ -n "$version" ] || { echo "migrations did not run" >&2; exit 1; }
 echo "e2e passed: the API serves from Cloud SQL (migration $version) on image $IMAGE:e2e"
