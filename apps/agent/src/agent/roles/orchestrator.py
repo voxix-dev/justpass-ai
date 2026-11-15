@@ -176,11 +176,7 @@ async def run_worker(state: RoundState, role: WorkerRole, brief: str, inputs: li
     # Accounting and logging come after the status is settled and can never change it.
     if messages is not None:
         try:
-            cost = reported_cost(messages)
-        except TypeError, ValueError:
-            cost = 0.0
-        try:
-            _log_worker(state, role, messages, usage, cost)
+            _log_worker(state, role, messages, usage, reported_cost(messages))
         except Exception as error:
             logger.warning("[%s] %s: not logged (%s)", role, state.log_prefix, type(error).__name__)
     return result

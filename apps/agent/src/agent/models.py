@@ -63,9 +63,16 @@ def _details(message: ModelMessage) -> dict[str, Any]:
     return {}
 
 
+def _cost(message: ModelMessage) -> float:
+    try:
+        return float(_details(message).get("cost") or 0)
+    except TypeError, ValueError:
+        return 0.0
+
+
 def reported_cost(messages: Sequence[ModelMessage]) -> float:
-    """The USD cost OpenRouter reported for the responses, 0 for one that gave none."""
-    return sum(float(_details(m).get("cost") or 0) for m in messages)
+    """The USD cost OpenRouter reported for the responses, 0 for one that gave none or no number."""
+    return sum(_cost(m) for m in messages)
 
 
 def web_searches(messages: Sequence[ModelMessage]) -> int:

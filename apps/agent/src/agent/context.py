@@ -4,7 +4,7 @@ from types import TracebackType
 from typing import Literal, Self
 
 import httpx2
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from shared.context import (
     GetProfile,
@@ -24,6 +24,10 @@ from shared.models import ArtifactKind
 
 TIMEOUT_SECONDS = 30
 
+TASK = TypeAdapter(Task)
+PROFILE = TypeAdapter(Profile)
+WRITTEN = TypeAdapter(WrittenArtifact)
+MEMORY = TypeAdapter(Memory)
 HISTORY = TypeAdapter(list[HistoryItem])
 MEMORIES = TypeAdapter(list[Memory])
 
@@ -58,7 +62,7 @@ class ContextClient:
     ) -> None:
         await self._http.aclose()
 
-    async def _call(self, tool: str, arguments: BaseModel) -> bytes:
+    async def _call[T](self, tool: str, arguments: BaseModel, reply: TypeAdapter[T]) -> T:
         try:
             response = await self._http.post(tool, content=arguments.model_dump_json().encode())
         except httpx2.RequestError as error:
@@ -75,21 +79,23 @@ class ContextClient:
                 request=response.request,
                 response=response,
             )
-        return response.content
+        try:
+            return reply.validate_json(response.content)
+        except ValidationError as error:  # not the tool output the agent was built against
+            raise ContextError(f"{tool} returned an invalid response") from error
 
     async def get_task(self) -> Task:
-        return Task.model_validate_json(await self._call("get_task", GetTask()))
+        return await self._call("get_task", GetTask(), TASK)
 
     async def get_profile(self) -> Profile:
-        return Profile.model_validate_json(await self._call("get_profile", GetProfile()))
+        return await self._call("get_profile", GetProfile(), PROFILE)
 
     async def write_draft(self, title: str, content_md: str) -> WrittenArtifact:
         arguments = WriteArtifact(kind=ArtifactKind.DRAFT, title=title, content_md=content_md)
-        return WrittenArtifact.model_validate_json(await self._call("write_artifact", arguments))
+        return await self._call("write_artifact", arguments, WRITTEN)
 
     async def get_subject_memory(self, subject: str | None = None) -> Memory:
-        arguments = GetSubjectMemory(subject=subject)
-        return Memory.model_validate_json(await self._call("get_subject_memory", arguments))
+        return await self._call("get_subject_memory", GetSubjectMemory(subject=subject), MEMORY)
 
     async def update_memory(
         self,
@@ -101,13 +107,10 @@ class ContextClient:
         arguments = UpdateMemory(
             scope=scope, subject=subject, content_md=content_md, base_version=base_version
         )
-        return Memory.model_validate_json(await self._call("update_memory", arguments))
+        return await self._call("update_memory", arguments, MEMORY)
 
     async def list_history(self, limit: int = 10) -> list[HistoryItem]:
-        reply = await self._call("list_history", ListHistory(limit=limit))
-        return HISTORY.validate_json(reply)
+        return await self._call("list_history", ListHistory(limit=limit), HISTORY)
 
     async def search_history(self, query: str) -> list[Memory]:
-        return MEMORIES.validate_json(
-            await self._call("search_history", SearchHistory(query=query))
-        )
+        return await self._call("search_history", SearchHistory(query=query), MEMORIES)

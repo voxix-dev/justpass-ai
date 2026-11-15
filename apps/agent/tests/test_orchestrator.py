@@ -32,6 +32,7 @@ from agent.roles.orchestrator import (
     orchestrate,
     run_worker,
 )
+from agent.solver import Metered
 from shared.context import Profile
 from shared.models import Level
 
@@ -346,9 +347,11 @@ async def test_a_cost_that_is_not_a_number_leaves_the_result_done():
         return ModelResponse(parts=[TextPart("Fine")], provider_details={"cost": "free"})
 
     s = setup([])
-    s.state.models = {**s.state.models, "math": FunctionModel(respond)}
+    metered = Metered(FunctionModel(respond))
+    s.state.models = {**s.state.models, "math": metered}
     result = await run_worker(s.state, "math", "Compute", [])
     assert (result.status, result.text) == ("done", "Fine")
+    assert metered.spend.cost == 0 and metered.spend.tokens > 0
 
 
 async def test_a_final_that_lists_a_result_twice_makes_the_model_retry():

@@ -115,3 +115,23 @@ def test_reported_cost_and_searches():
     assert reported_cost(messages) == pytest.approx(0.01)
     assert web_searches(messages) == 2
     assert reported_cost([]) == 0
+
+
+@pytest.mark.anyio
+async def test_an_invalid_context_api_reply_is_a_context_error_but_bad_arguments_are_not():
+    from pydantic import ValidationError
+
+    from agent.context import ContextClient, ContextError
+
+    sent: list[httpx2.Request] = []
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, content=b"<html>proxy</html>")
+
+    async with ContextClient("http://api", "t", httpx2.MockTransport(handle)) as context:
+        with pytest.raises(ContextError, match="write_artifact returned an invalid response"):
+            await context.write_draft("Sheet", "Text")
+        with pytest.raises(ValidationError):
+            await context.write_draft("Sheet", "a\x00b")
+    assert len(sent) == 1
