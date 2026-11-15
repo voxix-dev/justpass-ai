@@ -90,6 +90,101 @@ run "emulator_uses_tcp_and_plain_environment" {
   }
 }
 
+run "the_model_key_is_a_secret_when_given" {
+  command = apply
+
+  variables {
+    openrouter_api_key = "sk-test"
+  }
+
+  assert {
+    condition     = contains([for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name if length(e.value_source) == 1], "OPENROUTER_API_KEY")
+    error_message = "OPENROUTER_API_KEY must come from Secret Manager."
+  }
+
+  assert {
+    condition     = google_secret_manager_secret.api["OPENROUTER_API_KEY"].secret_id == "api-OPENROUTER_API_KEY" && length(google_secret_manager_secret_iam_member.runtime) == 3
+    error_message = "The key needs its secret, readable by the runtime account."
+  }
+}
+
+run "the_model_key_is_plain_in_the_emulator" {
+  command = apply
+
+  variables {
+    emulator           = true
+    openrouter_api_key = "sk-test"
+  }
+
+  assert {
+    condition     = contains([for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name if e.value == "sk-test"], "OPENROUTER_API_KEY")
+    error_message = "The emulator must get the key as a plain value."
+  }
+}
+
+run "production_mounts_secrets_and_uses_the_vpc" {
+  command = apply
+
+  variables {
+    vpc          = { network = "projects/demo/global/networks/n", subnetwork = "projects/demo/regions/europe-west1/subnetworks/s" }
+    secret_files = { ca = { secret_id = "other-ca", path = "/ate/ca/ca.pem" } }
+    secret_env   = { ATE_TEMPLATE = "other-template" }
+  }
+
+  assert {
+    condition = (
+      length(google_cloud_run_v2_service.api.template[0].vpc_access) == 1
+      && google_cloud_run_v2_service.api.template[0].vpc_access[0].egress == "PRIVATE_RANGES_ONLY"
+    )
+    error_message = "The service must use direct VPC egress for private ranges only."
+  }
+
+  assert {
+    condition = (
+      google_cloud_run_v2_service.api.template[0].volumes[0].secret[0].secret == "other-ca"
+      && google_cloud_run_v2_service.api.template[0].volumes[0].secret[0].items[0].version == "latest"
+      && google_cloud_run_v2_service.api.template[0].volumes[0].secret[0].items[0].path == "ca.pem"
+      && google_cloud_run_v2_service.api.template[0].containers[0].volume_mounts[0].mount_path == "/ate/ca"
+    )
+    error_message = "A secret file must be mounted from its own directory at its latest version."
+  }
+
+  assert {
+    condition     = contains([for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name if length(e.value_source) == 1], "ATE_TEMPLATE")
+    error_message = "ATE_TEMPLATE must come from its secret."
+  }
+
+  assert {
+    condition     = length(google_secret_manager_secret_iam_member.runtime_external) == 2
+    error_message = "The runtime account must read both secrets."
+  }
+
+  assert {
+    condition     = [for f in google_sql_database_instance.db.settings[0].database_flags : f.name] == ["cloudsql.iam_authentication"]
+    error_message = "The instance must allow IAM database authentication."
+  }
+}
+
+run "emulator_skips_the_vpc_and_secret_mounts" {
+  command = apply
+
+  variables {
+    emulator     = true
+    vpc          = { network = "projects/demo/global/networks/n", subnetwork = "projects/demo/regions/europe-west1/subnetworks/s" }
+    secret_files = { ca = { secret_id = "other-ca", path = "/ate/ca/ca.pem" } }
+    secret_env   = { ATE_TEMPLATE = "other-template" }
+  }
+
+  assert {
+    condition = (
+      length(google_cloud_run_v2_service.api.template[0].vpc_access) == 0
+      && length(google_cloud_run_v2_service.api.template[0].volumes) == 0
+      && length(google_secret_manager_secret_iam_member.runtime_external) == 0
+    )
+    error_message = "floci-gcp can neither give a service a VPC nor mount secrets."
+  }
+}
+
 # The state of the run above stays: a new image (CI's deploy) must not make Terraform redeploy the old one.
 run "ci_owns_the_image" {
   command = plan

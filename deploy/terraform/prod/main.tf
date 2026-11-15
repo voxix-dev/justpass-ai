@@ -1,13 +1,16 @@
 # Production on GCP, applied by the deploy workflow on every merge: the API on Cloud Run (pulling the image CI pushes
 # to GHCR through an Artifact Registry remote repository), Postgres on Cloud SQL, and the identity GitHub Actions
-# deploys the API and the web app with. What has to exist before the workflow can run (Firebase project and Hosting
+# deploys the API and the web app with, and the GKE cluster Substrate runs on (modules/cluster). What has to exist before the workflow can run (Firebase project and Hosting
 # site, Workload Identity pool, the Terraform service account) is deploy/terraform/bootstrap. Substrate is the only
-# thing that runs on Kubernetes, so none of it is here.
+# thing that runs on Kubernetes, so the manifests are in deploy/gke, not here.
 # Test the module locally first: deploy/gcp/local-e2e.sh.
 
 locals {
   apis = [
     "artifactregistry.googleapis.com",
+    "compute.googleapis.com",
+    "container.googleapis.com",
+    "dns.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
     "sqladmin.googleapis.com",
@@ -22,15 +25,65 @@ resource "google_project_service" "api" {
 
 data "google_project" "this" {}
 
+# Each file gets its own directory on Cloud Run.
+locals {
+  ate_files = {
+    ca          = "/secrets/ate-ca/ca.pem"
+    token       = "/secrets/ate-token/token"
+    client_cert = "/secrets/ate-client/client.pem"
+  }
+}
+
 module "api" {
   source = "../modules/api"
 
-  project_id = var.project_id
-  region     = var.region
-  image      = var.bootstrap_image
-  env        = merge({ AGENT_URL = var.agent_url, FIREBASE_PROJECT_ID = var.project_id }, var.env)
+  project_id         = var.project_id
+  region             = var.region
+  image              = var.bootstrap_image
+  openrouter_api_key = var.openrouter_api_key
+  env = merge({
+    FIREBASE_PROJECT_ID = var.project_id
+
+    # Substrate's ate-api and router, on internal load balancers in the cluster's VPC (names: modules/cluster).
+    ATE_ROUTER_URL       = "https://atenet-router.ate-system.svc"
+    ATE_API_TARGET       = "api.ate-system.svc:443"
+    ATE_ATESPACE         = "justpass-agents"
+    ATE_CA_FILE          = local.ate_files.ca
+    ATE_TOKEN_FILE       = local.ate_files.token
+    ATE_CLIENT_CERT_FILE = local.ate_files.client_cert
+
+    # The agents call the API back at its own URL, which cannot be read from the service without a cycle.
+    CONTEXT_API_URL = "https://api-${data.google_project.this.number}.${var.region}.run.app"
+  }, var.env)
+
+  vpc = {
+    network    = module.cluster.network
+    subnetwork = module.cluster.run_subnetwork
+  }
+
+  # The cluster sync writes these; the files are read at their latest version.
+  secret_files = {
+    ca          = { secret_id = module.cluster.secret_ids["ATE_CA"], path = local.ate_files.ca }
+    token       = { secret_id = module.cluster.secret_ids["ATE_TOKEN"], path = local.ate_files.token }
+    client_cert = { secret_id = module.cluster.secret_ids["ATE_CLIENT_CERT"], path = local.ate_files.client_cert }
+  }
+  secret_env = {
+    ATE_TEMPLATE = module.cluster.secret_ids["ATE_TEMPLATE"]
+  }
 
   deletion_protection = var.deletion_protection
+
+  depends_on = [google_project_service.api]
+}
+
+module "cluster" {
+  source = "../modules/cluster"
+
+  project_id               = var.project_id
+  region                   = var.region
+  cloudsql_instance        = module.api.cloud_sql_instance_name
+  cloudsql_connection_name = module.api.cloud_sql_connection_name
+  deletion_protection      = var.deletion_protection
 
   depends_on = [google_project_service.api]
 }

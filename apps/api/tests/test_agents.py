@@ -64,7 +64,7 @@ async def ate_api() -> AsyncIterator[FakeAteApi]:
         )
     }
     server.add_generic_rpc_handlers(
-        [grpc.method_handlers_generic_handler("ateapi.Control", methods)]
+        [grpc.method_handlers_generic_handler("substrate.ateapi.v1.Control", methods)]
     )
     fake.port = server.add_insecure_port("127.0.0.1:0")
     await server.start()

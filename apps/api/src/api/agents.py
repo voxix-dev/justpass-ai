@@ -159,7 +159,7 @@ class Control:
         token = self.token_file.read_text().strip()
         async with self.open_channel() as channel:
             call = channel.unary_unary(
-                f"/ateapi.Control/{method}",
+                f"/substrate.ateapi.v1.Control/{method}",
                 request_serializer=type(request).SerializeToString,
                 response_deserializer=reply.FromString,
             )

@@ -129,10 +129,12 @@ jobs:
             terraform -chdir=deploy/terraform/$d init -backend=false -input=false
             terraform -chdir=deploy/terraform/$d validate
           done
-      - name: Test the module
+      - name: Test the modules
         run: |
-          terraform -chdir=deploy/terraform/modules/api init -backend=false -input=false
-          terraform -chdir=deploy/terraform/modules/api test
+          for m in api cluster; do
+            terraform -chdir=deploy/terraform/modules/$m init -backend=false -input=false
+            terraform -chdir=deploy/terraform/modules/$m test
+          done
 
   # The module and the deploy script against floci-gcp, which runs Cloud SQL and Cloud Run as containers.
   gcp-e2e:

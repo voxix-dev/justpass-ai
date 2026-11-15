@@ -1,0 +1,9 @@
+# What GKE needs on top of Substrate and the agent pool: `kubectl apply -k` through sync.sh, which
+# also sets the addresses it leaves as placeholders.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../substrate
+- homework.yaml
+- services.yaml
+- networkpolicy.yaml

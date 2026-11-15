@@ -49,3 +49,20 @@ Cloud targets: [wiki: Architecture](https://github.com/voxix-dev/justpass-ai/wik
   with `podman.socket` enabled), builds the API image, applies this root, deploys with the same
   script CI uses and checks that the API answers from its database. `gcp/local-e2e.sh down` removes everything.
   CI runs it as `gcp-e2e`.
+
+## GCP: Substrate on GKE
+
+- `terraform/modules/cluster/`: the GKE cluster with the internal load balancers for ate-api and the router, the
+  private DNS zone for `ate-system.svc`, and the Secret Manager secrets the API reads (`token`, `ca`, `template`).
+  Terraform creates each with a placeholder version. Its tests: `terraform test` in that directory.
+- The deploy workflow's `cluster` job (after `infra`, before `api`) first runs `gke/substrate-db.sql` on the
+  `substrate` database through the Cloud SQL Auth Proxy, as the `substrate_admin` user Terraform creates (the
+  roles and schema ate-api needs). Then it runs `gke/sync.sh` against the cluster, with the agent image CI pushed for
+  the commit, pinned by digest: it applies Substrate (v1.0.0) and the agents, issues the API's ate-api token and the router CA, and adds them as new
+  versions of the secrets. The token lives 48 hours, so a daily schedule (or a manual run) reruns only this job,
+  reading the cluster from the Terraform state without applying.
+- The API on Cloud Run reaches ate-api and the router through the internal load balancers, by their
+  `ate-system.svc` names in the private DNS zone. It presents a router client certificate from our CA and
+  authenticates to ate-api with the token.
+- `gke/sync.sh` takes `CLUSTER` (the `cluster` Terraform output), `SUBSTRATE_DIR` and `OUT_DIR` and needs only
+  `kubectl`, `go` and `uv`, so it also runs against any cluster, such as kind, for testing.

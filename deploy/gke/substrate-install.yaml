@@ -1,0 +1,16 @@
+# Settings of `ate-setup deploy ate-system` that are the same on every cluster. sync.sh adds the ones
+# that come from Terraform (project, cluster, snapshot bucket, Cloud SQL) as flags.
+apiVersion: install.ate.dev/v1alpha1
+kind: SubstrateInstall
+namespace: ate-system
+images:
+  repo: ghcr.io/agent-substrate/substrate
+  tag: v1.0.0
+atenet:
+  dataplane: envoy
+  egress:
+    # Agents reach their model through the Context API, so no credentials are injected.
+    credentialProvider: '{"enabled":false}'
+# The API, with the identity of this service account, is the only client of the router.
+ingressAllowedSPIFFEIDs: spiffe://cluster.local/ns/homework/sa/api
+rolloutTimeout: 10m

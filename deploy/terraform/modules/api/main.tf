@@ -8,7 +8,9 @@ locals {
   db_name = "app"
   db_user = "app"
 
-  secret_names = toset(["DATABASE_URL", "CONTEXT_TOKEN_SECRET"])
+  # An empty key means none: Secret Manager refuses an empty secret and the API runs without a model key.
+  has_openrouter_key = nonsensitive(var.openrouter_api_key != "")
+  secret_names       = toset(concat(["DATABASE_URL", "CONTEXT_TOKEN_SECRET"], local.has_openrouter_key ? ["OPENROUTER_API_KEY"] : []))
 
   # floci-gcp starts a Postgres container per instance, with the instance's IP on the container network.
   db_host = var.emulator ? "${google_sql_database_instance.db.ip_address[0].ip_address}:5432" : ""
@@ -19,7 +21,13 @@ locals {
   secret_values = {
     DATABASE_URL         = local.database_url
     CONTEXT_TOKEN_SECRET = random_password.context_token.result
+    OPENROUTER_API_KEY   = var.openrouter_api_key
   }
+
+  # floci-gcp cannot mount secrets or give a service a VPC.
+  use_vpc      = var.vpc != null && !var.emulator
+  secret_files = var.emulator ? {} : var.secret_files
+  secret_env   = var.emulator ? {} : var.secret_env
 }
 
 # Letters and digits only: the password goes into a URL unescaped.
@@ -51,6 +59,12 @@ resource "google_sql_database_instance" "db" {
 
     ip_configuration {
       ssl_mode = "ENCRYPTED_ONLY"
+    }
+
+    # Substrate's ate-api logs in to its own database on this instance with a service account.
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
     }
 
     backup_configuration {
@@ -112,6 +126,18 @@ resource "google_secret_manager_secret_iam_member" "runtime" {
   member    = "serviceAccount:${google_service_account.runtime.email}"
 }
 
+# Secrets that another module owns and fills: read at their latest version.
+resource "google_secret_manager_secret_iam_member" "runtime_external" {
+  for_each = merge(
+    { for k, v in local.secret_files : "file ${k}" => v.secret_id },
+    { for k, v in local.secret_env : "env ${k}" => v },
+  )
+  project   = var.project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.runtime.email}"
+}
+
 resource "google_project_iam_member" "runtime_cloudsql" {
   count   = var.emulator ? 0 : 1
   project = var.project_id
@@ -138,6 +164,32 @@ resource "google_cloud_run_v2_service" "api" {
     scaling {
       min_instance_count = var.min_instances
       max_instance_count = var.max_instances
+    }
+
+    dynamic "vpc_access" {
+      for_each = local.use_vpc ? [1] : []
+      content {
+        egress = "PRIVATE_RANGES_ONLY"
+        network_interfaces {
+          network    = var.vpc.network
+          subnetwork = var.vpc.subnetwork
+        }
+      }
+    }
+
+    # One volume and directory per file; "latest" makes a new secret version show up without a redeploy.
+    dynamic "volumes" {
+      for_each = local.secret_files
+      content {
+        name = "secret-${volumes.key}"
+        secret {
+          secret = volumes.value.secret_id
+          items {
+            version = "latest"
+            path    = basename(volumes.value.path)
+          }
+        }
+      }
     }
 
     dynamic "volumes" {
@@ -190,6 +242,27 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
 
+      dynamic "env" {
+        for_each = local.secret_env
+        content {
+          name = env.key
+          value_source {
+            secret_key_ref {
+              secret  = env.value
+              version = "latest"
+            }
+          }
+        }
+      }
+
+      dynamic "volume_mounts" {
+        for_each = local.secret_files
+        content {
+          name       = "secret-${volume_mounts.key}"
+          mount_path = dirname(volume_mounts.value.path)
+        }
+      }
+
       dynamic "volume_mounts" {
         for_each = var.emulator ? [] : [1]
         content {
@@ -212,6 +285,7 @@ resource "google_cloud_run_v2_service" "api" {
   depends_on = [
     google_secret_manager_secret_version.api,
     google_secret_manager_secret_iam_member.runtime,
+    google_secret_manager_secret_iam_member.runtime_external,
     google_project_iam_member.runtime_cloudsql,
     google_sql_database.app,
     google_sql_user.app,
