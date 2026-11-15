@@ -42,12 +42,13 @@ Cloud targets: [wiki: Architecture](https://github.com/voxix-dev/justpass-ai/wik
 - `terraform/prod/`: the module plus an Artifact Registry remote repository that proxies GHCR, where CI's `images`
   job pushes the API image (Cloud Run cannot pull from GHCR; deploys pull it through the proxy by digest) and the
   deployer service account. `.github/workflows/deploy.yml` applies it on every merge after `ci` passes (state prefix
-  `prod`), then deploys the API with `gcp/deploy-api.sh` and the web app to Firebase Hosting, which rewrites `/api/**`
-  to Cloud Run. Until `GCP_PROJECT_ID` is set that workflow does nothing. Terraform sets only the first image and
-  ignores it afterwards, so applying never rolls a deploy back.
+  `prod`) and then deploys the web app to Firebase Hosting, which rewrites `/api/**` to Cloud Run. Until
+  `GCP_PROJECT_ID` is set that workflow does nothing. The apply is also the API deploy: the workflow passes the digest
+  of the image `ci` pushed for the commit as `api_image_digest`, so one Cloud Run revision gets the new image and the
+  environment it expects.
 - `terraform/local/`: the module in floci-gcp. `gcp/local-e2e.sh` starts floci-gcp (`ENGINE=podman` for podman,
-  with `podman.socket` enabled), builds the API image, applies this root, deploys with the same
-  script CI uses and checks that the API answers from its database. `gcp/local-e2e.sh down` removes everything.
+  with `podman.socket` enabled), builds the API image, applies this root with that image
+  (`-var image=...`) and checks that the API answers from its database. `gcp/local-e2e.sh down` removes everything.
   CI runs it as `gcp-e2e`.
 
 ## GCP: Substrate on GKE

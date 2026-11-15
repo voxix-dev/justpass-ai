@@ -39,14 +39,16 @@ run "the_cluster_meets_substrates_requirements" {
     error_message = "Substrate needs the PodCertificateRequest and ClusterTrustBundle APIs."
   }
 
-  # GKE keeps node auto-upgrade on in every release channel.
+  # GKE keeps node auto-upgrade on in every release channel; the exclusion is what stops node upgrades.
   assert {
     condition = (
-      google_container_cluster.substrate.release_channel[0].channel == "UNSPECIFIED"
-      && !google_container_node_pool.workers.management[0].auto_upgrade
+      google_container_cluster.substrate.release_channel[0].channel == "REGULAR"
+      && google_container_node_pool.workers.management[0].auto_upgrade
       && google_container_node_pool.workers.management[0].auto_repair
+      && one(google_container_cluster.substrate.maintenance_policy[0].maintenance_exclusion).exclusion_options[0].scope == "NO_MINOR_OR_NODE_UPGRADES"
+      && one(google_container_cluster.substrate.maintenance_policy[0].maintenance_exclusion).exclusion_options[0].end_time_behavior == "UNTIL_END_OF_SUPPORT"
     )
-    error_message = "The cluster must be on no release channel, and its pool must not auto-upgrade."
+    error_message = "The cluster must be on the REGULAR channel with node and minor upgrades excluded until end of support."
   }
 
   assert {

@@ -27,8 +27,14 @@ variable "deletion_protection" {
 
 variable "bootstrap_image" {
   type        = string
-  description = "Image of the first revision. CI deploys the real one."
+  description = "Image used when api_image_digest is empty, e.g. in a plain local plan."
   default     = "us-docker.pkg.dev/cloudrun/container/hello"
+}
+
+variable "api_image_digest" {
+  type        = string
+  description = "Digest (sha256:...) of the API image in GHCR that the deploy workflow resolves for the commit."
+  default     = ""
 }
 
 variable "env" {

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Test the production setup on this machine against floci-gcp, a GCP emulator that runs Cloud SQL, Cloud Run and
-# GKE (a k3s) as containers: the Terraform modules, then the deploy script, then the API serving requests from its
-# database.
+# GKE (a k3s) as containers: the Terraform modules, with the API image set by Terraform, then the API serving
+# requests from its database.
 #
-#   deploy/gcp/local-e2e.sh        from a clean state: start floci-gcp, build, apply, deploy, check, leave it up
+#   deploy/gcp/local-e2e.sh        from a clean state: start floci-gcp, build, apply, check, leave it up
 #   deploy/gcp/local-e2e.sh down   remove floci-gcp, its containers and the local Terraform state
 #
 # ENGINE=docker (default) or podman. Needs the engine's socket, curl, jq, kubectl and Terraform.
@@ -59,10 +59,12 @@ for i in $(seq 60); do
 done
 
 "$ENGINE" build -t $IMAGE:dev -f apps/api/Dockerfile .
-"$ENGINE" tag $IMAGE:dev $IMAGE:e2e
 
+# floci-gcp's engine client can hold a connection the engine has closed while idle, which fails the first call that
+# starts a container with "Broken pipe": a second attempt works.
 tf init -input=false
-tf apply -input=false -auto-approve -var "image=$IMAGE:dev"
+apply() { tf apply -input=false -auto-approve -var "image=$IMAGE:dev"; }
+apply || apply
 
 # The GKE cluster is a k3s that takes any bearer token as cluster-admin.
 cluster=$(tf output -json cluster)
@@ -74,14 +76,6 @@ until kubectl --server "https://$kube_server" --token floci --insecure-skip-tls-
   [ "$SECONDS" -lt "$deadline" ] || { echo "the GKE cluster did not answer kubectl at $kube_server within 2 minutes" >&2; exit 1; }
   sleep 2
 done
-
-# The deploy script is the one CI runs. floci-gcp's engine client can hold a connection the engine has closed
-# while idle, which fails the first call with "Broken pipe": a second attempt works.
-deploy() {
-  PROJECT_ID=$(tf output -raw project_id) REGION=$(tf output -raw region) IMAGE=$IMAGE:e2e \
-    ACCESS_TOKEN=floci RUN_ENDPOINT=$FLOCI_URL deploy/gcp/deploy-api.sh
-}
-deploy || deploy
 
 # floci-gcp serves each service on its own host name at one port: send that name to 127.0.0.1.
 host=$(tf output -raw service_uri | sed 's|^http://||')
@@ -95,4 +89,4 @@ curl -fsS -H "Host: $host" "$FLOCI_URL/ready"; echo
 # /ready runs SELECT 1; also show that the container's start-up migrations ran in the Cloud SQL database.
 version=$("$ENGINE" exec "floci-gcp-$NAMESPACE-cloudsql-local-project-$(tf output -raw cloud_sql_instance_name)" psql -U postgres -d app -tAc 'select version_num from alembic_version')
 [ -n "$version" ] || { echo "migrations did not run" >&2; exit 1; }
-echo "e2e passed: the API serves from Cloud SQL (migration $version) on image $IMAGE:e2e"
+echo "e2e passed: the API serves from Cloud SQL (migration $version) on image $IMAGE:dev"

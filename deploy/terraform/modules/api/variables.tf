@@ -11,7 +11,7 @@ variable "region" {
 
 variable "image" {
   type        = string
-  description = "Container image of the first revision. CI deploys later images; Terraform ignores changes to it."
+  description = "Container image of the API; changing it, like the environment, makes a new revision."
 }
 
 variable "env" {
