@@ -32,6 +32,7 @@ variable "bootstrap_image" {
 variable "agent_url" {
   type        = string
   description = "Where the API reaches an agent (AGENT_URL). The API does not start without it or the ATE_* settings."
+  default     = "http://agent.invalid" # no agent yet: the API serves, rounds fail until the cluster runs
 }
 
 variable "env" {
