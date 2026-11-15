@@ -123,11 +123,15 @@ async def test_solve_creates_the_actor_and_asks_it(substrate: SubstrateAgents, a
 async def test_solve_reads_the_template_again_each_time(
     substrate: SubstrateAgents, ate_api: FakeAteApi
 ):
+    await substrate.solve(RUN)
     substrate.template_file.write_text("agent-v2\n")
     await substrate.solve(RUN)
 
-    actor = ate_pb2.CreateActorRequest.FromString(ate_api.calls[0][1]).actor
-    assert actor.actor_template.name == "agent-v2"
+    templates = [
+        ate_pb2.CreateActorRequest.FromString(ate_api.calls[i][1]).actor.actor_template.name
+        for i in (0, 2)
+    ]
+    assert templates == ["agent-v1", "agent-v2"]
 
 
 CONTEXT_HTTP = "http://context-api.justpass-agents.svc.cluster.local:8000"

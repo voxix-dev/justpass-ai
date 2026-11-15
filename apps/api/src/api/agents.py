@@ -22,6 +22,7 @@ import httpx2
 import jwt
 from google.protobuf import empty_pb2
 from google.protobuf.message import Message
+from pydantic import BaseModel
 
 from api import ate_pb2
 from shared.agent_run import AgentAnswer, AgentRun
@@ -163,6 +164,12 @@ def file_token(path: Path) -> TokenSource:
     return token
 
 
+class IdTokenClaims(BaseModel):
+    """The claim we read from a metadata server ID token: its expiry, in epoch seconds."""
+
+    exp: float
+
+
 class GoogleIdToken:
     """ID tokens for one audience from the metadata server (Cloud Run); they renew themselves.
 
@@ -192,8 +199,10 @@ class GoogleIdToken:
             )
         response.raise_for_status()
         token = response.text.strip()
-        claims = jwt.decode(token, options={"verify_signature": False})
-        self._token, self._expires = token, float(claims["exp"])
+        claims = IdTokenClaims.model_validate(
+            jwt.decode(token, options={"verify_signature": False})
+        )
+        self._token, self._expires = token, claims.exp
 
 
 @dataclass
