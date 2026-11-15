@@ -68,9 +68,10 @@ tf apply -input=false -auto-approve -var "image=$IMAGE:dev"
 cluster=$(tf output -json cluster)
 cluster_url="$FLOCI_URL/container/v1/projects/$(jq -r .project_id <<<"$cluster")/locations/$(jq -r .location <<<"$cluster")/clusters/$(jq -r .name <<<"$cluster")"
 kube_server=$(curl -fsS "$cluster_url" | jq -r .endpoint)
-for i in $(seq 60); do
-  kubectl --server "https://$kube_server" --token floci --insecure-skip-tls-verify get nodes >/dev/null 2>&1 && break
-  [ "$i" -lt 60 ] || { echo "the GKE cluster did not answer kubectl at $kube_server within 2 minutes" >&2; exit 1; }
+deadline=$((SECONDS + 120))
+until kubectl --server "https://$kube_server" --token floci --insecure-skip-tls-verify --request-timeout=5s \
+  get nodes >/dev/null 2>&1; do
+  [ "$SECONDS" -lt "$deadline" ] || { echo "the GKE cluster did not answer kubectl at $kube_server within 2 minutes" >&2; exit 1; }
   sleep 2
 done
 

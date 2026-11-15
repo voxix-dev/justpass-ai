@@ -272,13 +272,15 @@ class SubstrateAgents:
     """One actor per job: every round of a job goes to the same actor, which keeps its memory.
 
     The router wakes a suspended actor when a request arrives, so feedback needs no resume call.
+    The template's name is read from template_file on every solve, so a new one takes effect without
+    a restart.
     """
 
     control: Control
     router: Callable[[], httpx2.AsyncClient]
     router_url: str
     atespace: str
-    template: str
+    template_file: Path
     egress: list[ate_pb2.EgressRule] = field(default_factory=list[ate_pb2.EgressRule])
     busy_wait: float = BUSY_WAIT
 
@@ -292,7 +294,8 @@ class SubstrateAgents:
         validation errors. A 503 at or after the deadline also propagates.
         """
         actor = _actor_name(run.job_id)
-        await _created(self.control.create_actor(self.atespace, actor, self.template))
+        template = self.template_file.read_text().strip()
+        await _created(self.control.create_actor(self.atespace, actor, template))
         # Also with no rules: an actor made under other settings must lose its old destinations.
         await self._set_egress(actor)
         target = {"ate-target-actor": f"{self.atespace}/{actor}"}
@@ -359,7 +362,7 @@ def _substrate_from_env(router_url: str) -> SubstrateAgents:
         router=router,
         router_url=router_url,
         atespace=os.environ["ATE_ATESPACE"],
-        template=os.environ["ATE_TEMPLATE"],
+        template_file=Path(os.environ["ATE_TEMPLATE_FILE"]),
         egress=egress_rules(
             os.environ.get("CONTEXT_API_URL", ""), bool(os.environ.get("OPENROUTER_API_KEY"))
         ),

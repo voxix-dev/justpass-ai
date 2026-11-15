@@ -76,6 +76,8 @@ async def ate_api() -> AsyncIterator[FakeAteApi]:
 def substrate(ate_api: FakeAteApi, tmp_path: Path) -> SubstrateAgents:
     token = tmp_path / "token"
     token.write_text("the-token\n")
+    template = tmp_path / "template"
+    template.write_text("agent-v1\n")
 
     def answer(request: httpx2.Request) -> httpx2.Response:
         ate_api.order.append("router /run")
@@ -92,7 +94,7 @@ def substrate(ate_api: FakeAteApi, tmp_path: Path) -> SubstrateAgents:
         router=lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(answer)),
         router_url="https://router",
         atespace="homework",
-        template="agent-v1",
+        template_file=template,
     )
 
 
@@ -104,6 +106,16 @@ async def test_solve_creates_the_actor_and_asks_it(substrate: SubstrateAgents, a
     actor = ate_pb2.CreateActorRequest.FromString(request).actor
     assert (actor.metadata.atespace, actor.metadata.name) == ("homework", ACTOR)
     assert (actor.actor_template.atespace, actor.actor_template.name) == ("homework", "agent-v1")
+
+
+async def test_solve_reads_the_template_again_each_time(
+    substrate: SubstrateAgents, ate_api: FakeAteApi
+):
+    substrate.template_file.write_text("agent-v2\n")
+    await substrate.solve(RUN)
+
+    actor = ate_pb2.CreateActorRequest.FromString(ate_api.calls[0][1]).actor
+    assert actor.actor_template.name == "agent-v2"
 
 
 CONTEXT_HTTP = "http://context-api.justpass-agents.svc.cluster.local:8000"
@@ -348,7 +360,7 @@ def test_agents_from_env_refuses_an_ip_address_as_the_context_api(
         "ATE_CLIENT_CERT_FILE": "/cert",
         "ATE_TOKEN_FILE": "/token",
         "ATE_ATESPACE": "homework",
-        "ATE_TEMPLATE": "agent-v1",
+        "ATE_TEMPLATE_FILE": "/template",
         "CONTEXT_API_URL": "http://10.89.5.4:8000",
     }.items():
         monkeypatch.setenv(name, value)
@@ -528,13 +540,13 @@ def test_agents_from_env_reads_the_substrate_settings(monkeypatch: pytest.Monkey
         "ATE_CLIENT_CERT_FILE": "/cert",
         "ATE_TOKEN_FILE": "/token",
         "ATE_ATESPACE": "homework",
-        "ATE_TEMPLATE": "agent-v1",
+        "ATE_TEMPLATE_FILE": "/template",
     }.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("CONTEXT_API_URL", CONTEXT_HTTP)
     agents = agents_from_env()
     assert isinstance(agents, SubstrateAgents)
-    assert (agents.atespace, agents.template) == ("homework", "agent-v1")
+    assert (agents.atespace, agents.template_file) == ("homework", Path("/template"))
     assert agents.egress == egress_rules(CONTEXT_HTTP)
 
 
@@ -547,7 +559,7 @@ def test_agents_from_env_allows_openrouter_with_a_key(monkeypatch: pytest.Monkey
         "ATE_CLIENT_CERT_FILE": "/cert",
         "ATE_TOKEN_FILE": "/token",
         "ATE_ATESPACE": "homework",
-        "ATE_TEMPLATE": "agent-v1",
+        "ATE_TEMPLATE_FILE": "/template",
         "CONTEXT_API_URL": CONTEXT_HTTP,
     }.items():
         monkeypatch.setenv(name, value)

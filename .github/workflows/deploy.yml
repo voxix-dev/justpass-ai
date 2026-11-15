@@ -4,12 +4,12 @@ name: deploy
 # Substrate to the GKE cluster it made (after preparing its database) and stores the API's cluster credentials in
 # Secret Manager (`cluster` job), then deploys the API to Cloud Run and the web app to Firebase Hosting, which rewrites
 # /api/** to Cloud Run. The credentials expire after 48 hours, so the `refresh` workflow (daily and on demand) runs
-# this one too, which then skips the apply and the deploys and only reruns the `cluster` job against the cluster
-# Terraform already made. The API image is the
-# one ci's `images` job pushed to GHCR; it is deployed by digest through the Artifact Registry remote repository that
-# proxies GHCR. Terraform ignores the Cloud Run image, so applying never rolls a deploy back. Without GCP_PROJECT_ID
-# nothing runs. The repository variables are the outputs of deploy/terraform/bootstrap, applied by hand once, and the
-# bucket that holds the Terraform state:
+# this one too, which then skips the apply and the deploys and only issues new credentials from the cluster as it
+# is (deploy/gke/credentials.sh): it applies nothing, so it never needs an image or a manifest of an undeployed commit.
+# The API image is the one ci's `images` job pushed to GHCR; it is deployed by digest through the Artifact Registry
+# remote repository that proxies GHCR. Terraform ignores the Cloud Run image, so applying never rolls a deploy back.
+# Without GCP_PROJECT_ID nothing runs. The repository variables are the outputs of deploy/terraform/bootstrap, applied
+# by hand once, and the bucket that holds the Terraform state:
 #   GCP_PROJECT_ID, GCP_REGION, GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_TERRAFORM_SERVICE_ACCOUNT, GCP_TF_STATE_BUCKET
 
 on:
@@ -95,7 +95,8 @@ jobs:
           echo "image_repository=$(out GCP_IMAGE_REPOSITORY)" >> "$GITHUB_OUTPUT"
           echo "cluster=$(terraform -chdir=deploy/terraform/prod output -json cluster | jq -c .)" >> "$GITHUB_OUTPUT"
 
-  # Applies Substrate to the cluster and rotates the API's credentials (secret ids only in the output, no values).
+  # Applies Substrate to the cluster and rotates the API's credentials (secret ids only in the output, no values). A
+  # refresh run only rotates the credentials.
   cluster:
     needs: infra
     if: needs.infra.result == 'success' && needs.infra.outputs.current == 'true'
@@ -106,12 +107,14 @@ jobs:
       id-token: write
     env:
       CLUSTER: ${{ needs.infra.outputs.cluster }}
+      DEPLOY: ${{ github.event.workflow_run.name == 'ci' }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - uses: actions/checkout@v7
+      - if: env.DEPLOY == 'true'
+        uses: actions/checkout@v7
         with:
           repository: agent-substrate/substrate
           ref: v1.0.0
@@ -126,17 +129,21 @@ jobs:
           project_id: ${{ fromJSON(needs.infra.outputs.cluster).project_id }}
           cluster_name: ${{ fromJSON(needs.infra.outputs.cluster).name }}
           location: ${{ fromJSON(needs.infra.outputs.cluster).location }}
-      - uses: actions/setup-go@v6
+      - if: env.DEPLOY == 'true'
+        uses: actions/setup-go@v6
         with:
           go-version-file: substrate-src/go.mod
-      - uses: astral-sh/setup-uv@v6
-      - uses: hashicorp/setup-terraform@v4
+      - if: env.DEPLOY == 'true'
+        uses: astral-sh/setup-uv@v6
+      - if: env.DEPLOY == 'true'
+        uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: 1.16.1
           terraform_wrapper: false # the step below reads `terraform output`
       # ate-api cannot start before its roles and schema exist, and neither ate-setup nor Terraform makes them. The
       # script is idempotent; it runs as the admin user Terraform creates, through the Cloud SQL Auth Proxy.
-      - name: Prepare Substrate's database
+      - if: env.DEPLOY == 'true'
+        name: Prepare Substrate's database
         env:
           STATE_BUCKET: ${{ vars.GCP_TF_STATE_BUCKET }}
           PROXY_URL: https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.27.0/cloud-sql-proxy.linux.amd64
@@ -159,7 +166,8 @@ jobs:
           psql -h 127.0.0.1 -p 5433 -U substrate_admin -d "$(jq -r .cloudsql_database <<<"$CLUSTER")" \
             -v ON_ERROR_STOP=1 -v iam_user="${gsa%.gserviceaccount.com}" -f deploy/gke/substrate-db.sql
       # The image ci pushed for this commit, by digest: the actor template pins it.
-      - id: agent
+      - if: env.DEPLOY == 'true'
+        id: agent
         name: Resolve the digest of the agent image
         env:
           REF: ghcr.io/voxix-dev/justpass-ai/agent:${{ github.event.workflow_run.head_sha }}
@@ -169,21 +177,27 @@ jobs:
             | .digest else .digest end')
           case "$digest" in sha256:*) ;; *) echo "::error::No image $REF; did the ci images job push it?"; exit 1 ;; esac
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-      - name: Apply Substrate and the agents
+      - if: env.DEPLOY == 'true'
+        name: Apply Substrate and the agents
         env:
           SUBSTRATE_DIR: ${{ github.workspace }}/substrate-src
           AGENT_IMAGE: ghcr.io/voxix-dev/justpass-ai/agent@${{ steps.agent.outputs.digest }}
         run: |
-          OUT_DIR="$RUNNER_TEMP/cluster"
-          echo "OUT_DIR=$OUT_DIR" >> "$GITHUB_ENV"
-          mkdir -p "$OUT_DIR"
-          OUT_DIR="$OUT_DIR" deploy/gke/sync.sh
-          echo "::add-mask::$(cat "$OUT_DIR/token")"
-      - name: Store the credentials in Secret Manager
+          OUT_DIR="$RUNNER_TEMP/cluster" deploy/gke/sync.sh
+          echo "::add-mask::$(cat "$RUNNER_TEMP/cluster/token")"
+      - if: env.DEPLOY != 'true'
+        name: Issue new credentials
         run: |
-          for f in token ca.crt template; do
+          mkdir -p "$RUNNER_TEMP/cluster"
+          deploy/gke/credentials.sh "$RUNNER_TEMP/cluster"
+          echo "::add-mask::$(cat "$RUNNER_TEMP/cluster/token")"
+      - name: Store the credentials in Secret Manager
+        env:
+          FILES: ${{ env.DEPLOY == 'true' && 'token ca.crt template' || 'token ca.crt' }}
+        run: |
+          for f in $FILES; do
             case $f in ca.crt) key=ca ;; *) key=$f ;; esac
-            gcloud secrets versions add "$(jq -r ".secrets.$key" <<<"$CLUSTER")" --data-file="$OUT_DIR/$f" >/dev/null
+            gcloud secrets versions add "$(jq -r ".secrets.$key" <<<"$CLUSTER")" --data-file="$RUNNER_TEMP/cluster/$f" >/dev/null
           done
 
   api:

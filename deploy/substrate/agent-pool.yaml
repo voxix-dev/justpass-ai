@@ -20,6 +20,10 @@ spec:
   sandboxClasses:
   - name: gvisor
   template:
+    # The cluster autoscaler must not drain a node with a worker on it: the actor there would crash. Such a node is
+    # freed only once its workers are rescheduled elsewhere, as on a rollout.
+    annotations:
+      cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
     # The worker is the sandbox (1 CPU, 512Mi in agents.yaml) plus gVisor and the worker itself.
     resources:
       limits:

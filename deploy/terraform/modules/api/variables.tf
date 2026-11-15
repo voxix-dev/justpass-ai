@@ -75,12 +75,6 @@ variable "secret_files" {
   default     = {}
 }
 
-variable "secret_env" {
-  type        = map(string)
-  description = "Secrets for environment variables: the variable's name and the secret's id. The latest version at start-up is used. Ignored when emulator."
-  default     = {}
-}
-
 variable "openrouter_api_key" {
   type        = string
   description = "Key of the model provider (OPENROUTER_API_KEY), kept in Secret Manager. Empty: the API gets none."

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Brings the cluster that kubectl points at to the state the API on Cloud Run needs: Substrate and the
 # agents installed, ate-api and the router behind internal load balancers, and the credentials the API
-# reads from Secret Manager written to OUT_DIR. Safe to run again, and CI does on every deploy and daily.
+# reads from Secret Manager written to OUT_DIR. Safe to run again, and CI does on every deploy; the daily
+# refresh runs only credentials.sh.
 # Env:
 #   CLUSTER        the `cluster` output of the production Terraform, as JSON
 #   SUBSTRATE_DIR  a checkout of github.com/agent-substrate/substrate at the version in substrate-install.yaml;
@@ -64,6 +65,7 @@ flag --ateapi-postgres-cloudsql-gsa cloudsql_gsa
 # ate-setup's own connection string names the database "atepg", and ours has another name. The user is the
 # service account without its domain suffix, and the Auth Proxy sidecar in ate-api's pod supplies the IAM token.
 if [[ -n $(cluster cloudsql_instance) ]]; then
+  setup+=(--ateapi-postgres-cloudsql-ip-type public) # the instance has no private IP; ate-setup's default is private
   gsa=$(cluster cloudsql_gsa)
   ATE_API_POSTGRES_READ_WRITE_CONNECTION_STRING="user=${gsa%.gserviceaccount.com} host=127.0.0.1 port=5432 dbname=$(cluster cloudsql_database) sslmode=disable"
   export ATE_API_POSTGRES_READ_WRITE_CONNECTION_STRING
@@ -99,13 +101,7 @@ fi
 kubectl -n ate-system rollout status deployment/atenet-router --timeout=5m
 
 # What the API reads, written only after everything above worked. Files appear in one step each.
-ca=$(kubectl get clustertrustbundles -l podcert.ate.dev/canarying=live -o json |
-  jq -r '.items[] | select(.spec.signerName == "servicedns.podcert.ate.dev/identity") | .spec.trustBundle')
-[[ -n $ca ]] || { echo "No servicedns trust bundle" >&2; exit 1; }
-(umask 077 && kubectl -n homework create token api --audience "$audience" --duration 48h > "$work/token")
-(umask 077 && echo "$ca" > "$work/ca.crt")
-jq -R 'split(".")[1] | gsub("-"; "+") | gsub("_"; "/") | @base64d | fromjson | "Token lives \(.exp - .iat) seconds"' \
-  -r "$work/token" >&2
+"$gke/credentials.sh" "$work"
 
 # The atespace, its policy and the actor template live in ate-api, not in Kubernetes. Creating them takes
 # an owner, which the API is not, so this uses a short-lived token for ate-client, the bootstrap owner.

@@ -128,7 +128,6 @@ run "production_mounts_secrets_and_uses_the_vpc" {
   variables {
     vpc          = { network = "projects/demo/global/networks/n", subnetwork = "projects/demo/regions/europe-west1/subnetworks/s" }
     secret_files = { ca = { secret_id = "other-ca", path = "/ate/ca/ca.pem" } }
-    secret_env   = { ATE_TEMPLATE = "other-template" }
   }
 
   assert {
@@ -150,13 +149,8 @@ run "production_mounts_secrets_and_uses_the_vpc" {
   }
 
   assert {
-    condition     = contains([for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name if length(e.value_source) == 1], "ATE_TEMPLATE")
-    error_message = "ATE_TEMPLATE must come from its secret."
-  }
-
-  assert {
-    condition     = length(google_secret_manager_secret_iam_member.runtime_external) == 2
-    error_message = "The runtime account must read both secrets."
+    condition     = length(google_secret_manager_secret_iam_member.runtime_external) == 1
+    error_message = "The runtime account must read the mounted secret."
   }
 
   assert {
@@ -172,7 +166,6 @@ run "emulator_skips_the_vpc_and_secret_mounts" {
     emulator     = true
     vpc          = { network = "projects/demo/global/networks/n", subnetwork = "projects/demo/regions/europe-west1/subnetworks/s" }
     secret_files = { ca = { secret_id = "other-ca", path = "/ate/ca/ca.pem" } }
-    secret_env   = { ATE_TEMPLATE = "other-template" }
   }
 
   assert {

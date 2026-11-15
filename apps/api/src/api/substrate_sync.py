@@ -3,10 +3,10 @@
     uv run python -m api.substrate_sync deploy/substrate/agents.yaml \\
         --agent-image <image@sha256:...>
 
-Adds what is missing and prints only the template's name on stdout, for ATE_TEMPLATE. Running it
-again with the same file and image changes nothing and prints the same name. Needs ate-api's
-address, its CA and a token: --target, --ca-file, --token-file, or ATE_API_TARGET, ATE_CA_FILE and
-ATE_TOKEN_FILE (the settings the API itself uses, see agents.py).
+Adds what is missing and prints only the template's name on stdout, which is what the API reads
+from ATE_TEMPLATE_FILE. Running it again with the same file and image changes nothing and prints
+the same name. Needs ate-api's address, its CA and a token: --target, --ca-file, --token-file, or
+ATE_API_TARGET, ATE_CA_FILE and ATE_TOKEN_FILE (the settings the API itself uses, see agents.py).
 
 RIGHTS. The token must belong to an identity that may create atespaces (global owner) and write
 the atespace's access policy (atespace owner, which a global owner also is). The API's own identity

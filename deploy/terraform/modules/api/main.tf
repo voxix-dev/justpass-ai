@@ -27,7 +27,6 @@ locals {
   # floci-gcp cannot mount secrets or give a service a VPC.
   use_vpc      = var.vpc != null && !var.emulator
   secret_files = var.emulator ? {} : var.secret_files
-  secret_env   = var.emulator ? {} : var.secret_env
 }
 
 # Letters and digits only: the password goes into a URL unescaped.
@@ -128,10 +127,7 @@ resource "google_secret_manager_secret_iam_member" "runtime" {
 
 # Secrets that another module owns and fills: read at their latest version.
 resource "google_secret_manager_secret_iam_member" "runtime_external" {
-  for_each = merge(
-    { for k, v in local.secret_files : "file ${k}" => v.secret_id },
-    { for k, v in local.secret_env : "env ${k}" => v },
-  )
+  for_each  = { for k, v in local.secret_files : k => v.secret_id }
   project   = var.project_id
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
@@ -237,19 +233,6 @@ resource "google_cloud_run_v2_service" "api" {
             secret_key_ref {
               secret  = google_secret_manager_secret.api[env.key].secret_id
               version = google_secret_manager_secret_version.api[env.key].version # a new secret is a new revision
-            }
-          }
-        }
-      }
-
-      dynamic "env" {
-        for_each = local.secret_env
-        content {
-          name = env.key
-          value_source {
-            secret_key_ref {
-              secret  = env.value
-              version = "latest"
             }
           }
         }

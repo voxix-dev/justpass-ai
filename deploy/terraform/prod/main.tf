@@ -31,6 +31,7 @@ locals {
     ca          = "/secrets/ate-ca/ca.pem"
     token       = "/secrets/ate-token/token"
     client_cert = "/secrets/ate-client/client.pem"
+    template    = "/secrets/ate-template/template"
   }
 }
 
@@ -51,6 +52,7 @@ module "api" {
     ATE_CA_FILE          = local.ate_files.ca
     ATE_TOKEN_FILE       = local.ate_files.token
     ATE_CLIENT_CERT_FILE = local.ate_files.client_cert
+    ATE_TEMPLATE_FILE    = local.ate_files.template
 
     # The agents call the API back at its own URL, which cannot be read from the service without a cycle.
     CONTEXT_API_URL = "https://api-${data.google_project.this.number}.${var.region}.run.app"
@@ -66,9 +68,7 @@ module "api" {
     ca          = { secret_id = module.cluster.secret_ids["ATE_CA"], path = local.ate_files.ca }
     token       = { secret_id = module.cluster.secret_ids["ATE_TOKEN"], path = local.ate_files.token }
     client_cert = { secret_id = module.cluster.secret_ids["ATE_CLIENT_CERT"], path = local.ate_files.client_cert }
-  }
-  secret_env = {
-    ATE_TEMPLATE = module.cluster.secret_ids["ATE_TEMPLATE"]
+    template    = { secret_id = module.cluster.secret_ids["ATE_TEMPLATE"], path = local.ate_files.template }
   }
 
   deletion_protection = var.deletion_protection
