@@ -88,8 +88,8 @@ class User(Base):
 
 
 class File(Base):
-    """A photo a student uploaded. The bytes are in object storage under `storage_key`; a job
-    lists the keys of its photos in `photo_keys`."""
+    """A file a student uploaded. The bytes are in object storage under `storage_key`; a job
+    lists the keys of its files in `file_keys`."""
 
     __tablename__ = "files"
     __table_args__ = (Index(None, "user_id"),)
@@ -97,9 +97,10 @@ class File(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     storage_key: Mapped[str] = mapped_column(unique=True)
-    mime_type: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(255))  # as the student named it
+    mime_type: Mapped[str] = mapped_column(String(255))
     size_bytes: Mapped[int]
-    extracted_text: Mapped[str | None]  # what OCR read from the photo, filled in later
+    extracted_text: Mapped[str | None]  # what OCR read from the file, filled in later
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
@@ -108,7 +109,7 @@ class Job(Base):
 
     __tablename__ = "jobs"
     __table_args__ = (
-        CheckConstraint("input_text IS NOT NULL OR cardinality(photo_keys) > 0", name="has_input"),
+        CheckConstraint("input_text IS NOT NULL OR cardinality(file_keys) > 0", name="has_input"),
         CheckConstraint(
             "(status = 'awaiting_review') = (review_deadline IS NOT NULL)",
             name="deadline_iff_awaiting_review",
@@ -127,8 +128,8 @@ class Job(Base):
     level: Mapped[Level] = mapped_column(str_enum(Level, "level"))
     language: Mapped[str] = mapped_column(String(8))
     input_text: Mapped[str | None]
-    # Cloud Storage object keys. The photos themselves never go in the database.
-    photo_keys: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, server_default="{}")
+    # Cloud Storage object keys. The files themselves never go in the database.
+    file_keys: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, server_default="{}")
     # Feedback is accepted until then. Set when the job reaches awaiting_review.
     review_deadline: Mapped[datetime | None]
     # The grade the student says they got, and their comment. Both optional.

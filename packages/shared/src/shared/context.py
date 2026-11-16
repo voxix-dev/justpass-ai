@@ -97,6 +97,14 @@ class RoundInfo(BaseModel):
     artifacts: list[ArtifactRef]  # the answer (kind final) is one of them
 
 
+class TaskFile(BaseModel):
+    """A file the student attached; GET /v1/context/files/{id} returns its bytes."""
+
+    id: uuid.UUID
+    name: str
+    mime_type: str
+
+
 class Task(BaseModel):
     job_id: uuid.UUID
     subject: str
@@ -105,7 +113,7 @@ class Task(BaseModel):
     text: str  # the student's question
     round: int  # the round this token is for
     rounds: list[RoundInfo]  # every round, oldest first, with the current one last
-    photos: list[uuid.UUID] = []  # file ids of the student's photos, in order
+    files: list[TaskFile] = []  # the student's files, in order
 
 
 class ArtifactContent(BaseModel):

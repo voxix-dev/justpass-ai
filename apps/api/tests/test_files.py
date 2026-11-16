@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.auth.current_user import _current_user  # pyright: ignore[reportPrivateUsage]
 from api.auth.firebase import AuthUser
 from api.db import get_session
-from api.files import MAX_PHOTO
+from api.files import MAX_FILE
 from api.main import MAX_BODY, app
 from api.storage import GcsStorage, LocalStorage, NotFound, get_storage, storage_from_env
 from api.tables import File, User
@@ -20,6 +20,7 @@ pytestmark = pytest.mark.anyio
 JPEG = b"\xff\xd8\xff\xe0jpeg bytes"
 PNG = b"\x89PNG\r\n\x1a\npng bytes"
 WEBP = b"RIFF\x04\x00\x00\x00WEBPwebp bytes"
+GIF = b"GIF89a gif bytes"
 ANA = AuthUser(
     uid="uid-ana",
     is_anonymous=False,
@@ -46,36 +47,117 @@ async def client(session: AsyncSession, storage: LocalStorage) -> AsyncIterator[
     app.dependency_overrides.clear()
 
 
-def photo(data: bytes, mime_type: str) -> dict:
-    return {"content": data, "headers": {"content-type": mime_type}}
+def send(data: bytes, mime_type: str | None, name: str | None = None) -> dict:
+    return {
+        "content": data,
+        "headers": {"content-type": mime_type} if mime_type is not None else {},
+        "params": {"name": name} if name is not None else {},
+    }
 
 
 @pytest.mark.parametrize(
-    ("data", "mime_type", "extension"),
-    [(JPEG, "image/jpeg", "jpg"), (PNG, "image/png", "png"), (WEBP, "image/webp", "webp")],
+    ("data", "mime_type"),
+    [
+        (JPEG, "image/jpeg"),
+        (PNG, "image/png"),
+        (WEBP, "image/webp"),
+        (GIF, "image/gif"),
+        (b"%PDF-1.7 pdf", "application/pdf"),
+        (
+            b"PK\x03\x04docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (b"\x00\x01 whatever", "application/x-something-unknown"),
+        (b"<html><script>alert(1)</script>", "text/html"),
+        (b"<svg onload=alert(1)/>", "image/svg+xml"),
+    ],
 )
-async def test_upload_stores_the_photo(
+async def test_upload_stores_any_file_with_its_name(
     client: httpx2.AsyncClient,
     session: AsyncSession,
     storage: LocalStorage,
     data: bytes,
     mime_type: str,
-    extension: str,
 ):
-    response = await client.post("/files", **photo(data, mime_type))
+    response = await client.post("/files", **send(data, mime_type, "My task.bin"))
     assert response.status_code == 201
     body = response.json()
-    assert body == {"id": body["id"], "mimeType": mime_type, "size": len(data)}
+    assert body == {
+        "id": body["id"],
+        "name": "My task.bin",
+        "mimeType": mime_type,
+        "size": len(data),
+    }
     row = await session.get_one(File, uuid.UUID(body["id"]))
-    assert row.storage_key == f"users/uid-ana/uploads/{body['id']}.{extension}"
-    assert (row.user_id, row.mime_type, row.size_bytes) == ("uid-ana", mime_type, len(data))
+    assert row.storage_key == f"users/uid-ana/uploads/{body['id']}"
+    assert (row.user_id, row.name, row.mime_type, row.size_bytes) == (
+        "uid-ana",
+        "My task.bin",
+        mime_type,
+        len(data),
+    )
     assert row.extracted_text is None
     assert await storage.get(row.storage_key) == data
 
 
-async def test_upload_accepts_a_content_type_with_parameters(client: httpx2.AsyncClient):
-    response = await client.post("/files", **photo(PNG, "Image/PNG; charset=binary"))
+async def test_upload_normalizes_the_content_type(client: httpx2.AsyncClient):
+    response = await client.post("/files", **send(PNG, "Image/PNG; charset=binary"))
     assert response.status_code == 201
+    assert response.json()["mimeType"] == "image/png"
+
+
+@pytest.mark.parametrize(
+    "mime_type",
+    [
+        None,
+        "",
+        "garbage",
+        "text/",
+        "/plain",
+        "a/b/c",
+        "text plain/x",
+        "text/pl ain",
+        "x/" + "y" * 255,
+    ],
+)
+async def test_upload_falls_back_to_octet_stream_for_a_bad_content_type(
+    client: httpx2.AsyncClient, mime_type: str | None
+):
+    response = await client.post("/files", **send(b"bytes", mime_type))
+    assert response.status_code == 201
+    assert response.json()["mimeType"] == "application/octet-stream"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("report.pdf", "report.pdf"),
+        ("../../etc/passwd", "passwd"),
+        ("C:\\Users\\ana\\notes.docx", "notes.docx"),
+        ("a/b\\c/d.txt", "d.txt"),
+        ("tab\there\x00nul\nline.pdf", "tabherenulline.pdf"),
+        ("  padded name.pdf  ", "padded name.pdf"),
+        ("", "file"),
+        ("   ", "file"),
+        ("dir/", "file"),
+        ("\x01\x02", "file"),
+        ("zadanie z matematyki ąę.pdf", "zadanie z matematyki ąę.pdf"),
+        ("n" * 300, "n" * 255),
+        ("n" * 254 + " tail", "n" * 254),
+    ],
+)
+async def test_upload_sanitizes_the_name(
+    client: httpx2.AsyncClient, session: AsyncSession, name: str, expected: str
+):
+    response = await client.post("/files", **send(b"bytes", "application/pdf", name))
+    assert response.status_code == 201
+    assert response.json()["name"] == expected
+    assert await session.scalar(select(File.name)) == expected
+
+
+async def test_upload_without_a_name_is_called_file(client: httpx2.AsyncClient):
+    response = await client.post("/files", **send(b"bytes", "application/pdf"))
+    assert response.json()["name"] == "file"
 
 
 @pytest.mark.parametrize(
@@ -86,35 +168,37 @@ async def test_upload_accepts_a_content_type_with_parameters(client: httpx2.Asyn
         (b"RIFF\x04\x00\x00\x00WAVEdata", "image/webp"),
         (b"just text", "image/jpeg"),
         (JPEG, "image/gif"),
-        (b"GIF89a", "image/gif"),
-        (JPEG, "application/octet-stream"),
-        (JPEG, "text/plain"),
-        (JPEG, ""),
+        (b"GIF90a", "image/gif"),
+        (PNG, "Image/JPEG; q=1"),
     ],
 )
-async def test_upload_refuses_a_wrong_or_unsupported_type(
+async def test_upload_refuses_an_image_whose_bytes_are_not_that_image(
     client: httpx2.AsyncClient, session: AsyncSession, data: bytes, mime_type: str
 ):
-    headers = {"content-type": mime_type} if mime_type else {}
-    response = await client.post("/files", content=data, headers=headers)
+    response = await client.post("/files", **send(data, mime_type))
     assert response.status_code == 415
     assert isinstance(response.json()["detail"], str)
     assert await session.scalar(select(File.id)) is None
 
 
 async def test_upload_refuses_an_empty_body(client: httpx2.AsyncClient):
-    response = await client.post("/files", **photo(b"", "image/jpeg"))
+    response = await client.post("/files", **send(b"", "application/pdf"))
     assert response.status_code == 422
-    assert response.json() == {"detail": "The photo is empty."}
+    assert response.json() == {"detail": "The file is empty."}
 
 
 @pytest.mark.parametrize("path", ["/files", "/api/files"])
 async def test_upload_over_the_limit_is_413(client: httpx2.AsyncClient, path: str):
-    ok = await client.post(path, **photo(JPEG + bytes(MAX_PHOTO - len(JPEG)), "image/jpeg"))
+    assert MAX_FILE == 20 * 1024 * 1024
+    ok = await client.post(
+        path, content=bytes(MAX_FILE), headers={"content-type": "application/pdf"}
+    )
     assert ok.status_code == 201
-    big = await client.post(path, **photo(JPEG + bytes(MAX_PHOTO), "image/jpeg"))
+    big = await client.post(
+        path, content=bytes(MAX_FILE + 1), headers={"content-type": "application/pdf"}
+    )
     assert big.status_code == 413
-    assert big.json() == {"detail": "The photo is too large. Use one under 8 MB."}
+    assert big.json() == {"detail": "The file is too large. Use one under 20 MB."}
 
 
 @pytest.mark.parametrize("path", ["/jobs", "/api/jobs"])
@@ -126,24 +210,59 @@ async def test_the_upload_limit_does_not_raise_the_limit_of_other_routes(
     assert response.json() == {"detail": "The request is too large"}
 
 
-async def test_get_returns_the_bytes_with_safe_headers(client: httpx2.AsyncClient):
-    file_id = (await client.post("/files", **photo(PNG, "image/png"))).json()["id"]
+async def test_get_serves_an_image_inline_with_safe_headers(client: httpx2.AsyncClient):
+    file_id = (await client.post("/files", **send(PNG, "image/png", "scan.png"))).json()["id"]
     response = await client.get(f"/files/{file_id}")
     assert response.status_code == 200
     assert response.content == PNG
     assert response.headers["content-type"] == "image/png"
+    assert response.headers["content-disposition"] == "inline"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["cache-control"] == "private, max-age=3600"
+    assert response.headers["content-security-policy"] == "sandbox"
 
 
-async def test_get_of_a_missing_or_another_users_photo_is_404(
+async def test_get_serves_a_pdf_as_a_download_under_its_name(client: httpx2.AsyncClient):
+    data = b"%PDF-1.7 body"
+    file_id = (
+        await client.post("/files", **send(data, "application/pdf", "Zadania ąę.pdf"))
+    ).json()["id"]
+    response = await client.get(f"/files/{file_id}")
+    assert response.status_code == 200
+    assert response.content == data
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["content-disposition"] == (
+        "attachment; filename=\"Zadania __.pdf\"; filename*=UTF-8''Zadania%20%C4%85%C4%99.pdf"
+    )
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "private, max-age=3600"
+    assert response.headers["content-security-policy"] == "sandbox"
+
+
+@pytest.mark.parametrize(
+    "mime_type", ["text/html", "image/svg+xml", "application/xhtml+xml", "application/octet-stream"]
+)
+async def test_get_never_serves_other_types_inline(client: httpx2.AsyncClient, mime_type: str):
+    file_id = (await client.post("/files", **send(b"<svg/>", mime_type, 'a"b%.html'))).json()["id"]
+    response = await client.get(f"/files/{file_id}")
+    disposition = response.headers["content-disposition"]
+    assert disposition.startswith(
+        "attachment; filename=\"a_b_.html\"; filename*=UTF-8''a%22b%25.html"
+    )
+    assert response.headers["content-security-policy"] == "sandbox"
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_get_of_a_missing_or_another_users_file_is_404(
     client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage
 ):
     session.add(User(id=BOB.uid, is_anonymous=True))
     await session.flush()
-    key = f"users/{BOB.uid}/uploads/1.jpg"
+    key = f"users/{BOB.uid}/uploads/1"
     await storage.put(key, JPEG, "image/jpeg")
-    theirs = File(user_id=BOB.uid, storage_key=key, mime_type="image/jpeg", size_bytes=len(JPEG))
+    theirs = File(
+        user_id=BOB.uid, storage_key=key, name="x.jpg", mime_type="image/jpeg", size_bytes=len(JPEG)
+    )
     session.add(theirs)
     await session.flush()
     for file_id in (theirs.id, uuid.uuid4()):
@@ -152,8 +271,8 @@ async def test_get_of_a_missing_or_another_users_photo_is_404(
         assert isinstance(response.json()["detail"], str)
 
 
-async def test_a_photo_is_only_for_the_user_who_uploaded_it(client: httpx2.AsyncClient):
-    file_id = (await client.post("/files", **photo(JPEG, "image/jpeg"))).json()["id"]
+async def test_a_file_is_only_for_the_user_who_uploaded_it(client: httpx2.AsyncClient):
+    file_id = (await client.post("/files", **send(JPEG, "image/jpeg"))).json()["id"]
     app.dependency_overrides[_current_user] = lambda: BOB
     assert (await client.get(f"/files/{file_id}")).status_code == 404
     app.dependency_overrides[_current_user] = lambda: ANA
@@ -162,22 +281,22 @@ async def test_a_photo_is_only_for_the_user_who_uploaded_it(client: httpx2.Async
 
 async def test_the_upload_makes_the_user_row(client: httpx2.AsyncClient, session: AsyncSession):
     app.dependency_overrides[_current_user] = lambda: BOB
-    assert (await client.post("/files", **photo(JPEG, "image/jpeg"))).status_code == 201
+    assert (await client.post("/files", **send(JPEG, "image/jpeg"))).status_code == 201
     assert await session.scalar(select(User.is_anonymous).where(User.id == BOB.uid)) is True
 
 
 async def test_files_need_a_signed_in_user(client: httpx2.AsyncClient):
     del app.dependency_overrides[_current_user]
-    assert (await client.post("/files", **photo(JPEG, "image/jpeg"))).status_code == 401
+    assert (await client.post("/files", **send(JPEG, "image/jpeg"))).status_code == 401
     assert (await client.get(f"/files/{uuid.uuid4()}")).status_code == 401
 
 
-async def test_get_of_a_photo_missing_from_storage_is_404(
+async def test_get_of_a_file_missing_from_storage_is_404(
     client: httpx2.AsyncClient, session: AsyncSession
 ):
-    file_id = (await client.post("/files", **photo(JPEG, "image/jpeg"))).json()["id"]
+    file_id = (await client.post("/files", **send(JPEG, "image/jpeg"))).json()["id"]
     file = await session.get_one(File, uuid.UUID(file_id))
-    file.storage_key = "users/uid-ana/uploads/gone.jpg"
+    file.storage_key = "users/uid-ana/uploads/gone"
     await session.flush()
     assert (await client.get(f"/files/{file_id}")).status_code == 404
 
@@ -189,21 +308,23 @@ async def test_upload_without_storage_is_503(
     monkeypatch.delenv("STORAGE_DIR", raising=False)
     monkeypatch.delenv("GCS_BUCKET", raising=False)
     monkeypatch.setattr(app.state, "storage", None, raising=False)
-    response = await client.post("/files", **photo(JPEG, "image/jpeg"))
+    response = await client.post("/files", **send(JPEG, "image/jpeg"))
     assert response.status_code == 503
     assert isinstance(response.json()["detail"], str)
 
 
 async def test_the_contract_describes_the_upload_and_the_download(client: httpx2.AsyncClient):
     paths = (await client.get("/openapi.json")).json()["paths"]
-    types = {"image/jpeg", "image/png", "image/webp"}
     upload = paths["/files"]["post"]
-    assert set(upload["requestBody"]["content"]) == types
-    assert upload["requestBody"]["content"]["image/png"]["schema"] == {
-        "type": "string",
-        "format": "binary",
+    assert upload["requestBody"]["content"] == {
+        "*/*": {"schema": {"type": "string", "format": "binary"}}
     }
-    assert set(paths["/files/{file_id}"]["get"]["responses"]["200"]["content"]) == types
+    assert [(p["name"], p["in"], p["required"]) for p in upload["parameters"]] == [
+        ("name", "query", False)
+    ]
+    assert set(paths["/files/{file_id}"]["get"]["responses"]["200"]["content"]) == {"*/*"}
+    schemas = (await client.get("/openapi.json")).json()["components"]["schemas"]
+    assert set(schemas["FileOut"]["properties"]) == {"id", "name", "mimeType", "size"}
 
 
 async def test_local_storage_round_trips_and_misses(tmp_path: Path):

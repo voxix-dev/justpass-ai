@@ -42,7 +42,8 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("user_id", sa.String(128), nullable=False),
         sa.Column("storage_key", sa.String(), nullable=False, unique=True),
-        sa.Column("mime_type", sa.String(64), nullable=False),
+        sa.Column("name", sa.String(255), nullable=False),
+        sa.Column("mime_type", sa.String(255), nullable=False),
         sa.Column("size_bytes", sa.Integer(), nullable=False),
         sa.Column("extracted_text", sa.String()),
         timestamp("created_at"),
@@ -58,7 +59,7 @@ def upgrade() -> None:
         sa.Column("level", sa.String(32), nullable=False),
         sa.Column("language", sa.String(8), nullable=False),
         sa.Column("input_text", sa.String()),
-        sa.Column("photo_keys", postgresql.ARRAY(sa.String()), server_default="{}", nullable=False),
+        sa.Column("file_keys", postgresql.ARRAY(sa.String()), server_default="{}", nullable=False),
         sa.Column("review_deadline", sa.DateTime(timezone=True)),
         sa.Column("grade", sa.String(32)),
         sa.Column("grade_comment", sa.String()),
@@ -68,7 +69,7 @@ def upgrade() -> None:
         sa.CheckConstraint(f"status IN ({STATUSES})", name="status"),
         sa.CheckConstraint("level IN ('high_school', 'college')", name="level"),
         sa.CheckConstraint(
-            "input_text IS NOT NULL OR cardinality(photo_keys) > 0", name="has_input"
+            "input_text IS NOT NULL OR cardinality(file_keys) > 0", name="has_input"
         ),
         sa.CheckConstraint(
             "(status = 'awaiting_review') = (review_deadline IS NOT NULL)",

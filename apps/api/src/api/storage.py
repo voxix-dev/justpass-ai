@@ -1,6 +1,6 @@
 """Object storage for what students upload.
 
-Keys are relative paths like users/{user_id}/uploads/{id}.jpg.
+Keys are relative paths like users/{user_id}/uploads/{id}.
 
 Production uses a Cloud Storage bucket (GCS_BUCKET). For local development and tests a directory
 (STORAGE_DIR) does the same job.
@@ -107,7 +107,7 @@ def get_storage(request: Request) -> Storage:
         except RuntimeError:
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
-                "Photos cannot be stored right now. Try again later.",
+                "Files cannot be stored right now. Try again later.",
             ) from None
         request.app.state.storage = storage
     return storage

@@ -23,7 +23,7 @@
         "type": "object"
       },
       "FileOut": {
-        "description": "An uploaded photo. Give its id to POST /jobs.",
+        "description": "An uploaded file. Give its id to POST /jobs.",
         "properties": {
           "id": {
             "format": "uuid",
@@ -34,6 +34,10 @@
             "title": "Mimetype",
             "type": "string"
           },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
           "size": {
             "title": "Size",
             "type": "integer"
@@ -41,6 +45,7 @@
         },
         "required": [
           "id",
+          "name",
           "mimeType",
           "size"
         ],
@@ -63,14 +68,14 @@
       "JobCreate": {
         "additionalProperties": false,
         "properties": {
-          "photos": {
+          "files": {
             "default": [],
             "items": {
               "format": "uuid",
               "type": "string"
             },
             "maxItems": 5,
-            "title": "Photos",
+            "title": "Files",
             "type": "array"
           },
           "text": {
@@ -88,6 +93,31 @@
           }
         },
         "title": "JobCreate",
+        "type": "object"
+      },
+      "JobFile": {
+        "description": "A file of a job, as the web app lists and fetches it (GET /files/{id}).",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "mimeType": {
+            "title": "Mimetype",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "mimeType"
+        ],
+        "title": "JobFile",
         "type": "object"
       },
       "JobOut": {
@@ -135,18 +165,17 @@
             ],
             "title": "Feedback"
           },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/JobFile"
+            },
+            "title": "Files",
+            "type": "array"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
-          },
-          "photos": {
-            "items": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "title": "Photos",
-            "type": "array"
           },
           "result": {
             "anyOf": [
@@ -188,7 +217,7 @@
           "createdAt",
           "title",
           "text",
-          "photos",
+          "files",
           "result",
           "error",
           "accepted",
@@ -285,23 +314,25 @@
   "paths": {
     "/files": {
       "post": {
-        "description": "Store a photo sent as the request body, with its image type as the Content-Type.",
+        "description": "Store a file sent as the request body, with its type as the Content-Type.\n\nA missing or invalid Content-Type counts as application/octet-stream.",
         "operationId": "upload_file_files_post",
+        "parameters": [
+          {
+            "description": "The file's name, as the student has it",
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "default": "file",
+              "description": "The file's name, as the student has it",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
-            "image/jpeg": {
-              "schema": {
-                "format": "binary",
-                "type": "string"
-              }
-            },
-            "image/png": {
-              "schema": {
-                "format": "binary",
-                "type": "string"
-              }
-            },
-            "image/webp": {
+            "*/*": {
               "schema": {
                 "format": "binary",
                 "type": "string"
@@ -339,7 +370,7 @@
                 }
               }
             },
-            "description": "The photo is over 8 MiB"
+            "description": "The file is over 20 MiB"
           },
           "415": {
             "content": {
@@ -349,7 +380,7 @@
                 }
               }
             },
-            "description": "Not a JPEG, PNG or WebP photo"
+            "description": "The bytes are not an image of the declared type"
           },
           "422": {
             "content": {
@@ -385,7 +416,7 @@
     },
     "/files/{file_id}": {
       "get": {
-        "description": "One of the signed-in user's photos; 404 for a missing one or another user's.",
+        "description": "One of the signed-in user's files; 404 for a missing one or another user's.\n\nImages are shown in the page and everything else is a download, with headers that stop an\nuploaded page or SVG from running on the app's origin.",
         "operationId": "get_file_files__file_id__get",
         "parameters": [
           {
@@ -402,26 +433,14 @@
         "responses": {
           "200": {
             "content": {
-              "image/jpeg": {
-                "schema": {
-                  "format": "binary",
-                  "type": "string"
-                }
-              },
-              "image/png": {
-                "schema": {
-                  "format": "binary",
-                  "type": "string"
-                }
-              },
-              "image/webp": {
+              "*/*": {
                 "schema": {
                   "format": "binary",
                   "type": "string"
                 }
               }
             },
-            "description": "The photo"
+            "description": "The file"
           },
           "401": {
             "content": {
@@ -441,7 +460,7 @@
                 }
               }
             },
-            "description": "No such photo for this user"
+            "description": "No such file for this user"
           },
           "422": {
             "content": {

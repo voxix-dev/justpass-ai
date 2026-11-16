@@ -33,6 +33,7 @@ from shared.context import (
     RoundInfo,
     SearchHistory,
     Task,
+    TaskFile,
     UpdateMemory,
     WriteArtifact,
     WrittenArtifact,
@@ -152,12 +153,13 @@ async def get_task(args: GetTask, agent: Caller, session: Session) -> Task:
                 artifacts=[ArtifactRef(id=a.id, kind=a.kind, title=a.title) for a in mine],
             )
         )
-    files = await session.execute(
-        select(File.id, File.storage_key).where(
-            File.user_id == job.user_id, File.storage_key.in_(job.photo_keys)
-        )
+    files = await session.scalars(
+        select(File).where(File.user_id == job.user_id, File.storage_key.in_(job.file_keys))
     )
-    by_key = {key: file_id for file_id, key in files}
+    by_key = {
+        file.storage_key: TaskFile(id=file.id, name=file.name, mime_type=file.mime_type)
+        for file in files
+    }
     return Task(
         job_id=job.id,
         subject=job.subject,
@@ -166,7 +168,7 @@ async def get_task(args: GetTask, agent: Caller, session: Session) -> Task:
         text=job.input_text or "",
         round=agent.round,
         rounds=infos,
-        photos=[by_key[key] for key in job.photo_keys if key in by_key],
+        files=[by_key[key] for key in job.file_keys if key in by_key],
     )
 
 
@@ -177,12 +179,12 @@ async def read_file(
     session: Session,
     storage: Annotated[Storage, Depends(get_storage)],
 ) -> Response:
-    """A photo of this job. Any other file 404s, like a missing one."""
+    """A file of this job. Any other file 404s, like a missing one."""
     file = await session.scalar(
         select(File).where(
             File.id == file_id,
             File.user_id == agent.job.user_id,
-            File.storage_key.in_(agent.job.photo_keys),
+            File.storage_key.in_(agent.job.file_keys),
         )
     )
     if file is None:

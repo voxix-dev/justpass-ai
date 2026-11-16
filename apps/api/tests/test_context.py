@@ -148,7 +148,7 @@ async def test_get_task(client: httpx2.AsyncClient, session: AsyncSession):
         "language": "en",
         "text": "Solve x^2 = 4",
         "round": 4,
-        "photos": [],
+        "files": [],
         "rounds": [
             {
                 "number": 1,
@@ -460,16 +460,22 @@ async def test_an_agent_sees_nothing_of_another_student(
     assert (await call(client, "list_history", auth(alice))).json() == []
 
 
-async def add_photo(
-    session: AsyncSession, storage: LocalStorage, user_id: str, data: bytes = b"\xff\xd8\xffjpeg"
+async def add_file(
+    session: AsyncSession,
+    storage: LocalStorage,
+    user_id: str,
+    data: bytes = b"\xff\xd8\xffjpeg",
+    name: str = "photo.jpg",
+    mime_type: str = "image/jpeg",
 ) -> File:
     if await session.get(User, user_id) is None:
         session.add(User(id=user_id, is_anonymous=True))
         await session.flush()
     file = File(
         user_id=user_id,
-        storage_key=f"users/{user_id}/uploads/{uuid.uuid4()}.jpg",
-        mime_type="image/jpeg",
+        storage_key=f"users/{user_id}/uploads/{uuid.uuid4()}",
+        name=name,
+        mime_type=mime_type,
         size_bytes=len(data),
     )
     session.add(file)
@@ -478,31 +484,34 @@ async def add_photo(
     return file
 
 
-async def test_get_task_lists_the_photos_in_order(
+async def test_get_task_lists_the_files_in_order(
     client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage
 ):
-    first = await add_photo(session, storage, "alice")
-    second = await add_photo(session, storage, "alice")
-    await add_photo(session, storage, "alice")  # not this job's
-    job = await add_job(session, "alice", photo_keys=[second.storage_key, first.storage_key])
+    first = await add_file(session, storage, "alice", name="first.jpg")
+    second = await add_file(session, storage, "alice", b"%PDF-", "second.pdf", "application/pdf")
+    await add_file(session, storage, "alice")  # not this job's
+    job = await add_job(session, "alice", file_keys=[second.storage_key, first.storage_key])
     task = (await call(client, "get_task", auth(job))).json()
-    assert task["photos"] == [str(second.id), str(first.id)]
+    assert task["files"] == [
+        {"id": str(second.id), "name": "second.pdf", "mime_type": "application/pdf"},
+        {"id": str(first.id), "name": "first.jpg", "mime_type": "image/jpeg"},
+    ]
 
 
-async def test_read_file_returns_the_jobs_own_photos_only(
+async def test_read_file_returns_the_jobs_own_files_only(
     client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage
 ):
-    mine = await add_photo(session, storage, "alice", b"\xff\xd8\xffmine")
-    other_photo = await add_photo(session, storage, "alice")
-    theirs = await add_photo(session, storage, "bob")
-    job = await add_job(session, "alice", photo_keys=[mine.storage_key])
+    mine = await add_file(session, storage, "alice", b"\xff\xd8\xffmine")
+    other_file = await add_file(session, storage, "alice")
+    theirs = await add_file(session, storage, "bob")
+    job = await add_job(session, "alice", file_keys=[mine.storage_key])
 
     response = await client.get(f"/v1/context/files/{mine.id}", headers=auth(job))
     assert response.status_code == 200
     assert response.content == b"\xff\xd8\xffmine"
     assert response.headers["content-type"] == "image/jpeg"
     assert response.headers["x-content-type-options"] == "nosniff"
-    for file_id in (other_photo.id, theirs.id, uuid.uuid4()):
+    for file_id in (other_file.id, theirs.id, uuid.uuid4()):
         response = await client.get(f"/v1/context/files/{file_id}", headers=auth(job))
         assert response.status_code == 404
 
@@ -510,8 +519,8 @@ async def test_read_file_returns_the_jobs_own_photos_only(
 async def test_read_file_needs_a_valid_token(
     client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage
 ):
-    photo = await add_photo(session, storage, "alice")
-    await add_job(session, "alice", photo_keys=[photo.storage_key])
-    response = await client.get(f"/v1/context/files/{photo.id}")
+    file = await add_file(session, storage, "alice")
+    await add_job(session, "alice", file_keys=[file.storage_key])
+    response = await client.get(f"/v1/context/files/{file.id}")
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"

@@ -21,7 +21,7 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 from sqlalchemy import ScalarSelect, Select, and_, any_, func, select
-from sqlalchemy.dialects.postgresql import aggregate_order_by, insert
+from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -34,8 +34,8 @@ from shared.models import ArtifactKind, JobStatus, Level
 
 LIST_LIMIT = 100
 TITLE_LENGTH = 80
-MAX_PHOTOS = 5
-PHOTO_TITLE = "Photo task"
+MAX_FILES = 5
+FILE_TITLE = "File task"
 
 
 def _visible(text: str) -> bool:
@@ -66,12 +66,12 @@ class JobCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: TaskText | None = None
-    photos: Annotated[list[uuid.UUID], Field(max_length=MAX_PHOTOS)] = []  # ids from POST /files
+    files: Annotated[list[uuid.UUID], Field(max_length=MAX_FILES)] = []  # ids from POST /files
 
     @model_validator(mode="after")
     def _has_input(self) -> JobCreate:
-        if self.text is None and not self.photos:
-            raise ValueError("Add the task as text or a photo.")
+        if self.text is None and not self.files:
+            raise ValueError("Add the task as text or a file.")
         return self
 
 
@@ -112,6 +112,16 @@ JOBS_AUTH: Responses = {
 }
 
 
+class JobFile(BaseModel):
+    """A file of a job, as the web app lists and fetches it (GET /files/{id})."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    id: uuid.UUID
+    name: str
+    mime_type: str
+
+
 class JobOut(BaseModel):
     """A job as the web app shows it. `done` covers awaiting_review, accepted and expired."""
 
@@ -121,8 +131,8 @@ class JobOut(BaseModel):
     status: Literal["queued", "running", "done", "failed"]
     created_at: datetime
     title: str  # first line of the question
-    text: str  # empty for a job with photos only
-    photos: list[uuid.UUID]  # file ids, in the order the student gave them
+    text: str  # empty for a job with files only
+    files: list[JobFile]  # in the order the student gave them
     result: str | None  # Markdown with $inline$ and $$display$$ math, set when done
     error: str | None
     accepted: bool
@@ -186,15 +196,18 @@ def _shown_ordinal(job_id: Any) -> ScalarSelect[int]:
     )
 
 
-def _photo_ids(job: Any) -> ScalarSelect[list[uuid.UUID] | None]:
-    """The ids of a job's photos in `photo_keys` order, or NULL if it has none."""
+def _job_files(job: Any) -> ScalarSelect[list[dict[str, Any]] | None]:
+    """A job's files as JSON objects (id, name, mimeType) in `file_keys` order, or NULL if it has
+    none."""
+    one = func.jsonb_build_object("id", File.id, "name", File.name, "mimeType", File.mime_type)
     return (
         select(
-            func.array_agg(
-                aggregate_order_by(File.id, func.array_position(job.photo_keys, File.storage_key))
+            func.jsonb_agg(
+                aggregate_order_by(one, func.array_position(job.file_keys, File.storage_key)),
+                type_=JSONB,
             )
         )
-        .where(File.user_id == job.user_id, File.storage_key == any_(job.photo_keys))
+        .where(File.user_id == job.user_id, File.storage_key == any_(job.file_keys))
         .correlate(Job)
         .scalar_subquery()
     )
@@ -202,9 +215,9 @@ def _photo_ids(job: Any) -> ScalarSelect[list[uuid.UUID] | None]:
 
 def _jobs(
     user_id: str,
-) -> Select[Job, int, str | None, str | None, str | None, list[uuid.UUID] | None]:
+) -> Select[Job, int, str | None, str | None, str | None, list[dict[str, Any]] | None]:
     """The user's jobs with the round the student counts, its answer, the feedback of a newer
-    round that failed and the ids of their photos.
+    round that failed and their files.
 
     One statement, so a response never mixes two rounds of a job that is being revised.
     """
@@ -223,7 +236,7 @@ def _jobs(
             JobRound.feedback,
             Artifact.content,
             failed.feedback,
-            _photo_ids(Job),
+            _job_files(Job),
         )
         .join(JobRound, and_(JobRound.job_id == Job.id, JobRound.number == shown))
         .outerjoin(
@@ -253,18 +266,19 @@ def _out(
     feedback: str | None,
     answer: str | None,
     failed_feedback: str | None,
-    photos: list[uuid.UUID] | None,
+    files: list[dict[str, Any]] | None,
 ) -> JobOut:
     """A row of _jobs() as the web app shows it."""
     text = job.input_text or ""
+    listed = [JobFile.model_validate(f) for f in files or []]
     shown = _STATUS[job.status]
     return JobOut(
         id=job.id,
         status=shown,
         created_at=job.created_at,
-        title=_title(text) if text else PHOTO_TITLE,
+        title=_title(text) if text else _title(listed[0].name) if listed else FILE_TITLE,
         text=text,
-        photos=photos or [],
+        files=listed,
         result=answer if shown == "done" else None,
         error=FAILED_MESSAGE if shown == "failed" else None,
         accepted=job.status == JobStatus.ACCEPTED,
@@ -331,7 +345,7 @@ async def create_job(
 ) -> JobOut:
     """Store a new job with its first round and queue it."""
     await ensure_user(session, user)
-    ids = list(dict.fromkeys(body.photos))
+    ids = list(dict.fromkeys(body.files))
     files: dict[uuid.UUID, File] = {}
     if ids:
         found = await session.scalars(
@@ -340,7 +354,7 @@ async def create_job(
         files = {file.id: file for file in found}
     if len(files) != len(ids):
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, "A photo is missing. Add it again."
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "A file is missing. Add it again."
         )
     # shortcut: the web app does not ask for these yet.
     job = Job(
@@ -349,7 +363,7 @@ async def create_job(
         level=Level.HIGH_SCHOOL,
         language="en",
         input_text=body.text,
-        photo_keys=[files[i].storage_key for i in ids],
+        file_keys=[files[i].storage_key for i in ids],
     )
     session.add(job)
     await session.flush()

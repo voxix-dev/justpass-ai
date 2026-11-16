@@ -25,7 +25,7 @@ log = logging.getLogger("uvicorn.error")
 class BodyLimit:
     """Refuse bodies over MAX_BODY with a 413, counting what arrives so chunked ones are covered.
 
-    Uploading a photo may send up to MAX_PHOTO.
+    Uploading a file may send up to MAX_FILE.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -38,7 +38,7 @@ class BodyLimit:
         if root and path.startswith(root + "/"):
             path = path[len(root) :]
         upload = scope["type"] == "http" and scope["method"] == "POST" and path == "/files"
-        limit = files.MAX_PHOTO if upload else MAX_BODY
+        limit = files.MAX_FILE if upload else MAX_BODY
 
         async def limited() -> Message:
             nonlocal seen
@@ -47,7 +47,7 @@ class BodyLimit:
             if seen > limit:
                 raise HTTPException(
                     status.HTTP_413_CONTENT_TOO_LARGE,
-                    "The photo is too large. Use one under 8 MB."
+                    "The file is too large. Use one under 20 MB."
                     if upload
                     else "The request is too large",
                 )
