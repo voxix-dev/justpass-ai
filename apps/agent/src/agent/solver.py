@@ -22,6 +22,7 @@ from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
 
 from agent.context import ContextClient, ContextError
+from agent.files import task_text_with_files
 from agent.models import MODEL_TIMEOUT_SECONDS, Role, make_models, reported_cost
 from agent.prompt import feedback_message, round_feedback, task_message
 from agent.roles.curator import curate, pick_subject
@@ -119,8 +120,15 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
             async with ContextClient(body.context.url, body.context.token) as context:
                 async with asyncio.timeout_at(deadline + ROUND_GRACE_SECONDS):
                     task = await context.get_task()
+                    # Files first: the roles read the task with their text in it.
+                    task_text = await task_text_with_files(
+                        task,
+                        context,
+                        metered["reader"],
+                        lambda: newest_runs.get(body.job_id) == (body.round, body.lease_id),
+                    )
                     profile = await context.get_profile()
-                    subject = await _job_subject(body, curator_model, task.text, profile)
+                    subject = await _job_subject(body, curator_model, task_text, profile)
                     profile = profile.model_copy(update={"subject": subject})
                     subject_memory = await context.get_subject_memory(subject)
                     feedback = round_feedback(task, body.round)
@@ -130,7 +138,7 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
                         if r.outcome == "answered" and r.number < body.round
                     )
                     answer = await _answer(
-                        body, models, task.text, profile, subject_memory, feedback, context,
+                        body, models, task_text, profile, subject_memory, feedback, context,
                         answered, deadline,
                     )  # fmt: skip
                 # Only the newest run of the job writes notes. A failed curator never fails the
@@ -141,7 +149,7 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
                             await curate(
                                 curator_model,
                                 context,
-                                task_text=task.text,
+                                task_text=task_text,
                                 subject=profile.subject,
                                 round_number=body.round,
                                 feedback=body.feedback,
