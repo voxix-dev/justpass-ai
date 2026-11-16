@@ -1,4 +1,4 @@
-"""files, jobs, job_rounds, artifacts
+"""jobs, job_rounds, artifacts
 
 Revision ID: 0002
 Revises: 0001
@@ -33,23 +33,10 @@ def timestamp(name: str, default: str = "now()") -> sa.Column[Any]:
 
 
 def upgrade() -> None:
-    """Create files, jobs, job_rounds, and artifacts with their constraints and indexes.
+    """Create jobs, job_rounds, and artifacts with their constraints and indexes.
 
     Database errors propagate to the caller.
     """
-    op.create_table(
-        "files",
-        sa.Column("id", sa.Uuid(), primary_key=True),
-        sa.Column("user_id", sa.String(128), nullable=False),
-        sa.Column("storage_key", sa.String(), nullable=False, unique=True),
-        sa.Column("name", sa.String(255), nullable=False),
-        sa.Column("mime_type", sa.String(255), nullable=False),
-        sa.Column("size_bytes", sa.Integer(), nullable=False),
-        sa.Column("extracted_text", sa.String()),
-        timestamp("created_at"),
-        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
-    )
-    op.create_index("ix_files_user_id", "files", ["user_id"])
     op.create_table(
         "jobs",
         sa.Column("id", sa.Uuid(), primary_key=True),
@@ -59,7 +46,7 @@ def upgrade() -> None:
         sa.Column("level", sa.String(32), nullable=False),
         sa.Column("language", sa.String(8), nullable=False),
         sa.Column("input_text", sa.String()),
-        sa.Column("file_keys", postgresql.ARRAY(sa.String()), server_default="{}", nullable=False),
+        sa.Column("photo_keys", postgresql.ARRAY(sa.String()), server_default="{}", nullable=False),
         sa.Column("review_deadline", sa.DateTime(timezone=True)),
         sa.Column("grade", sa.String(32)),
         sa.Column("grade_comment", sa.String()),
@@ -69,7 +56,7 @@ def upgrade() -> None:
         sa.CheckConstraint(f"status IN ({STATUSES})", name="status"),
         sa.CheckConstraint("level IN ('high_school', 'college')", name="level"),
         sa.CheckConstraint(
-            "input_text IS NOT NULL OR cardinality(file_keys) > 0", name="has_input"
+            "input_text IS NOT NULL OR cardinality(photo_keys) > 0", name="has_input"
         ),
         sa.CheckConstraint(
             "(status = 'awaiting_review') = (review_deadline IS NOT NULL)",
@@ -126,10 +113,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop artifacts, job_rounds, jobs, and files, including their indexes and all their data.
+    """Drop artifacts, job_rounds, and jobs, including their indexes and all their data.
 
     Database errors propagate to the caller.
     """
     # Dropping a table drops its indexes too.
-    for table in ("artifacts", "job_rounds", "jobs", "files"):
+    for table in ("artifacts", "job_rounds", "jobs"):
         op.drop_table(table)
