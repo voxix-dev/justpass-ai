@@ -184,7 +184,8 @@ resource "google_container_cluster" "substrate" {
   remove_default_node_pool = true
   initial_node_count       = 1
 
-  # The exclusion's start is the first plan's time; later plans would move it.
+  # The exclusion's start is the first plan's time; later plans would move it, and GKE fills in its end. The
+  # exclusions are a set, so only the whole block can be ignored; change an existing cluster's exclusion with gcloud.
   lifecycle {
     ignore_changes = [maintenance_policy[0].maintenance_exclusion]
   }
