@@ -56,7 +56,7 @@ Cloud targets: [wiki: Architecture](https://github.com/voxix-dev/justpass-ai/wik
 - `terraform/modules/cluster/`: the GKE cluster with the internal load balancers for ate-api and the router, the
   private DNS zone for `ate-system.svc`, and the Secret Manager secrets the API reads (`ca`, `template`).
   Terraform creates each with a placeholder version. Its tests: `terraform test` in that directory.
-- The deploy workflow's `cluster` job (after `infra`, before `api`) first runs `gke/substrate-db.sql` on the
+- The deploy workflow's `cluster` job (after `infra`, before `web-build`) first runs `gke/substrate-db.sql` on the
   `substrate` database through the Cloud SQL Auth Proxy, as the `substrate_admin` user Terraform creates (the
   roles and schema ate-api needs). Then it runs `gke/sync.sh` against the cluster, with the agent image CI pushed for
   the commit, pinned by digest: it applies Substrate (v1.0.0) and the agents, trusts the API's Google identity in ate-api (and makes it an

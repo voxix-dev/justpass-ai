@@ -136,7 +136,7 @@ jobs:
             terraform -chdir=deploy/terraform/modules/$m test
           done
 
-  # The module and the deploy script against floci-gcp, which runs Cloud SQL and Cloud Run as containers.
+  # The modules against floci-gcp, which runs Cloud SQL and Cloud Run as containers.
   gcp-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 15
