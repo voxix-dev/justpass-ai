@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx2
@@ -399,8 +400,8 @@ async def test_upload_is_capped_by_files_no_task_uses(
     over = await client.post("/files", **send(JPEG, "image/jpeg"))
     assert over.status_code == 429
     assert (
-        over.json()["detail"]
-        == "You have too many files waiting. Send a task or remove some first."
+        over.json()["detail"] == "You have uploaded too many files without sending a task. "
+        "Send a task with them, or try again tomorrow."
     )
     # Another user's files do not count, and a file a task uses stops counting.
     app.dependency_overrides[_current_user] = lambda: BOB
@@ -422,6 +423,18 @@ async def test_upload_is_capped_by_files_no_task_uses(
     assert (await client.post("/files", **send(JPEG, "image/jpeg"))).status_code == 429
 
 
+async def test_files_older_than_a_day_do_not_count_toward_the_cap(
+    client: httpx2.AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(files, "MAX_UNATTACHED", 1)
+    file_id = (await client.post("/files", **send(JPEG, "image/jpeg"))).json()["id"]
+    assert (await client.post("/files", **send(JPEG, "image/jpeg"))).status_code == 429
+    old = await session.get_one(File, uuid.UUID(file_id))
+    old.created_at = datetime.now(UTC) - timedelta(hours=25)
+    await session.flush()
+    assert (await client.post("/files", **send(JPEG, "image/jpeg"))).status_code == 201
+
+
 class FakeBlob:
     def __init__(self, bucket: FakeBucket, key: str) -> None:
         self.bucket, self.key = bucket, key
@@ -431,6 +444,16 @@ class FakeBlob:
         if self.bucket.error:
             raise self.bucket.error
 
+    def reload(self) -> None:
+        if self.bucket.reload_error:
+            raise self.bucket.reload_error
+
+    @property
+    def size(self) -> int:
+        return self.bucket.existing_size
+
+    md5_hash = None
+
     def download_as_bytes(self) -> bytes:
         if self.bucket.error:
             raise self.bucket.error
@@ -438,8 +461,10 @@ class FakeBlob:
 
 
 class FakeBucket:
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(self, error: Exception | None = None, existing_size: int = 0) -> None:
         self.error = error
+        self.existing_size = existing_size
+        self.reload_error: Exception | None = None
         self.uploads: list[tuple[str, bytes, str, dict[str, object]]] = []
 
     def blob(self, key: str) -> FakeBlob:
@@ -450,6 +475,17 @@ def gcs(bucket: FakeBucket) -> GcsStorage:
     store = GcsStorage("bucket")
     store._bucket = bucket  # pyright: ignore[reportPrivateUsage]
     return store
+
+
+async def test_gcs_accepts_an_upload_whose_success_reply_was_lost():
+    store = gcs(FakeBucket(gexc.PreconditionFailed("exists"), existing_size=1))
+    await store.put("k", b"x", "text/plain")
+
+
+async def test_gcs_rejects_a_different_object_under_the_key():
+    store = gcs(FakeBucket(gexc.PreconditionFailed("exists"), existing_size=5))
+    with pytest.raises(StorageUnavailable):
+        await store.put("k", b"x", "text/plain")
 
 
 async def test_gcs_never_overwrites():
@@ -471,7 +507,6 @@ async def test_gcs_maps_a_missing_object_to_not_found():
         gexc.NotFound("The specified bucket does not exist."),
         gexc.Forbidden("no access"),
         gexc.ServiceUnavailable("down"),
-        gexc.PreconditionFailed("exists"),
         ConnectionError("reset"),
     ],
 )

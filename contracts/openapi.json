@@ -400,7 +400,7 @@
                 }
               }
             },
-            "description": "The user has too many files no task uses"
+            "description": "The user uploaded too many files in a day that no task uses"
           },
           "503": {
             "content": {

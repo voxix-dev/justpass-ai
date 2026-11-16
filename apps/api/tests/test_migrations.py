@@ -73,6 +73,9 @@ async def _execute(url: str, sql: str, fetch: bool = False) -> list[tuple[object
     return rows
 
 
+FILES_INDEX = "SELECT indexname FROM pg_indexes WHERE indexname = 'ix_files_user_id'"
+
+
 def test_the_files_migration_keeps_jobs_intact_both_ways(
     alembic_config: Callable[[str], Config], empty_database_url: str
 ):
@@ -98,6 +101,9 @@ def test_the_files_migration_keeps_jobs_intact_both_ways(
     assert before[1][2] == ["users/u/uploads/1", "users/u/uploads/2"]
     command.upgrade(config, "head")
     assert asyncio.run(_execute(url, jobs, fetch=True)) == before
+    assert "files" in asyncio.run(_table_names(url))
+    assert asyncio.run(_execute(url, FILES_INDEX, fetch=True)) == [("ix_files_user_id",)]
     command.downgrade(config, "0003")
     assert asyncio.run(_table_names(url)) == TABLES - {"files"}
+    assert asyncio.run(_execute(url, FILES_INDEX, fetch=True)) == []
     assert asyncio.run(_execute(url, jobs, fetch=True)) == before

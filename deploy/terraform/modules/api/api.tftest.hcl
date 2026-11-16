@@ -83,6 +83,11 @@ run "production_uses_the_cloud_sql_volume_and_secret_references" {
   }
 
   assert {
+    condition     = google_cloud_run_v2_service.api.template[0].max_instance_request_concurrency == 16
+    error_message = "Request concurrency must stay low because uploads are held in memory."
+  }
+
+  assert {
     condition = (
       toset([for m in google_storage_bucket_iam_member.runtime_uploads : m.role]) == toset(["roles/storage.objectCreator", "roles/storage.objectViewer"])
       && alltrue([for m in google_storage_bucket_iam_member.runtime_uploads : m.bucket == google_storage_bucket.uploads.name])

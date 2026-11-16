@@ -94,7 +94,7 @@ resource "google_service_account" "runtime" {
   display_name = "API on Cloud Run"
 }
 
-# Photos that students attach to tasks, under users/{user_id}/uploads/.
+# Files that students attach to tasks (photos, PDFs, documents), under users/{user_id}/uploads/.
 resource "google_storage_bucket" "uploads" {
   name                        = "${var.project_id}-uploads"
   project                     = var.project_id
@@ -176,6 +176,9 @@ resource "google_cloud_run_v2_service" "api" {
 
   template {
     service_account = google_service_account.runtime.email
+
+    # Uploads of up to 20 MiB are held in memory, so a 1Gi instance takes few at a time.
+    max_instance_request_concurrency = 16
 
     scaling {
       min_instance_count = var.min_instances

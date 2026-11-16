@@ -7,6 +7,8 @@ Production uses a Cloud Storage bucket (GCS_BUCKET). For local development and t
 """
 
 import asyncio
+import base64
+import hashlib
 import os
 import threading
 from pathlib import Path
@@ -89,8 +91,22 @@ class GcsStorage:
         return self._bucket.blob(key)
 
     def _put(self, key: str, data: bytes, content_type: str) -> None:
+        from google.api_core.exceptions import PreconditionFailed
+
+        blob = self._blob(key)
         try:
-            self._blob(key).upload_from_string(data, content_type, if_generation_match=0)
+            blob.upload_from_string(data, content_type, if_generation_match=0)
+        except PreconditionFailed as error:
+            # The key is fresh, so an object here is our own upload whose success reply was lost.
+            try:
+                blob.reload()
+                same = blob.size == len(data)
+                if same and blob.md5_hash is not None:
+                    same = blob.md5_hash == base64.b64encode(hashlib.md5(data).digest()).decode()
+            except _failures() as reload_error:
+                raise StorageUnavailable(key) from reload_error
+            if not same:
+                raise StorageUnavailable(key) from error
         except _failures() as error:
             raise StorageUnavailable(key) from error
 

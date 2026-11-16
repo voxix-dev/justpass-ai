@@ -8,6 +8,7 @@ The file is the request body as it is, not a multipart form. The bytes go to obj
 import re
 import unicodedata
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 from urllib.parse import quote
 
@@ -26,7 +27,7 @@ MAX_NAME = 255
 DEFAULT_NAME = "file"
 DEFAULT_TYPE = "application/octet-stream"
 MAX_TYPE = 255  # the width of files.mime_type
-MAX_UNATTACHED = 20  # files a user may hold that no task of theirs uses
+MAX_UNATTACHED = 20  # files a user may upload in a day that no task of theirs uses
 CANNOT_STORE = "Files cannot be stored right now. Try again later."
 CANNOT_LOAD = "This file cannot be loaded right now. Try again later."
 
@@ -104,7 +105,10 @@ def _disposition(mime_type: str, name: str) -> str:
         413: {"model": Problem, "description": "The file is over 20 MiB"},
         415: {"model": Problem, "description": "The bytes are not an image of the declared type"},
         422: {"model": Problem, "description": "The body is empty"},
-        429: {"model": Problem, "description": "The user has too many files no task uses"},
+        429: {
+            "model": Problem,
+            "description": "The user uploaded too many files in a day that no task uses",
+        },
         503: {
             "model": Problem,
             "description": _DOWN,
@@ -142,6 +146,7 @@ async def upload_file(
         .select_from(File)
         .where(
             File.user_id == user.uid,
+            File.created_at > datetime.now(UTC) - timedelta(hours=24),
             ~select(Job.id)
             .where(Job.user_id == user.uid, File.storage_key == any_(Job.file_keys))
             .exists(),
@@ -152,7 +157,8 @@ async def upload_file(
     if (waiting or 0) >= MAX_UNATTACHED:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
-            "You have too many files waiting. Send a task or remove some first.",
+            "You have uploaded too many files without sending a task. "
+            "Send a task with them, or try again tomorrow.",
         )
     file_id = uuid.uuid4()
     key = f"users/{user.uid}/uploads/{file_id}"
