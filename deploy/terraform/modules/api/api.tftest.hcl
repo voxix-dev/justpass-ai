@@ -14,7 +14,7 @@ mock_provider "random" {}
 variables {
   project_id = "demo"
   image      = "example/api:1"
-  env        = { AGENT_URL = "http://agent" }
+  env        = { AGENT_URL = "http://agent", STORAGE_DIR = "/data" }
 }
 
 run "production_uses_the_cloud_sql_volume_and_secret_references" {
@@ -76,10 +76,18 @@ run "production_uses_the_cloud_sql_volume_and_secret_references" {
 
   assert {
     condition = (
-      google_storage_bucket_iam_member.runtime_uploads.role == "roles/storage.objectUser"
-      && google_storage_bucket_iam_member.runtime_uploads.bucket == google_storage_bucket.uploads.name
+      !contains([for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name], "STORAGE_DIR")
+      && google_cloud_run_v2_service.api.template[0].containers[0].resources[0].limits["memory"] == "1Gi"
     )
-    error_message = "The runtime account needs object access on the uploads bucket only."
+    error_message = "STORAGE_DIR must be dropped so uploads never go to the instance disk, and the container needs 1Gi for uploads."
+  }
+
+  assert {
+    condition = (
+      toset([for m in google_storage_bucket_iam_member.runtime_uploads : m.role]) == toset(["roles/storage.objectCreator", "roles/storage.objectViewer"])
+      && alltrue([for m in google_storage_bucket_iam_member.runtime_uploads : m.bucket == google_storage_bucket.uploads.name])
+    )
+    error_message = "The runtime account needs only create and read on the uploads bucket."
   }
 }
 

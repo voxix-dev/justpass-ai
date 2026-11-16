@@ -29,7 +29,7 @@ locals {
   secret_files = var.emulator ? {} : var.secret_files
 
   # The bucket is not overridable: the API must store photos in the bucket that the runtime account can write.
-  env = merge(var.env, { GCS_BUCKET = google_storage_bucket.uploads.name })
+  env = merge({ for k, v in var.env : k => v if k != "STORAGE_DIR" }, { GCS_BUCKET = google_storage_bucket.uploads.name })
 }
 
 # Letters and digits only: the password goes into a URL unescaped.
@@ -105,9 +105,10 @@ resource "google_storage_bucket" "uploads" {
 }
 
 resource "google_storage_bucket_iam_member" "runtime_uploads" {
-  bucket = google_storage_bucket.uploads.name
-  role   = "roles/storage.objectUser"
-  member = "serviceAccount:${google_service_account.runtime.email}"
+  for_each = toset(["roles/storage.objectCreator", "roles/storage.objectViewer"])
+  bucket   = google_storage_bucket.uploads.name
+  role     = each.key
+  member   = "serviceAccount:${google_service_account.runtime.email}"
 }
 
 resource "google_secret_manager_secret" "api" {
@@ -226,6 +227,10 @@ resource "google_cloud_run_v2_service" "api" {
 
       resources {
         cpu_idle = false # background sweeping needs CPU between requests
+        limits = {
+          cpu    = "1"
+          memory = "1Gi"
+        }
       }
 
       dynamic "env" {
