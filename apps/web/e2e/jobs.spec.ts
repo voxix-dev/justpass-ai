@@ -436,3 +436,26 @@ test('a PDF task is titled by its file name and downloads from the result page',
   await page.getByRole('button', { name: 'task.pdf' }).click()
   expect((await download).suggestedFilename()).toBe('task.pdf')
 })
+
+test('a failed task with a file keeps the file when sent again', async ({ page }) => {
+  await signInAsGuest(page)
+  await page.goto('/new')
+  const text = `Please fail this one (${Date.now()})`
+  const pdf = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n')
+  await page.getByLabel('The task').fill(text)
+  await page.getByLabel('Files', { exact: true }).setInputFiles({ name: 'again.pdf', mimeType: 'application/pdf', buffer: pdf })
+  await expect(page.getByRole('button', { name: 'Remove file 1' })).toBeVisible()
+  await expect(page.getByRole('img', { name: 'Uploading file 1' })).toHaveCount(0)
+  await expect(page.getByRole('img', { name: 'Waiting to upload file 1' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Do it for me' }).click()
+  await expect(page).toHaveURL(/\/jobs\/[0-9a-f-]{36}$/)
+
+  await page.getByRole('link', { name: 'Send it again' }).click()
+  await expect(page.getByLabel('The task')).toHaveValue(text)
+  await expect(page.getByText('again.pdf')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Remove file 1' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Do it for me' }).click()
+  await expect(page).toHaveURL(/\/jobs\/[0-9a-f-]{36}$/)
+  await expect(page.getByRole('button', { name: 'again.pdf' })).toBeVisible()
+})

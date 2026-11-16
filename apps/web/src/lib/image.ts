@@ -10,7 +10,11 @@ export async function shrinkImage(file: Blob, maxEdge = 1600, quality = 0.8): Pr
   const canvas = document.createElement('canvas')
   canvas.width = Math.round(bmp.width * scale)
   canvas.height = Math.round(bmp.height * scale)
-  canvas.getContext('2d')!.drawImage(bmp, 0, 0, canvas.width, canvas.height)
+  const ctx = canvas.getContext('2d')!
+  // JPEG has no transparency: without a backdrop, transparent pixels come out black.
+  ctx.fillStyle = '#fff'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height)
   bmp.close()
   return new Promise((resolve, reject) =>
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not encode photo'))), 'image/jpeg', quality),

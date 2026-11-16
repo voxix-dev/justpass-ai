@@ -1,12 +1,15 @@
 // Jobs API used by the screens, called through the generated client. A job is text,
 // files or both. Every function throws an ApiError with a message fit to show the student.
-import { api } from './client'
+import { api, fetchWithin, FILE_TIMEOUT_MS } from './client'
 import type { components } from './schema.gen'
 
 export type Job = components['schemas']['JobOut']
 export type JobStatus = Job['status']
 export type NewJob = components['schemas']['JobCreate']
 export type FileOut = components['schemas']['FileOut']
+
+/** Image types the page shows inline; any other file is offered as a download. */
+export const INLINE_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 
 /** A failed request. status is 0 when no usable response arrived at all. */
 export class ApiError extends Error {
@@ -91,6 +94,7 @@ export async function uploadFile(blob: Blob, name: string): Promise<FileOut> {
       body: blob as unknown as string,
       bodySerializer: (b) => b as unknown as BodyInit,
       headers: { 'Content-Type': blob.type || 'application/octet-stream' },
+      fetch: fetchWithin(FILE_TIMEOUT_MS),
     }),
   )
 }
@@ -101,5 +105,5 @@ export async function uploadFile(blob: Blob, name: string): Promise<FileOut> {
  */
 export async function loadFile(id: string): Promise<Blob> {
   if (!UUID.test(id)) throw new ApiError('File not found', 404)
-  return unwrap(api.GET('/files/{file_id}', { params: { path: { file_id: id } }, parseAs: 'blob' }))
+  return unwrap(api.GET('/files/{file_id}', { params: { path: { file_id: id } }, parseAs: 'blob', fetch: fetchWithin(FILE_TIMEOUT_MS) }))
 }
