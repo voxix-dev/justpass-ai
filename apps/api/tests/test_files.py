@@ -4,16 +4,25 @@ from pathlib import Path
 
 import httpx2
 import pytest
-from sqlalchemy import select
+from google.api_core import exceptions as gexc
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api import files
 from api.auth.current_user import _current_user  # pyright: ignore[reportPrivateUsage]
 from api.auth.firebase import AuthUser
 from api.db import get_session
 from api.files import MAX_FILE
 from api.main import MAX_BODY, app
-from api.storage import GcsStorage, LocalStorage, NotFound, get_storage, storage_from_env
-from api.tables import File, User
+from api.storage import (
+    GcsStorage,
+    LocalStorage,
+    NotFound,
+    StorageUnavailable,
+    get_storage,
+    storage_from_env,
+)
+from api.tables import File, Job, User
 
 pytestmark = pytest.mark.anyio
 
@@ -360,3 +369,122 @@ def test_storage_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     assert isinstance(local, LocalStorage) and local.root == tmp_path.resolve()
     monkeypatch.setenv("STORAGE_DIR", "")
     assert isinstance(storage_from_env(), GcsStorage)
+
+
+class BrokenStorage:
+    async def put(self, key: str, data: bytes, content_type: str) -> None:
+        raise StorageUnavailable(key)
+
+    async def get(self, key: str) -> bytes:
+        raise StorageUnavailable(key)
+
+
+async def test_a_failing_storage_is_503(client: httpx2.AsyncClient, session: AsyncSession):
+    file_id = (await client.post("/files", **send(JPEG, "image/jpeg"))).json()["id"]
+    app.dependency_overrides[get_storage] = lambda: BrokenStorage()
+    response = await client.post("/files", **send(JPEG, "image/jpeg"))
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Files cannot be stored right now. Try again later."
+    assert await session.scalar(select(func.count()).select_from(File)) == 1
+    response = await client.get(f"/files/{file_id}")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "This file cannot be loaded right now. Try again later."
+
+
+async def test_upload_is_capped_by_files_no_task_uses(
+    client: httpx2.AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(files, "MAX_UNATTACHED", 2)
+    ids = [(await client.post("/files", **send(JPEG, "image/jpeg"))).json()["id"] for _ in range(2)]
+    over = await client.post("/files", **send(JPEG, "image/jpeg"))
+    assert over.status_code == 429
+    assert (
+        over.json()["detail"]
+        == "You have too many files waiting. Send a task or remove some first."
+    )
+    # Another user's files do not count, and a file a task uses stops counting.
+    app.dependency_overrides[_current_user] = lambda: BOB
+    assert (await client.post("/files", **send(JPEG, "image/jpeg"))).status_code == 201
+    app.dependency_overrides[_current_user] = lambda: ANA
+    key = (await session.get_one(File, uuid.UUID(ids[0]))).storage_key
+    session.add(
+        Job(
+            user_id=ANA.uid,
+            subject="history",
+            level="high_school",
+            language="en",
+            input_text=None,
+            file_keys=[key],
+        )
+    )
+    await session.flush()
+    assert (await client.post("/files", **send(JPEG, "image/jpeg"))).status_code == 201
+    assert (await client.post("/files", **send(JPEG, "image/jpeg"))).status_code == 429
+
+
+class FakeBlob:
+    def __init__(self, bucket: FakeBucket, key: str) -> None:
+        self.bucket, self.key = bucket, key
+
+    def upload_from_string(self, data: bytes, content_type: str, **options: object) -> None:
+        self.bucket.uploads.append((self.key, data, content_type, options))
+        if self.bucket.error:
+            raise self.bucket.error
+
+    def download_as_bytes(self) -> bytes:
+        if self.bucket.error:
+            raise self.bucket.error
+        return b"data"
+
+
+class FakeBucket:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.uploads: list[tuple[str, bytes, str, dict[str, object]]] = []
+
+    def blob(self, key: str) -> FakeBlob:
+        return FakeBlob(self, key)
+
+
+def gcs(bucket: FakeBucket) -> GcsStorage:
+    store = GcsStorage("bucket")
+    store._bucket = bucket  # pyright: ignore[reportPrivateUsage]
+    return store
+
+
+async def test_gcs_never_overwrites():
+    bucket = FakeBucket()
+    await gcs(bucket).put("k", b"x", "text/plain")
+    assert bucket.uploads == [("k", b"x", "text/plain", {"if_generation_match": 0})]
+    assert await gcs(bucket).get("k") == b"data"
+
+
+async def test_gcs_maps_a_missing_object_to_not_found():
+    store = gcs(FakeBucket(gexc.NotFound("No such object: bucket/k")))
+    with pytest.raises(NotFound):
+        await store.get("k")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        gexc.NotFound("The specified bucket does not exist."),
+        gexc.Forbidden("no access"),
+        gexc.ServiceUnavailable("down"),
+        gexc.PreconditionFailed("exists"),
+        ConnectionError("reset"),
+    ],
+)
+async def test_gcs_maps_other_failures_to_unavailable(error: Exception):
+    store = gcs(FakeBucket(error))
+    with pytest.raises(StorageUnavailable):
+        await store.get("k")
+    with pytest.raises(StorageUnavailable):
+        await store.put("k", b"x", "text/plain")
+
+
+async def test_local_storage_does_not_overwrite(storage: LocalStorage):
+    await storage.put("a/b", b"1", "text/plain")
+    with pytest.raises(FileExistsError):
+        await storage.put("a/b", b"2", "text/plain")
+    assert await storage.get("a/b") == b"1"

@@ -392,6 +392,16 @@
             },
             "description": "The body is empty"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The user has too many files no task uses"
+          },
           "503": {
             "content": {
               "application/json": {
@@ -400,7 +410,7 @@
                 }
               }
             },
-            "description": "The database or Google's token signing keys cannot be reached"
+            "description": "The database, the storage or Google's token signing keys cannot be reached"
           }
         },
         "security": [
@@ -480,7 +490,7 @@
                 }
               }
             },
-            "description": "The database or Google's token signing keys cannot be reached"
+            "description": "The database, the storage or Google's token signing keys cannot be reached"
           }
         },
         "security": [

@@ -109,7 +109,7 @@ class Job(Base):
 
     __tablename__ = "jobs"
     __table_args__ = (
-        CheckConstraint("input_text IS NOT NULL OR cardinality(file_keys) > 0", name="has_input"),
+        CheckConstraint("input_text IS NOT NULL OR cardinality(photo_keys) > 0", name="has_input"),
         CheckConstraint(
             "(status = 'awaiting_review') = (review_deadline IS NOT NULL)",
             name="deadline_iff_awaiting_review",
@@ -128,8 +128,11 @@ class Job(Base):
     level: Mapped[Level] = mapped_column(str_enum(Level, "level"))
     language: Mapped[str] = mapped_column(String(8))
     input_text: Mapped[str | None]
-    # Cloud Storage object keys. The files themselves never go in the database.
-    file_keys: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, server_default="{}")
+    # Object storage keys. The files themselves never go in the database. The column keeps its old
+    # name so a revision from before the rename still works on the migrated database.
+    file_keys: Mapped[list[str]] = mapped_column(
+        "photo_keys", ARRAY(String), default=list, server_default="{}"
+    )
     # Feedback is accepted until then. Set when the job reaches awaiting_review.
     review_deadline: Mapped[datetime | None]
     # The grade the student says they got, and their comment. Both optional.

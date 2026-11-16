@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.context_token import mint_token
 from api.db import get_session
 from api.main import app
-from api.storage import LocalStorage
+from api.storage import LocalStorage, StorageUnavailable, get_storage
 from api.tables import Artifact, File, Job, JobRound, MemoryDoc, User
 from shared.models import ArtifactKind, JobStatus, Level
 
@@ -524,3 +524,19 @@ async def test_read_file_needs_a_valid_token(
     response = await client.get(f"/v1/context/files/{file.id}")
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
+
+
+async def test_read_file_is_503_when_the_storage_fails(
+    client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage
+):
+    file = await add_file(session, storage, "alice")
+    job = await add_job(session, "alice", file_keys=[file.storage_key])
+
+    class Broken:
+        async def get(self, key: str) -> bytes:
+            raise StorageUnavailable(key)
+
+    app.dependency_overrides[get_storage] = lambda: Broken()
+    response = await client.get(f"/v1/context/files/{file.id}", headers=auth(job))
+    assert response.status_code == 503
+    assert response.json()["detail"] == "This file cannot be loaded right now. Try again later."

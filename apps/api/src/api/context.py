@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.context_token import InvalidToken, verify_token
 from api.db import get_session
-from api.storage import NotFound, Storage, get_storage
+from api.storage import NotFound, Storage, StorageUnavailable, get_storage
 from api.tables import Artifact, File, Job, JobRound, MemoryDoc, search_memory
 from shared.context import (
     ArtifactContent,
@@ -189,11 +189,19 @@ async def read_file(
     )
     if file is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
+    key, mime_type = file.storage_key, file.mime_type
+    # End the read's transaction: the download must not hold a pooled connection.
+    await session.commit()
     try:
-        data = await storage.get(file.storage_key)
+        data = await storage.get(key)
     except NotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found") from None
-    return Response(data, media_type=file.mime_type, headers={"X-Content-Type-Options": "nosniff"})
+    except StorageUnavailable:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "This file cannot be loaded right now. Try again later.",
+        ) from None
+    return Response(data, media_type=mime_type, headers={"X-Content-Type-Options": "nosniff"})
 
 
 @router.post("/read_artifact")

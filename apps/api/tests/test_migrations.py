@@ -59,3 +59,45 @@ def test_migrations_match_the_tables_in_code(
     command.check(alembic_config(database_url))  # columns, types, nullability, indexes
     migrated = asyncio.run(_catalog(database_url))
     assert migrated == asyncio.run(_catalog(empty_database_url, create_all=True))
+
+
+async def _execute(url: str, sql: str, fetch: bool = False) -> list[tuple[object, ...]]:
+    engine = create_async_engine(url, poolclass=NullPool)
+    async with engine.begin() as connection:
+        rows: list[tuple[object, ...]] = []
+        for statement in sql.split(";"):
+            if statement.strip():
+                result = await connection.execute(text(statement))
+                rows = [tuple(row) for row in result.all()] if fetch else []
+    await engine.dispose()
+    return rows
+
+
+def test_the_files_migration_keeps_jobs_intact_both_ways(
+    alembic_config: Callable[[str], Config], empty_database_url: str
+):
+    url = empty_database_url
+    config = alembic_config(url)
+    command.upgrade(config, "0003")
+    asyncio.run(
+        _execute(
+            url,
+            """
+            INSERT INTO users (id, is_anonymous) VALUES ('u', true);
+            INSERT INTO jobs (id, user_id, status, subject, level, language, input_text)
+              VALUES ('00000000-0000-0000-0000-000000000001', 'u', 'received', 'history',
+                      'high_school', 'en', 'a question');
+            INSERT INTO jobs (id, user_id, status, subject, level, language, photo_keys)
+              VALUES ('00000000-0000-0000-0000-000000000002', 'u', 'received', 'history',
+                      'high_school', 'en', '{users/u/uploads/1,users/u/uploads/2}');
+            """,
+        )
+    )
+    jobs = "SELECT id::text, input_text, photo_keys FROM jobs ORDER BY id"
+    before = asyncio.run(_execute(url, jobs, fetch=True))
+    assert before[1][2] == ["users/u/uploads/1", "users/u/uploads/2"]
+    command.upgrade(config, "head")
+    assert asyncio.run(_execute(url, jobs, fetch=True)) == before
+    command.downgrade(config, "0003")
+    assert asyncio.run(_table_names(url)) == TABLES - {"files"}
+    assert asyncio.run(_execute(url, jobs, fetch=True)) == before

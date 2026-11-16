@@ -14,18 +14,21 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
-from sqlalchemy import select
+from sqlalchemy import any_, func, select
 
 from api.auth.current_user import CurrentUser
 from api.jobs import JOBS_AUTH, Problem, Responses, Session, ensure_user
-from api.storage import NotFound, Storage, get_storage
-from api.tables import File
+from api.storage import NotFound, Storage, StorageUnavailable, get_storage
+from api.tables import File, Job
 
 MAX_FILE = 20 * 1024 * 1024
 MAX_NAME = 255
 DEFAULT_NAME = "file"
 DEFAULT_TYPE = "application/octet-stream"
 MAX_TYPE = 255  # the width of files.mime_type
+MAX_UNATTACHED = 20  # files a user may hold that no task of theirs uses
+CANNOT_STORE = "Files cannot be stored right now. Try again later."
+CANNOT_LOAD = "This file cannot be loaded right now. Try again later."
 
 # The only types served inline, so only these are checked: the bytes must start the way the type
 # says, or an upload could pass as an image. Everything else is served as a download.
@@ -36,11 +39,16 @@ _IMAGES = {
     "image/gif": (b"GIF87a", b"GIF89a"),
 }
 _TYPE = re.compile(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+")
+_DOWN = "The database, the storage or Google's token signing keys cannot be reached"
 _BINARY: dict[str, Any] = {"schema": {"type": "string", "format": "binary"}}
 _UPLOAD: dict[str, Any] = {"requestBody": {"required": True, "content": {"*/*": _BINARY}}}
 _FILE: Responses = {
     200: {"description": "The file", "content": {"*/*": _BINARY}},
     404: {"model": Problem, "description": "No such file for this user"},
+    503: {
+        "model": Problem,
+        "description": _DOWN,
+    },
 }
 
 router = APIRouter(prefix="/files", tags=["files"], responses=JOBS_AUTH)
@@ -96,6 +104,11 @@ def _disposition(mime_type: str, name: str) -> str:
         413: {"model": Problem, "description": "The file is over 20 MiB"},
         415: {"model": Problem, "description": "The bytes are not an image of the declared type"},
         422: {"model": Problem, "description": "The body is empty"},
+        429: {"model": Problem, "description": "The user has too many files no task uses"},
+        503: {
+            "model": Problem,
+            "description": _DOWN,
+        },
     },
 )
 async def upload_file(
@@ -124,10 +137,30 @@ async def upload_file(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             f"This is not a valid {mime_type} image. Check the file and try again.",
         )
+    waiting = await session.scalar(
+        select(func.count())
+        .select_from(File)
+        .where(
+            File.user_id == user.uid,
+            ~select(Job.id)
+            .where(Job.user_id == user.uid, File.storage_key == any_(Job.file_keys))
+            .exists(),
+        )
+    )
+    # End the read's transaction: the upload must not hold a pooled connection.
+    await session.commit()
+    if (waiting or 0) >= MAX_UNATTACHED:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "You have too many files waiting. Send a task or remove some first.",
+        )
     file_id = uuid.uuid4()
     key = f"users/{user.uid}/uploads/{file_id}"
     # The object goes first: a failed upload leaves no row that points at nothing.
-    await storage.put(key, data, mime_type)
+    try:
+        await storage.put(key, data, mime_type)
+    except StorageUnavailable:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, CANNOT_STORE) from None
     await ensure_user(session, user)
     name = _name(name)
     session.add(
@@ -156,17 +189,22 @@ async def get_file(
     file = await session.scalar(select(File).where(File.id == file_id, File.user_id == user.uid))
     if file is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
+    key, mime_type, name = file.storage_key, file.mime_type, file.name
+    # End the read's transaction: the download must not hold a pooled connection.
+    await session.commit()
     try:
-        data = await storage.get(file.storage_key)
+        data = await storage.get(key)
     except NotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found") from None
+    except StorageUnavailable:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, CANNOT_LOAD) from None
     return Response(
         data,
-        media_type=file.mime_type,
+        media_type=mime_type,
         headers={
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "private, max-age=3600",
             "Content-Security-Policy": "sandbox",
-            "Content-Disposition": _disposition(file.mime_type, file.name),
+            "Content-Disposition": _disposition(mime_type, name),
         },
     )
