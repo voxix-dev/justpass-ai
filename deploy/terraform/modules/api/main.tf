@@ -27,6 +27,9 @@ locals {
   # floci-gcp cannot mount secrets or give a service a VPC.
   use_vpc      = var.vpc != null && !var.emulator
   secret_files = var.emulator ? {} : var.secret_files
+
+  # The bucket is not overridable: the API must store photos in the bucket that the runtime account can write.
+  env = merge(var.env, { GCS_BUCKET = google_storage_bucket.uploads.name })
 }
 
 # Letters and digits only: the password goes into a URL unescaped.
@@ -89,6 +92,22 @@ resource "google_service_account" "runtime" {
   project      = var.project_id
   account_id   = "api-runtime"
   display_name = "API on Cloud Run"
+}
+
+# Photos that students attach to tasks, under users/{user_id}/uploads/.
+resource "google_storage_bucket" "uploads" {
+  name                        = "${var.project_id}-uploads"
+  project                     = var.project_id
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  force_destroy               = !var.deletion_protection
+}
+
+resource "google_storage_bucket_iam_member" "runtime_uploads" {
+  bucket = google_storage_bucket.uploads.name
+  role   = "roles/storage.objectUser"
+  member = "serviceAccount:${google_service_account.runtime.email}"
 }
 
 resource "google_secret_manager_secret" "api" {
@@ -210,7 +229,7 @@ resource "google_cloud_run_v2_service" "api" {
       }
 
       dynamic "env" {
-        for_each = var.env
+        for_each = local.env
         content {
           name  = env.key
           value = env.value
@@ -269,6 +288,7 @@ resource "google_cloud_run_v2_service" "api" {
     google_secret_manager_secret_iam_member.runtime,
     google_secret_manager_secret_iam_member.runtime_external,
     google_project_iam_member.runtime_cloudsql,
+    google_storage_bucket_iam_member.runtime_uploads,
     google_sql_database.app,
     google_sql_user.app,
   ]

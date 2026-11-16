@@ -62,6 +62,25 @@ run "production_uses_the_cloud_sql_volume_and_secret_references" {
     condition     = google_sql_database_instance.db.deletion_protection && google_cloud_run_v2_service.api.deletion_protection
     error_message = "Deletion protection must default to on."
   }
+
+  assert {
+    condition = (
+      google_storage_bucket.uploads.name == "demo-uploads"
+      && !google_storage_bucket.uploads.force_destroy
+      && google_storage_bucket.uploads.public_access_prevention == "enforced"
+      && output.uploads_bucket == "demo-uploads"
+      && contains([for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.value if e.name == "GCS_BUCKET"], "demo-uploads")
+    )
+    error_message = "The API must get its private uploads bucket as GCS_BUCKET."
+  }
+
+  assert {
+    condition = (
+      google_storage_bucket_iam_member.runtime_uploads.role == "roles/storage.objectUser"
+      && google_storage_bucket_iam_member.runtime_uploads.bucket == google_storage_bucket.uploads.name
+    )
+    error_message = "The runtime account needs object access on the uploads bucket only."
+  }
 }
 
 run "emulator_uses_tcp_and_plain_environment" {
@@ -79,7 +98,7 @@ run "emulator_uses_tcp_and_plain_environment" {
   assert {
     condition = (
       toset([for e in google_cloud_run_v2_service.api.template[0].containers[0].env : e.name if e.value != ""])
-      == toset(["AGENT_URL", "DATABASE_URL", "CONTEXT_TOKEN_SECRET"])
+      == toset(["AGENT_URL", "GCS_BUCKET", "DATABASE_URL", "CONTEXT_TOKEN_SECRET"])
     )
     error_message = "The emulator must get the secrets as plain values."
   }

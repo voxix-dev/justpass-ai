@@ -100,7 +100,9 @@ test.describe('signed in', () => {
     await page.setViewportSize({ width: 360, height: 740 })
     await page.goto('/new')
     await page.getByLabel('The task').fill(`Solve 2x² − 8x + 6 = 0 and show each step (${Date.now()})`)
-    const box = (await page.getByRole('button', { name: 'Do it for me' }).boundingBox())!
+    const send = page.getByRole('button', { name: 'Do it for me' })
+    await send.scrollIntoViewIfNeeded()
+    const box = (await send.boundingBox())!
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
     await page.waitForTimeout(180)
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)

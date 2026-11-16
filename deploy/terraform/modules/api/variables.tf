@@ -37,7 +37,7 @@ variable "db_tier" {
 
 variable "deletion_protection" {
   type        = bool
-  description = "Refuse to delete the database instance and the service."
+  description = "Refuse to delete the database instance and the service, and delete the uploads bucket only when it is empty."
   default     = true
 }
 
