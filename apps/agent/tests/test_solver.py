@@ -2,7 +2,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Protocol, cast
 from uuid import UUID, uuid4
 
 import anyio
@@ -19,11 +19,15 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models import Model
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.function import AgentInfo, FunctionDef, FunctionModel
+from pydantic_ai.usage import RequestUsage
 
 from agent import server, solver
-from agent.context import ContextClient
-from agent.roles import general
+from agent.context import ContextClient, ContextStatusError
+from agent.models import MODEL_TIMEOUT_SECONDS, ROLE_MODELS, Role, make_models
+from agent.roles import REQUEST_LIMITS, general
+from agent.roles.curator import pick_subject
+from agent.roles.orchestrator import WorkResult
 from agent.server import SAMPLE_ANSWER, app
 from shared.agent_run import AgentRun, ContextGrant
 from shared.context import Profile
@@ -32,6 +36,12 @@ pytestmark = pytest.mark.anyio
 
 KEY = "sk-or-secret-key"
 Script = Callable[[list[ModelMessage], AgentInfo], ModelResponse]
+
+
+class UseModel(Protocol):
+    def __call__(
+        self, script: Script, orchestrator: Script = ..., /
+    ) -> list[list[ModelMessage]]: ...
 
 
 @pytest.fixture
@@ -83,10 +93,6 @@ def is_picker(info: AgentInfo) -> bool:
     return any("name" in t.parameters_json_schema.get("properties", {}) for t in info.output_tools)
 
 
-def is_curator(info: AgentInfo) -> bool:
-    return any(t.name == "final_result" for t in info.output_tools) and not is_picker(info)
-
-
 def pick_reply(info: AgentInfo, name: str) -> ModelResponse:
     return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"name": name})])
 
@@ -105,42 +111,109 @@ def picker() -> PickerStub:
     return PickerStub()
 
 
+def final_reply(info: AgentInfo, *ids: str) -> ModelResponse:
+    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"answer": list(ids)})])
+
+
+def default_orchestrator(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+    """Delegates the whole task to general, then answers with its result."""
+    last = messages[-1]
+    if isinstance(last, ModelRequest):
+        for part in last.parts:
+            if (
+                isinstance(part, ToolReturnPart)
+                and isinstance(part.content, WorkResult)
+                and part.content.id
+            ):
+                return final_reply(info, part.content.id)
+    return tool_call("run_agent", role="general", brief="Answer the whole task.")
+
+
+def quiet_side(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+    """The curator model: names math as the subject and asks for no change to the notes."""
+    if is_picker(info):
+        return pick_reply(info, "math")
+    return curation_reply(info, {"profile": {}, "subject": {}})
+
+
+def role_models(
+    worker: FunctionDef,
+    orchestrator: FunctionDef = default_orchestrator,
+    curator: FunctionDef = quiet_side,
+) -> dict[Role, Model]:
+    """One model per role: the three workers share one script."""
+    return {
+        "orchestrator": FunctionModel(orchestrator),
+        "general": FunctionModel(worker),
+        "math": FunctionModel(worker),
+        "writer": FunctionModel(worker),
+        "curator": FunctionModel(curator),
+    }
+
+
+def patch_models(
+    monkeypatch: pytest.MonkeyPatch,
+    worker: FunctionDef,
+    orchestrator: FunctionDef = default_orchestrator,
+    curator: FunctionDef = quiet_side,
+) -> None:
+    def make_models(
+        key: SecretStr, http_client: httpx2.AsyncClient | None = None
+    ) -> dict[Role, Model]:
+        return role_models(worker, orchestrator, curator)
+
+    monkeypatch.setattr(solver, "make_models", make_models)
+
+
+@pytest.fixture
+def orchestrator_requests() -> list[list[ModelMessage]]:
+    """The messages each orchestrator request carried."""
+    return []
+
+
 @pytest.fixture
 def use_model(
-    monkeypatch: pytest.MonkeyPatch, curator: CuratorStub, picker: PickerStub
-) -> Callable[[Script], list[list[ModelMessage]]]:
-    """Replace the model with a script. Returns the messages each answering request carried.
+    monkeypatch: pytest.MonkeyPatch,
+    curator: CuratorStub,
+    picker: PickerStub,
+    orchestrator_requests: list[list[ModelMessage]],
+) -> UseModel:
+    """Replace the models with scripts. Returns the messages each worker request carried.
 
-    The curator's requests go to the stub instead, which returns no change unless a test sets one,
-    and the requests that name the subject go to the picker stub, which names math.
+    The script answers for the workers (general, math and writer). The orchestrator delegates the
+    whole task to general and answers with its result, unless a test gives its own script. The
+    curator's requests go to the stub instead, which returns no change unless a test sets one, and
+    the requests that name the subject go to the picker stub, which names math.
     """
 
-    def install(script: Script) -> list[list[ModelMessage]]:
+    def install(
+        script: Script, orchestrator: Script = default_orchestrator
+    ) -> list[list[ModelMessage]]:
         requests: list[list[ModelMessage]] = []
 
-        async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        def work(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            requests.append(list(messages))
+            return script(messages, info)
+
+        def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            orchestrator_requests.append(list(messages))
+            return orchestrator(messages, info)
+
+        async def side(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
             if is_picker(info):
                 picker.requests.append(list(messages))
                 if picker.error:
                     raise picker.error
                 return pick_reply(info, picker.name)
-            if is_curator(info):
-                curator.requests.append(list(messages))
-                if curator.on_request:
-                    curator.on_request()
-                await asyncio.sleep(curator.delay)
-                if curator.error:
-                    raise curator.error
-                return curation_reply(info, curator.curation)
-            requests.append(list(messages))
-            return script(messages, info)
+            curator.requests.append(list(messages))
+            if curator.on_request:
+                curator.on_request()
+            await asyncio.sleep(curator.delay)
+            if curator.error:
+                raise curator.error
+            return curation_reply(info, curator.curation)
 
-        model = FunctionModel(respond)
-
-        def make_model(key: SecretStr) -> Model:
-            return model
-
-        monkeypatch.setattr(solver, "make_model", make_model)
+        patch_models(monkeypatch, work, lead, side)
         return requests
 
     return install
@@ -167,10 +240,17 @@ def notes() -> dict[str, str | int]:
 
 
 @pytest.fixture
+def context_failures() -> dict[str, int]:
+    """The Context API tools that fail, and the status each answers with."""
+    return {}
+
+
+@pytest.fixture
 def context_api(
     monkeypatch: pytest.MonkeyPatch,
     task_rounds: list[dict[str, object]],
     notes: dict[str, str | int],
+    context_failures: dict[str, int],
 ) -> list[httpx2.Request]:
     seen: list[httpx2.Request] = []
     job_id = str(uuid4())
@@ -178,6 +258,8 @@ def context_api(
     def handle(request: httpx2.Request) -> httpx2.Response:
         seen.append(request)
         tool = request.url.path.rsplit("/", 1)[-1]
+        if tool in context_failures:
+            return httpx2.Response(context_failures[tool], json={"detail": "down"})
         match tool:
             case "get_task":
                 task: dict[str, object] = {
@@ -288,9 +370,7 @@ def prompts(messages: list[ModelMessage]) -> list[str]:
     ]
 
 
-async def test_the_answer_is_the_text_of_the_model(
-    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
-):
+async def test_the_answer_is_the_text_of_the_model(client: httpx2.AsyncClient, use_model: UseModel):
     requests = use_model(lambda messages, info: text("The roots are $x=\\pm 2$."))
     response = await client.post("/run", json=run_body())
     assert response.json() == {"answer": "The roots are $x=\\pm 2$."}
@@ -299,9 +379,7 @@ async def test_the_answer_is_the_text_of_the_model(
     assert KEY not in repr(first)
 
 
-async def test_the_model_can_call_a_math_tool(
-    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
-):
+async def test_the_model_can_call_a_math_tool(client: httpx2.AsyncClient, use_model: UseModel):
     def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if not tool_returns(messages):
             return tool_call("solve", equation="x**2 - 4", variable="x")
@@ -315,9 +393,7 @@ async def test_the_model_can_call_a_math_tool(
     assert "error=None" in result
 
 
-async def test_all_tools_are_offered(
-    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
-):
+async def test_all_tools_are_offered(client: httpx2.AsyncClient, use_model: UseModel):
     offered: list[str] = []
 
     def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -340,7 +416,7 @@ async def test_all_tools_are_offered(
 
 
 async def test_write_document_has_a_flat_schema_with_the_limits(
-    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+    client: httpx2.AsyncClient, use_model: UseModel
 ):
     schemas: dict[str, dict[str, object]] = {}
 
@@ -358,7 +434,7 @@ async def test_write_document_has_a_flat_schema_with_the_limits(
 
 async def test_write_document_saves_a_draft_through_the_context_api(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
 ):
     def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -388,7 +464,7 @@ async def test_write_document_saves_a_draft_through_the_context_api(
 
 
 async def test_write_document_without_a_context_api_says_so(
-    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+    client: httpx2.AsyncClient, use_model: UseModel
 ):
     def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if not tool_returns(messages):
@@ -405,7 +481,7 @@ async def test_write_document_without_a_context_api_says_so(
 
 async def test_a_refused_document_is_retried_by_the_model(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
 ):
     calls = 0
@@ -425,44 +501,45 @@ async def test_a_refused_document_is_retried_by_the_model(
     assert [r.url.path for r in context_api].count("/v1/context/write_artifact") == 1
 
 
-async def test_a_feedback_round_continues_the_conversation(
+async def test_a_feedback_round_continues_the_orchestrator_conversation(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
+    orchestrator_requests: list[list[ModelMessage]],
     caplog: pytest.LogCaptureFixture,
 ):
     caplog.set_level("INFO", logger="agent.solver")
-    requests = use_model(lambda messages, info: text(f"Answer {len(prompts(messages))}"))
+    requests = use_model(lambda messages, info: text(f"Answer {len(requests)}"))
     job = run_body()
     first = await client.post("/run", json=job)
     second = await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
     assert first.json() == {"answer": "Answer 1"}
     assert second.json() == {"answer": "Answer 2"}
-    # The second request carries the first prompt, the first answer and the feedback.
-    sent = prompts(requests[1])
+    # Round 1 took two orchestrator requests: the second round's first one carries the first
+    # prompt, round 1's delegation and its result, and the feedback.
+    sent = prompts(orchestrator_requests[2])
     assert len(sent) == 2
     assert "Solve x^2 = 4" in sent[0]
     assert "Show the check" in sent[1]
+    assert "Answer 1" in tool_returns(orchestrator_requests[2])["run_agent"]
     assert f"Round 2 of job {job['job_id']} continues round 1" in caplog.text
-    assert any(
-        isinstance(p, TextPart) and p.content == "Answer 1"
-        for m in requests[1]
-        if isinstance(m, ModelResponse)
-        for p in m.parts
-    )
+    # Workers keep no history: the second one starts from its own message.
+    assert len(requests[1]) == 1
+    assert "Show the check" in prompts(requests[1])[0]
 
 
 async def test_a_fresh_process_rebuilds_the_job_from_the_task(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
+    orchestrator_requests: list[list[ModelMessage]],
 ):
     requests = use_model(lambda messages, info: text("Again"))
     # No history for this job: round 2 starts from the task, with the feedback of the rounds.
     await client.post("/run", json=run_body(round=2, feedback="Show the check", context=grant()))
-    sent = prompts(requests[0])
-    assert len(sent) == 1
-    assert "Solve x^2 = 4" in sent[0]
-    assert "```\nShow the check\n```" in sent[0]
+    for sent in (prompts(orchestrator_requests[0]), prompts(requests[0])):
+        assert len(sent) == 1
+        assert "Solve x^2 = 4" in sent[0]
+        assert "```\nShow the check\n```" in sent[0]
 
 
 def round_row(number: int, outcome: str, feedback: str | None) -> dict[str, object]:
@@ -471,7 +548,7 @@ def round_row(number: int, outcome: str, feedback: str | None) -> dict[str, obje
 
 async def test_a_round_that_failed_on_the_api_is_not_continued(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     task_rounds: list[dict[str, object]],
     caplog: pytest.LogCaptureFixture,
@@ -495,7 +572,7 @@ async def test_a_round_that_failed_on_the_api_is_not_continued(
 
 async def test_a_round_without_a_checkpoint_rebuilds_with_the_feedback_of_the_answered(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     task_rounds: list[dict[str, object]],
     caplog: pytest.LogCaptureFixture,
@@ -523,13 +600,15 @@ async def test_a_round_without_a_checkpoint_rebuilds_with_the_feedback_of_the_an
 
 
 async def test_a_round_that_runs_again_starts_from_scratch(
-    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+    client: httpx2.AsyncClient,
+    use_model: UseModel,
+    orchestrator_requests: list[list[ModelMessage]],
 ):
-    requests = use_model(lambda messages, info: text("ok"))
+    use_model(lambda messages, info: text("ok"))
     job = {**run_body(), "feedback": "More", "round": 2}
     await client.post("/run", json={**job, "lease_id": str(uuid4())})
     await client.post("/run", json={**job, "lease_id": str(uuid4())})
-    assert len(prompts(requests[1])) == 1
+    assert len(prompts(orchestrator_requests[2])) == 1
 
 
 async def test_an_older_lease_finishing_late_keeps_the_newer_conversation(
@@ -545,12 +624,9 @@ async def test_an_older_lease_finishing_late_keeps_the_newer_conversation(
             old_started.set()
             await old_may_finish.wait()
             return text("old")
-        return text("new" if calls == 2 else f"next {len(prompts(messages))}")
+        return text("new" if calls == 2 else "next")
 
-    def make_model(key: SecretStr) -> Model:
-        return FunctionModel(respond)
-
-    monkeypatch.setattr(solver, "make_model", make_model)
+    patch_models(monkeypatch, respond)
     job = AgentRun(job_id=uuid4(), round=1, text="Solve", openrouter_key=SecretStr(KEY))
     old = job.model_copy(update={"lease_id": uuid4()})
     new = job.model_copy(update={"lease_id": uuid4()})
@@ -566,17 +642,11 @@ async def test_an_older_lease_finishing_late_keeps_the_newer_conversation(
         old_may_finish.set()
     assert answers == ["new", "old"]
 
-    # The feedback round continues the newer conversation.
+    # The feedback round continues the newer conversation and its results.
     feedback = new.model_copy(update={"round": 2, "feedback": "More"})
-    assert (await solver.solve_with_model(feedback)).answer == "next 2"
-    kept = [
-        p.content
-        for m in solver.histories[job.job_id][2].messages
-        if isinstance(m, ModelResponse)
-        for p in m.parts
-        if isinstance(p, TextPart)
-    ]
-    assert kept == ["new", "next 2"]
+    assert (await solver.solve_with_model(feedback)).answer == "next"
+    kept = solver.histories[job.job_id][2].results
+    assert {i: r.text for i, r in kept.items()} == {"r1": "new", "r2": "next"}
 
 
 async def test_an_older_lease_delayed_before_its_run_does_not_take_over(
@@ -598,17 +668,10 @@ async def test_an_older_lease_delayed_before_its_run_does_not_take_over(
 
     def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         nonlocal calls
-        if is_picker(info):
-            return pick_reply(info, "math")
-        if is_curator(info):
-            return curation_reply(info, {"profile": {}, "subject": {}})
         calls += 1
         return text("new" if calls == 1 else "old")  # the new lease answers first
 
-    def make_model(key: SecretStr) -> Model:
-        return FunctionModel(respond)
-
-    monkeypatch.setattr(solver, "make_model", make_model)
+    patch_models(monkeypatch, respond)
     job = AgentRun(
         job_id=uuid4(),
         round=2,
@@ -627,18 +690,14 @@ async def test_an_older_lease_delayed_before_its_run_does_not_take_over(
         old_may_go.set()
     # The old lease reached its answer last, but the new one owns the job.
     assert solver.newest_runs[job.job_id] == (2, new.lease_id)
-    kept = [
-        p.content
-        for m in solver.histories[job.job_id][2].messages
-        if isinstance(m, ModelResponse)
-        for p in m.parts
-        if isinstance(p, TextPart)
-    ]
-    assert kept == ["new"]
+    kept = solver.histories[job.job_id][2].results
+    assert {i: r.text for i, r in kept.items()} == {"r1": "new"}
 
 
 async def test_a_round_that_runs_again_keeps_the_feedback_of_earlier_rounds(
-    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+    client: httpx2.AsyncClient,
+    use_model: UseModel,
+    orchestrator_requests: list[list[ModelMessage]],
 ):
     requests = use_model(lambda messages, info: text(f"Answer {len(requests)}"))
     job = run_body()
@@ -650,22 +709,29 @@ async def test_a_round_that_runs_again_keeps_the_feedback_of_earlier_rounds(
     await client.post(
         "/run", json={**job, "round": 3, "feedback": "Feedback B", "lease_id": str(uuid4())}
     )
-    again = prompts(requests[3])
-    assert any("Feedback A" in p for p in again)
+    again = prompts(orchestrator_requests[6])  # each earlier orchestrator run took two requests
+    assert sum("Feedback A" in p for p in again) == 1
     assert sum("Feedback B" in p for p in again) == 1
-    sent = [
-        p.content
-        for m in requests[3]
-        if isinstance(m, ModelResponse)
+    seen = [
+        str(p.content)
+        for m in orchestrator_requests[6]
+        if isinstance(m, ModelRequest)
         for p in m.parts
-        if isinstance(p, TextPart)
+        if isinstance(p, ToolReturnPart) and p.tool_name == "run_agent"
     ]
-    assert sent == ["Answer 1", "Answer 2"]  # not the answer of the first attempt at round 3
-    assert sorted(solver.histories[UUID(str(job["job_id"]))]) == [1, 2, 3]
+    assert [("Answer 1" in r, "Answer 2" in r) for r in seen] == [(True, False), (False, True)]
+    # not the answer of the first attempt at round 3
+    kept = solver.histories[UUID(str(job["job_id"]))]
+    assert sorted(kept) == [1, 2, 3]
+    assert {i: r.text for i, r in kept[3].results.items()} == {
+        "r1": "Answer 1",
+        "r2": "Answer 2",
+        "r3": "Answer 4",
+    }
 
 
 async def test_a_rerun_round_drops_the_checkpoints_after_it(
-    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+    client: httpx2.AsyncClient, use_model: UseModel
 ):
     use_model(lambda messages, info: text("ok"))
     job = run_body()
@@ -678,41 +744,41 @@ async def test_a_rerun_round_drops_the_checkpoints_after_it(
     assert sorted(solver.histories[UUID(str(job["job_id"]))]) == [1, 2]
 
 
-async def test_the_model_is_closed_after_the_round(monkeypatch: pytest.MonkeyPatch):
-    class Closing(FunctionModel):
-        exits = 0
-
-        async def __aexit__(self, *args: object) -> None:
-            Closing.exits += 1
-
+async def test_the_http_client_is_closed_after_the_round(monkeypatch: pytest.MonkeyPatch):
     failing = False
+    clients: list[httpx2.AsyncClient] = []
 
     def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if failing:
             raise RuntimeError("model down")
         return text("ok")
 
-    def make_model(key: SecretStr) -> Model:
-        return Closing(script)
+    def make_models(key: SecretStr, http_client: httpx2.AsyncClient) -> dict[Role, Model]:
+        clients.append(http_client)
+        return role_models(script)
 
-    monkeypatch.setattr(solver, "make_model", make_model)
+    monkeypatch.setattr(solver, "make_models", make_models)
     job = AgentRun(job_id=uuid4(), round=1, text="Solve", openrouter_key=SecretStr(KEY))
     await solver.solve_with_model(job)
     failing = True
     with pytest.raises(RuntimeError):
         await solver.solve_with_model(job)
-    assert Closing.exits == 2
+    assert len(clients) == 2
+    assert all(c.is_closed for c in clients)
 
 
-async def test_a_model_that_loops_on_its_tools_is_stopped(
+async def test_a_worker_that_loops_on_its_tools_fails_and_the_fallback_is_stopped_too(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr(solver, "MAX_MODEL_REQUESTS", 3)
-    use_model(lambda messages, info: tool_call("evaluate", expression="1+1"))
-    with pytest.raises(Exception, match="request_limit"):
+    monkeypatch.setitem(REQUEST_LIMITS, "general", 3)
+    requests = use_model(lambda messages, info: tool_call("evaluate", expression="1+1"))
+    with pytest.raises(Exception, match="UsageLimitExceeded"):
         await client.post("/run", json=run_body())
+    # Each attempt stops at the limit: the worker's results fail, then the fallback fails.
+    assert len(requests) >= 6
+    assert len(requests) % 3 == 0
 
 
 async def test_a_round_that_overruns_its_time_is_stopped(monkeypatch: pytest.MonkeyPatch):
@@ -720,28 +786,55 @@ async def test_a_round_that_overruns_its_time_is_stopped(monkeypatch: pytest.Mon
         await asyncio.sleep(5)
         return text("late")
 
-    def make_model(key: SecretStr) -> Model:
-        return FunctionModel(slow)
-
-    monkeypatch.setattr(solver, "make_model", make_model)
+    patch_models(monkeypatch, slow, slow)
     monkeypatch.setattr(solver, "ROUND_TIMEOUT_SECONDS", 0.05)
     job = AgentRun(job_id=uuid4(), round=1, text="Solve", openrouter_key=SecretStr(KEY))
     with pytest.raises(TimeoutError):
         await solver.solve_with_model(job)
 
 
-async def test_the_model_settings_bound_reasoning_tokens_and_time():
-    model = solver.make_model(SecretStr(KEY))
-    settings = cast(dict[str, object], model.settings)
-    assert settings.get("openrouter_reasoning") == solver.REASONING
-    assert settings.get("max_tokens") == solver.MAX_OUTPUT_TOKENS
-    assert settings.get("timeout") == solver.MODEL_TIMEOUT_SECONDS
-    assert solver.MODEL_TIMEOUT_SECONDS < solver.ROUND_TIMEOUT_SECONDS
-
-
-async def test_an_empty_reply_is_no_answer(
-    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+async def test_a_round_that_overruns_answers_with_a_done_result_else_raises(
+    monkeypatch: pytest.MonkeyPatch,
 ):
+    async def slow_lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        last = messages[-1]
+        if isinstance(last, ModelRequest) and any(
+            isinstance(p, ToolReturnPart) for p in last.parts
+        ):
+            await asyncio.sleep(5)
+        return default_orchestrator(messages, info)
+
+    def work(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return text("General answer")
+
+    patch_models(monkeypatch, work, slow_lead)
+    monkeypatch.setattr(solver, "ROUND_TIMEOUT_SECONDS", 0.5)
+    job = AgentRun(job_id=uuid4(), round=1, text="Solve", openrouter_key=SecretStr(KEY))
+    assert (await solver.solve_with_model(job)).answer == "General answer"
+    assert job.job_id not in solver.histories
+
+    async def slow_all(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        await asyncio.sleep(5)
+        return text("late")
+
+    patch_models(monkeypatch, work, slow_all)
+    with pytest.raises(TimeoutError):
+        await solver.solve_with_model(job.model_copy(update={"job_id": uuid4()}))
+
+
+async def test_the_model_settings_bound_reasoning_tokens_and_time():
+    models = make_models(SecretStr(KEY))
+    assert set(models) == set(ROLE_MODELS)
+    for role, spec in ROLE_MODELS.items():
+        settings = cast(dict[str, object], models[role].settings)
+        assert settings.get("openrouter_reasoning") == {"max_tokens": spec.reasoning_tokens}
+        assert settings.get("max_tokens") == spec.max_output_tokens
+        assert settings.get("timeout") == MODEL_TIMEOUT_SECONDS
+        assert spec.reasoning_tokens < spec.max_output_tokens
+    assert MODEL_TIMEOUT_SECONDS < solver.ROUND_TIMEOUT_SECONDS
+
+
+async def test_an_empty_reply_is_no_answer(client: httpx2.AsyncClient, use_model: UseModel):
     use_model(lambda messages, info: text("  \n"))
     assert (await client.post("/run", json=run_body())).json() == {"answer": None}
 
@@ -751,10 +844,10 @@ async def test_without_a_key_the_fake_answers(
 ):
     monkeypatch.setattr(server, "SOLVE_SECONDS", 0)
 
-    def never(key: SecretStr) -> Model:
-        raise AssertionError("the model was built")
+    def never(key: SecretStr, http_client: httpx2.AsyncClient) -> dict[Role, Model]:
+        raise AssertionError("the models were built")
 
-    monkeypatch.setattr(solver, "make_model", never)
+    monkeypatch.setattr(solver, "make_models", never)
     job = {"job_id": str(uuid4()), "round": 1, "text": "Solve"}
     assert (await client.post("/run", json=job)).json() == {"answer": SAMPLE_ANSWER}
     assert (await client.post("/run", json={**job, "openrouter_key": None})).json() == {
@@ -779,7 +872,7 @@ async def test_the_request_to_openrouter_asks_for_the_cheapest_provider(
             "id": "gen-1",
             "object": "chat.completion",
             "created": 1,
-            "model": solver.MODEL_ID,
+            "model": ROLE_MODELS["general"].model_id,
             "provider": "SomeHost",
             "choices": [
                 {
@@ -793,7 +886,7 @@ async def test_the_request_to_openrouter_asks_for_the_cheapest_provider(
         return httpx2.Response(200, json=completion)
 
     http = httpx2.AsyncClient(transport=httpx2.MockTransport(handle))
-    model = solver.make_model(SecretStr(KEY), http)
+    model = make_models(SecretStr(KEY), http)["general"]
     caplog.set_level("INFO", logger="agent.solver")
     result = await general.agent.run("Hi", model=model, deps=general.Deps(None))
     assert result.output == "Hello"
@@ -802,38 +895,57 @@ async def test_the_request_to_openrouter_asks_for_the_cheapest_provider(
     assert str(request.url) == "https://openrouter.ai/api/v1/chat/completions"
     assert request.headers["Authorization"] == f"Bearer {KEY}"
     payload = json.loads(request.content)
-    assert payload["model"] == solver.MODEL_ID == "deepseek/deepseek-v4.1-flash"
+    spec = ROLE_MODELS["general"]
+    assert payload["model"] == spec.model_id == "deepseek/deepseek-v4.1-flash"
     assert payload["provider"] == {"sort": "price"}
-    assert payload["reasoning"] == solver.REASONING == {"max_tokens": 4_000}
-    assert payload["max_tokens"] == solver.MAX_OUTPUT_TOKENS
-    assert solver.REASONING.get("max_tokens", 0) < solver.MAX_OUTPUT_TOKENS
-    assert {t["function"]["name"] for t in payload["tools"]} >= {"evaluate", "write_document"}
+    assert payload["reasoning"] == {"max_tokens": spec.reasoning_tokens}
+    assert payload["max_tokens"] == spec.max_output_tokens
+    assert spec.reasoning_tokens < spec.max_output_tokens
+    functions = {t["function"]["name"] for t in payload["tools"] if t.get("type") == "function"}
+    assert functions >= {"evaluate", "write_document"}
 
 
-async def test_the_log_names_tools_and_tokens_but_not_the_key(
-    client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
-    caplog: pytest.LogCaptureFixture,
+async def test_the_round_log_names_each_role_and_the_cost_but_not_the_key(
+    client: httpx2.AsyncClient, use_model: UseModel, caplog: pytest.LogCaptureFixture
 ):
-    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        if not tool_returns(messages):
+    def worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not tool_returns(messages) and any(t.name == "evaluate" for t in info.function_tools):
             return tool_call("evaluate", expression="2+3")
-        return text("5")
+        return ModelResponse(parts=[TextPart("5")], provider_details={"cost": 0.25})
 
-    use_model(script)
-    caplog.set_level("INFO", logger="agent.solver")
+    def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart("run_agent", {"role": "math", "brief": "Add"}),
+                    ToolCallPart("run_agent", {"role": "writer", "brief": "Explain"}),
+                ]
+            )
+        return final_reply(info, "r1", "r2")
+
+    use_model(worker, lead)
+    caplog.set_level("INFO", logger="agent")
     await client.post("/run", json=run_body())
-    lines = [r.getMessage() for r in caplog.records if r.name == "agent.solver"]
+    lines = [r.getMessage() for r in caplog.records]
     assert any("starts from the task and 0 feedback" in line for line in lines)
-    line = next(line for line in lines if "tokens in" in line)
-    assert "['evaluate']" in line
-    assert "tokens in" in line
+    for role in ("math", "writer"):
+        line = next(line for line in lines if line.startswith(f"[{role}] "))
+        assert "tokens in" in line
+    assert "['evaluate']" in next(line for line in lines if line.startswith("[math] "))
+    orchestrator_line = next(
+        line for line in lines if line.startswith("[orchestrator]") and "model requests" in line
+    )
+    assert "calls ['math', 'writer']" in orchestrator_line
+    assert "tokens in" in orchestrator_line
+    assert lines[-1].startswith("[round] Round 1 of job ")
+    assert "all roles" in lines[-1]
+    assert "cost $0.5000" in lines[-1]  # the two workers, as OpenRouter reported
     assert KEY not in caplog.text
 
 
 async def test_the_subject_notes_are_in_the_first_message(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
 ):
     requests = use_model(lambda messages, info: text("ok"))
@@ -843,7 +955,7 @@ async def test_the_subject_notes_are_in_the_first_message(
 
 async def test_memory_tools_read_search_and_list(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
 ):
     def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -869,7 +981,7 @@ async def test_memory_tools_read_search_and_list(
 
 
 async def test_memory_is_unavailable_without_a_context_api(
-    client: httpx2.AsyncClient, use_model: Callable[[Script], list[list[ModelMessage]]]
+    client: httpx2.AsyncClient, use_model: UseModel
 ):
     def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if not tool_returns(messages):
@@ -883,16 +995,17 @@ async def test_memory_is_unavailable_without_a_context_api(
 
 async def test_a_continued_round_shows_the_current_notes(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     notes: dict[str, str | int],
+    orchestrator_requests: list[list[ModelMessage]],
 ):
-    requests = use_model(lambda messages, info: text("ok"))
+    use_model(lambda messages, info: text("ok"))
     job = run_body(context=grant())
     await client.post("/run", json=job)
     notes.update(profile_md="Now prefers long proofs", subject_md="Now uses a pen")
     await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
-    sent = prompts(requests[1])
+    sent = prompts(orchestrator_requests[2])  # the first request of round 2
     assert "Likes short steps" in sent[0]
     assert "Notes on the student now:\n\n```\nNow prefers long proofs\n```" in sent[1]
     assert "Notes on the student in math now:\n\n```\nNow uses a pen\n```" in sent[1]
@@ -909,7 +1022,7 @@ def change(**scopes: dict[str, list[str]]) -> dict[str, object]:
 
 async def test_the_curator_saves_a_task_line_and_a_standing_request(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     curator: CuratorStub,
     notes: dict[str, str | int],
@@ -940,7 +1053,7 @@ async def test_the_curator_saves_a_task_line_and_a_standing_request(
 
 async def test_the_curator_reads_the_round_and_the_notes_as_they_are(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     curator: CuratorStub,
 ):
@@ -959,7 +1072,7 @@ async def test_the_curator_reads_the_round_and_the_notes_as_they_are(
 
 async def test_the_curator_makes_one_request_per_round_and_the_model_has_no_save_tool(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     curator: CuratorStub,
 ):
@@ -973,7 +1086,7 @@ async def test_the_curator_makes_one_request_per_round_and_the_model_has_no_save
 
 async def test_a_save_over_notes_that_changed_is_applied_again_on_the_fresh_doc(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     curator: CuratorStub,
     notes: dict[str, str | int],
@@ -992,7 +1105,7 @@ async def test_a_save_over_notes_that_changed_is_applied_again_on_the_fresh_doc(
 
 async def test_a_save_that_keeps_finding_the_doc_changed_gives_up_after_three_tries(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     curator: CuratorStub,
     notes: dict[str, str | int],
@@ -1020,7 +1133,7 @@ async def test_a_save_that_keeps_finding_the_doc_changed_gives_up_after_three_tr
 
 async def test_a_remove_that_matches_no_note_is_ignored(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     curator: CuratorStub,
 ):
@@ -1034,7 +1147,7 @@ async def test_a_remove_that_matches_no_note_is_ignored(
 
 async def test_the_curator_removes_exactly_the_matched_note(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     curator: CuratorStub,
     notes: dict[str, str | int],
@@ -1052,7 +1165,7 @@ async def test_the_curator_removes_exactly_the_matched_note(
 
 async def test_the_curator_does_not_add_a_note_twice(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     curator: CuratorStub,
     notes: dict[str, str | int],
@@ -1066,7 +1179,7 @@ async def test_the_curator_does_not_add_a_note_twice(
 
 async def test_a_doc_that_is_too_long_drops_the_oldest_task_lines_first(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     curator: CuratorStub,
     notes: dict[str, str | int],
@@ -1092,7 +1205,7 @@ async def test_a_doc_that_is_too_long_drops_the_oldest_task_lines_first(
 async def test_a_curator_failure_still_returns_the_answer(
     failure: str,
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     curator: CuratorStub,
     monkeypatch: pytest.MonkeyPatch,
@@ -1123,7 +1236,7 @@ async def test_a_curator_failure_still_returns_the_answer(
 
 async def test_there_is_no_curator_without_a_context_api(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     curator: CuratorStub,
 ):
     curator.curation = change(profile={"add": ["Never saved"]})
@@ -1136,7 +1249,7 @@ async def test_there_is_no_curator_without_a_context_api(
 
 async def test_a_run_that_was_overtaken_does_not_curate(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     curator: CuratorStub,
 ):
@@ -1152,16 +1265,17 @@ async def test_a_run_that_was_overtaken_does_not_curate(
 
 async def test_a_continued_round_tells_the_model_that_cleared_notes_are_gone(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     notes: dict[str, str | int],
+    orchestrator_requests: list[list[ModelMessage]],
 ):
-    requests = use_model(lambda messages, info: text("ok"))
+    use_model(lambda messages, info: text("ok"))
     job = run_body(context=grant())
     await client.post("/run", json=job)
     notes.update(profile_md="", subject_md="")
     await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
-    followup = prompts(requests[1])[1]
+    followup = prompts(orchestrator_requests[2])[1]
     assert "replace any earlier notes" in followup
     assert "Notes on the student now:\n\n(none)" in followup
     assert "Notes on the student in math now:\n\n(none)" in followup
@@ -1176,7 +1290,7 @@ def memory_reads(seen: list[httpx2.Request]) -> list[str | None]:
 
 async def test_the_subject_the_curator_names_is_used_to_read_and_save_the_notes(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     curator: CuratorStub,
     picker: PickerStub,
@@ -1198,7 +1312,7 @@ async def test_the_subject_the_curator_names_is_used_to_read_and_save_the_notes(
 
 async def test_a_later_round_of_the_job_keeps_its_subject_without_naming_it_again(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     picker: PickerStub,
 ):
@@ -1214,7 +1328,7 @@ async def test_a_later_round_of_the_job_keeps_its_subject_without_naming_it_agai
 
 async def test_a_curator_that_cannot_name_the_subject_leaves_the_subject_of_the_job(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     picker: PickerStub,
     caplog: pytest.LogCaptureFixture,
@@ -1242,10 +1356,7 @@ async def test_a_subject_that_takes_too_long_to_name_is_given_up(
     monkeypatch.setattr(solver, "pick_subject", slow)
     monkeypatch.setattr(solver, "SUBJECT_TIMEOUT_SECONDS", 0.05)
 
-    def make_model(key: SecretStr) -> Model:
-        return FunctionModel(lambda messages, info: text("ok"))
-
-    monkeypatch.setattr(solver, "make_model", make_model)
+    patch_models(monkeypatch, lambda messages, info: text("ok"))
     response = await client.post("/run", json=run_body(context=grant()))
     assert response.json() == {"answer": "ok"}
     assert memory_reads(context_api) == ["math"]
@@ -1253,7 +1364,7 @@ async def test_a_subject_that_takes_too_long_to_name_is_given_up(
 
 async def test_read_memory_defaults_to_the_subject_of_the_job(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
     picker: PickerStub,
 ):
@@ -1272,7 +1383,7 @@ async def test_read_memory_defaults_to_the_subject_of_the_job(
 
 async def test_a_job_whose_subject_was_named_by_an_overtaken_run_is_not_remembered(
     client: httpx2.AsyncClient,
-    use_model: Callable[[Script], list[list[ModelMessage]]],
+    use_model: UseModel,
     context_api: list[httpx2.Request],
 ):
     use_model(lambda messages, info: text("ok"))
@@ -1280,3 +1391,316 @@ async def test_a_job_whose_subject_was_named_by_an_overtaken_run_is_not_remember
     solver.newest_runs[UUID(str(job["job_id"]))] = (3, uuid4())
     await client.post("/run", json={**job, "round": 2})
     assert solver.job_subjects == {}
+
+
+def two_parts(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+    """An orchestrator that gives two parts to workers and answers with both results."""
+    if len(messages) == 1:
+        return ModelResponse(
+            parts=[
+                ToolCallPart("run_agent", {"role": "math", "brief": "Part one"}),
+                ToolCallPart("run_agent", {"role": "writer", "brief": "Part two"}),
+            ]
+        )
+    return final_reply(info, "r1", "r2")
+
+
+async def test_the_results_the_orchestrator_lists_are_the_answer_in_order(
+    client: httpx2.AsyncClient, use_model: UseModel
+):
+    def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart("run_agent", {"role": "math", "brief": "Part one"}),
+                    ToolCallPart("run_agent", {"role": "writer", "brief": "Part two"}),
+                ]
+            )
+        return final_reply(info, "r2", "r1")
+
+    def worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        # Named by the brief: the two run at once, so their requests come in either order.
+        return text("Worker 1" if "Part one" in "".join(prompts(messages)) else "Worker 2")
+
+    use_model(worker, lead)
+    response = await client.post("/run", json=run_body())
+    assert response.json() == {"answer": "Worker 2\n\nWorker 1"}
+
+
+async def test_a_feedback_round_can_use_a_result_of_round_1(
+    client: httpx2.AsyncClient, use_model: UseModel
+):
+    def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        last = messages[-1]
+        if isinstance(last, ModelRequest):
+            ids = [
+                p.content.id
+                for p in last.parts
+                if isinstance(p, ToolReturnPart)
+                and p.tool_name == "run_agent"
+                and isinstance(p.content, WorkResult)
+                and p.content.id
+            ]
+            if ids:
+                return final_reply(info, ids[-1])
+        feedback = len(prompts(messages)) > 1
+        call: dict[str, object] = {"role": "writer", "brief": "Shorten it" if feedback else "Write"}
+        if feedback:
+            call["inputs"] = ["r1"]  # the result round 1 made
+        return tool_call("run_agent", **call)
+
+    def worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return text(f"Version {len(requests)}")
+
+    requests = use_model(worker, lead)
+    job = run_body()
+    await client.post("/run", json=job)
+    response = await client.post("/run", json={**job, "round": 2, "feedback": "Shorter"})
+    assert response.json() == {"answer": "Version 2"}
+    second = prompts(requests[1])[0]
+    assert "Shorten it" in second
+    assert "Earlier result r1" in second
+    assert "Version 1" in second  # the full text of round 1's result
+
+
+async def test_a_run_that_lost_the_lease_does_not_replace_the_checkpoint(
+    client: httpx2.AsyncClient, use_model: UseModel
+):
+    job = run_body()
+    job_id = UUID(str(job["job_id"]))
+    taken_over = False
+
+    def script(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if taken_over:  # a newer lease takes the job while this run works
+            solver.newest_runs[job_id] = (1, uuid4())
+            return text("Overtaken")
+        return text("Kept")
+
+    use_model(script)
+    await client.post("/run", json=job)
+    taken_over = True
+    response = await client.post("/run", json={**job, "lease_id": str(uuid4())})
+    assert response.json() == {"answer": "Overtaken"}
+    kept = solver.histories[job_id][1]
+    assert {i: r.text for i, r in kept.results.items()} == {"r1": "Kept"}
+
+
+async def test_the_curator_runs_once_for_the_newest_run_only(
+    client: httpx2.AsyncClient,
+    use_model: UseModel,
+    context_api: list[httpx2.Request],
+    curator: CuratorStub,
+):
+    use_model(lambda messages, info: text("Part"), two_parts)
+    job = run_body(context=grant())
+    await client.post("/run", json=job)
+    assert len(curator.requests) == 1  # two workers ran, one curator step
+    solver.newest_runs[UUID(str(job["job_id"]))] = (3, uuid4())
+    await client.post("/run", json={**job, "round": 2})
+    assert len(curator.requests) == 1  # the overtaken run does not curate
+
+
+async def test_the_curator_and_the_subject_run_on_the_curator_model(
+    monkeypatch: pytest.MonkeyPatch, context_api: list[httpx2.Request]
+):
+    seen: list[str] = []
+
+    def side(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append("subject" if is_picker(info) else "curator")
+        return quiet_side(messages, info)
+
+    patch_models(monkeypatch, lambda messages, info: text("ok"), curator=side)
+    job = AgentRun(
+        job_id=uuid4(),
+        round=1,
+        text="Solve",
+        openrouter_key=SecretStr(KEY),
+        context=ContextGrant(url="http://api:8000", token="tok"),
+    )
+    await solver.solve_with_model(job)
+    assert seen == ["subject", "curator"]
+
+
+async def test_the_curator_model_keeps_its_settings_and_is_metered():
+    sent: list[dict[str, object]] = []
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        sent.append(json.loads(request.content))
+        call = {
+            "id": "c1",
+            "type": "function",
+            "function": {"name": "final_result", "arguments": '{"name": "physics"}'},
+        }
+        message: dict[str, object] = {"role": "assistant", "tool_calls": [call], "content": None}
+        completion: dict[str, object] = {
+            "id": "gen-1",
+            "object": "chat.completion",
+            "created": 1,
+            "model": ROLE_MODELS["curator"].model_id,
+            "provider": "SomeHost",
+            "choices": [{"index": 0, "finish_reason": "tool_calls", "message": message}],
+            "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+        }
+        return httpx2.Response(200, json=completion)
+
+    http = httpx2.AsyncClient(transport=httpx2.MockTransport(handle))
+    model = solver.Metered(make_models(SecretStr(KEY), http)["curator"])
+    assert await pick_subject(model, "A task", []) == "physics"
+    assert sent[0]["reasoning"] == {"max_tokens": 300}  # the subject step's own budget
+    assert sent[0]["max_tokens"] == ROLE_MODELS["curator"].max_output_tokens
+    assert model.spend.tokens == 18
+
+
+async def test_an_orchestrator_that_fails_after_a_worker_answers_with_that_result(
+    client: httpx2.AsyncClient,
+    use_model: UseModel,
+    caplog: pytest.LogCaptureFixture,
+):
+    def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            return tool_call("run_agent", role="general", brief="Do it")
+        raise RuntimeError("orchestrator down")
+
+    use_model(lambda messages, info: text("The worker's text"), lead)
+    caplog.set_level("INFO", logger="agent")
+    job = run_body()
+    response = await client.post("/run", json=job)
+    assert response.json() == {"answer": "The worker's text"}
+    assert any(
+        r.levelname == "WARNING" and "fell back to general result r1" in r.getMessage()
+        for r in caplog.records
+    )
+    assert UUID(str(job["job_id"])) not in solver.histories  # a fallback round keeps no checkpoint
+
+
+async def test_an_orchestrator_that_fails_at_once_leaves_the_task_to_general_alone(
+    client: httpx2.AsyncClient, use_model: UseModel
+):
+    def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        raise RuntimeError("orchestrator down")
+
+    requests = use_model(lambda messages, info: text("Alone"), lead)
+    response = await client.post("/run", json=run_body())
+    assert response.json() == {"answer": "Alone"}
+    (request,) = requests
+    assert "Answer the whole task." in prompts(request)[0]
+    assert "Solve x^2 = 4" in prompts(request)[0]
+
+
+async def test_an_orchestrator_that_never_lists_a_usable_result_falls_back(
+    client: httpx2.AsyncClient, use_model: UseModel
+):
+    def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return final_reply(info, "r9")  # no such result, until the retries run out
+
+    use_model(lambda messages, info: text("Alone"), lead)
+    response = await client.post("/run", json=run_body())
+    assert response.json() == {"answer": "Alone"}
+
+
+async def test_a_fallback_that_fails_too_fails_the_round(
+    client: httpx2.AsyncClient, use_model: UseModel
+):
+    def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        raise RuntimeError("orchestrator down")
+
+    def worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        raise RuntimeError("worker down")
+
+    use_model(worker, lead)
+    with pytest.raises(RuntimeError, match="the fallback"):
+        await client.post("/run", json=run_body())
+
+
+async def test_the_round_total_counts_the_responses_of_an_orchestrator_that_failed(
+    client: httpx2.AsyncClient, use_model: UseModel, caplog: pytest.LogCaptureFixture
+):
+    def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            return ModelResponse(
+                parts=[ToolCallPart("run_agent", {"role": "general", "brief": "Do it"})],
+                usage=RequestUsage(input_tokens=1000, output_tokens=500),
+            )
+        raise RuntimeError("orchestrator down")
+
+    def worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(
+            parts=[TextPart("Done")], usage=RequestUsage(input_tokens=100, output_tokens=20)
+        )
+
+    use_model(worker, lead)
+    caplog.set_level("INFO", logger="agent")
+    response = await client.post("/run", json=run_body())
+    assert response.json() == {"answer": "Done"}
+    assert "tokens 1620 (all roles)" in caplog.records[-1].getMessage()  # 1500 + 120
+
+
+async def test_a_context_api_call_that_fails_in_a_worker_fails_the_round(
+    use_model: UseModel,
+    context_api: list[httpx2.Request],
+    context_failures: dict[str, int],
+):
+    context_failures["write_artifact"] = 500
+
+    def worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not tool_returns(messages):
+            return tool_call("write_document", title="Study sheet", content_md="# Roots")
+        return text("See the sheet.")
+
+    use_model(worker)
+    job = AgentRun(
+        job_id=uuid4(),
+        round=1,
+        text="Solve",
+        openrouter_key=SecretStr(KEY),
+        context=ContextGrant(url="http://api:8000", token="tok"),
+    )
+    with pytest.raises(ContextStatusError):
+        await solver.solve_with_model(job)
+
+
+async def test_a_fallback_drops_the_checkpoint_of_the_attempt_it_replaces(
+    client: httpx2.AsyncClient,
+    use_model: UseModel,
+    context_api: list[httpx2.Request],
+    caplog: pytest.LogCaptureFixture,
+):
+    failing = False
+
+    def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if failing:
+            raise RuntimeError("orchestrator down")
+        return default_orchestrator(messages, info)
+
+    use_model(lambda messages, info: text("ok"), lead)
+    caplog.set_level("INFO", logger="agent.solver")
+    job = run_body(context=grant())
+    job_id = UUID(str(job["job_id"]))
+    # Lease A saves a checkpoint, but its answer never reaches the API.
+    await client.post("/run", json={**job, "lease_id": str(uuid4())})
+    assert 1 in solver.histories[job_id]
+    # Round 1 runs again under lease B, which answers with the fallback.
+    failing = True
+    await client.post("/run", json={**job, "lease_id": str(uuid4())})
+    assert 1 not in solver.histories.get(job_id, {})
+    failing = False
+    await client.post("/run", json={**job, "round": 2, "feedback": "Show the check"})
+    assert f"Round 2 of job {job['job_id']} starts from the task" in caplog.text
+    assert "continues round 1" not in caplog.text
+
+
+async def test_a_task_split_between_workers_is_not_answered_by_one_part(
+    client: httpx2.AsyncClient, use_model: UseModel
+):
+    def lead(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            return two_parts(messages, info)
+        raise RuntimeError("orchestrator down")
+
+    def worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        whole = "Answer the whole task." in prompts(messages)[0]
+        return text("The whole answer" if whole else "One part")
+
+    use_model(worker, lead)
+    response = await client.post("/run", json=run_body())
+    assert response.json() == {"answer": "The whole answer"}

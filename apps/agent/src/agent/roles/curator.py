@@ -59,8 +59,6 @@ kept in one doc per subject.
 """
 
 MAX_ANSWER_CHARS = 4_000
-# Less thinking than an answer needs: a long one ran into the output limit and lost the notes.
-NOTES_SETTINGS = OpenRouterModelSettings(openrouter_reasoning={"max_tokens": 1_500})
 SUBJECT_SETTINGS = OpenRouterModelSettings(openrouter_reasoning={"max_tokens": 300})
 MAX_SUBJECT_TASK_CHARS = 4_000
 
@@ -157,7 +155,7 @@ async def curate(
         profile_notes=profile.profile_md,
         subject_notes=subject_memory.content_md,
     )
-    result = await agent.run(message, model=model, model_settings=NOTES_SETTINGS)
+    result = await agent.run(message, model=model)
     curation = result.output
     if not feedback:
         dropped = len(curation.profile.remove) + len(curation.subject.remove)

@@ -1,11 +1,12 @@
-"""The round: the general role answers, then the curator role saves the notes on the student.
+"""The round: the orchestrator plans and the workers work, then the curator role saves the notes.
 
-A round with a key runs here, on one model on OpenRouter. The general role gets the task, the
-student's profile, the notes on the student in the job's subject and any feedback, and its text
-reply is the answer. The curator then saves what the round shows about the student. The
-conversation of each job is kept in memory, so a feedback round continues it: the actor's memory
-snapshot keeps this process between rounds. A process that has lost it (a fresh actor) rebuilds the
-job from the task and its feedback.
+A round with a key runs here, on OpenRouter. The orchestrator gets the task, the student's profile,
+the notes on the student in the job's subject and any feedback, and delegates the work to the
+workers; the results it lists are the answer. The curator then saves what the round shows about the
+student. The orchestrator's conversation and the results of each job are kept in memory, so a
+feedback round continues them: the actor's memory snapshot keeps this process between rounds. A
+process that has lost it (a fresh actor) rebuilds the job from the task and its feedback. An
+orchestrator that fails does not fail the round: a worker's result answers instead.
 """
 
 import asyncio
@@ -15,47 +16,72 @@ from dataclasses import dataclass
 from uuid import UUID
 
 import httpx2
-from pydantic import SecretStr
-from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
-from pydantic_ai.models import Model
-from pydantic_ai.models.openrouter import (
-    OpenRouterModel,
-    OpenRouterModelSettings,
-    OpenRouterProviderConfig,
-    OpenRouterReasoning,
-)
-from pydantic_ai.providers.openrouter import OpenRouterProvider
-from pydantic_ai.usage import RunUsage, UsageLimits
+from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.models import Model, ModelRequestParameters
+from pydantic_ai.models.wrapper import WrapperModel
+from pydantic_ai.settings import ModelSettings
 
-from agent.context import ContextClient
-from agent.formatting import normalize_markdown
+from agent.context import ContextClient, ContextError
+from agent.models import MODEL_TIMEOUT_SECONDS, Role, make_models, reported_cost
 from agent.prompt import feedback_message, round_feedback, task_message
 from agent.roles.curator import curate, pick_subject
-from agent.roles.general import Deps, agent
+from agent.roles.orchestrator import (
+    Job,
+    Result,
+    RoundState,
+    answer_of,
+    fallback_result,
+    orchestrate,
+    run_worker,
+)
 from shared.agent_run import AgentAnswer, AgentRun
 from shared.context import Memory, Profile
 
 logger = logging.getLogger(__name__)
 
-MODEL_ID = "deepseek/deepseek-v4.1-flash"
-ROUTING: OpenRouterProviderConfig = {"sort": "price"}  # the cheapest provider of the model
-REASONING: OpenRouterReasoning = {"max_tokens": 4_000}  # bounds the thinking before the answer
-MAX_OUTPUT_TOKENS = 8_000  # reasoning and answer together, so above the reasoning budget
-MODEL_TIMEOUT_SECONDS = 60  # one request to the model
-ROUND_TIMEOUT_SECONDS = 180  # a whole round, all its requests
+ROUND_TIMEOUT_SECONDS = 300  # a whole round, the orchestrator and the workers together
+ROUND_GRACE_SECONDS = 1  # after the orchestrator's deadline, to answer with a result in hand
 CURATOR_TIMEOUT_SECONDS = 60  # the notes step after the answer
 SUBJECT_TIMEOUT_SECONDS = 20  # naming the subject of a job
-MAX_MODEL_REQUESTS = 25  # one round: a model that loops on its tools is stopped here
 
 MAX_JOBS = 64  # conversations remembered; the oldest go first
 
 
 @dataclass
 class Checkpoint:
-    """A conversation up to the answer of a round, and the rounds whose feedback it holds."""
+    """The orchestrator's conversation up to the answer of a round, the results of the job so far
+    and the rounds whose feedback the conversation holds."""
 
     rounds: tuple[int, ...]
     messages: list[ModelMessage]
+    results: dict[str, Result]
+
+
+@dataclass
+class Spend:
+    """What the round used, all roles together."""
+
+    tokens: int = 0
+    cost: float = 0  # USD as OpenRouter reports it
+
+
+class Metered(WrapperModel):
+    """A model that adds up the tokens and the reported cost of what it answers."""
+
+    def __init__(self, wrapped: Model) -> None:
+        super().__init__(wrapped)
+        self.spend = Spend()
+
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        response = await super().request(messages, model_settings, model_request_parameters)
+        self.spend.tokens += response.usage.total_tokens
+        self.spend.cost += reported_cost([response])
+        return response
 
 
 # job id -> round -> the checkpoint after the answer of that round
@@ -66,69 +92,78 @@ job_subjects: OrderedDict[UUID, str] = OrderedDict()
 newest_runs: OrderedDict[UUID, tuple[int, UUID | None]] = OrderedDict()
 
 
-def make_model(key: SecretStr, http_client: httpx2.AsyncClient | None = None) -> Model:
-    provider = OpenRouterProvider(api_key=key.get_secret_value(), http_client=http_client)
-    settings = OpenRouterModelSettings(
-        openrouter_provider=ROUTING,
-        openrouter_reasoning=REASONING,
-        max_tokens=MAX_OUTPUT_TOKENS,
-        timeout=MODEL_TIMEOUT_SECONDS,
-    )
-    return OpenRouterModel(MODEL_ID, provider=provider, settings=settings)
-
-
 async def solve_with_model(body: AgentRun) -> AgentAnswer:
-    """Run the round on the model. A Context API call or a model that fails, or a round that
-    overruns, raises."""
+    """Run the round on the models. A Context API call that fails, a round that overruns, or an
+    orchestrator and a fallback worker that both fail, raises."""
     assert body.openrouter_key is not None
     # Register before the first await, so that the order of the leases is the order they started
     # in. A newer run that fails keeps the ownership: the API retries under a still newer lease,
     # and the writes of the old lease are refused anyway.
     _register_run(body)
-    async with make_model(body.openrouter_key) as model:  # closes the HTTP client of the round
+    deadline = asyncio.get_running_loop().time() + ROUND_TIMEOUT_SECONDS
+    # One HTTP client for all the roles of the round, closed with it.
+    async with httpx2.AsyncClient(timeout=httpx2.Timeout(MODEL_TIMEOUT_SECONDS, connect=5)) as http:
+        # One metered model per role, so the round's total counts every response, failed runs too.
+        metered: dict[Role, Metered] = {
+            role: Metered(model) for role, model in make_models(body.openrouter_key, http).items()
+        }
+        models: dict[Role, Model] = dict(metered)
+        curator_model = metered["curator"]
         if body.context is None:
-            async with asyncio.timeout(ROUND_TIMEOUT_SECONDS):
+            async with asyncio.timeout_at(deadline + ROUND_GRACE_SECONDS):
                 feedback = [body.feedback] if body.feedback else []
-                return await _answer(body, model, body.text, None, None, feedback, None, None)
-        async with ContextClient(body.context.url, body.context.token) as context:
-            async with asyncio.timeout(ROUND_TIMEOUT_SECONDS):
-                task = await context.get_task()
-                profile = await context.get_profile()
-                subject = await _job_subject(body, model, task.text, profile)
-                profile = profile.model_copy(update={"subject": subject})
-                subject_memory = await context.get_subject_memory(subject)
-                feedback = round_feedback(task, body.round)
-                answered = tuple(
-                    r.number
-                    for r in task.rounds
-                    if r.outcome == "answered" and r.number < body.round
-                )
                 answer = await _answer(
-                    body, model, task.text, profile, subject_memory, feedback, context, answered
+                    body, models, body.text, None, None, feedback, None, None, deadline
                 )
-            # Only the newest run of the job writes notes. A failed curator never fails the round.
-            if newest_runs.get(body.job_id) == (body.round, body.lease_id):
-                try:
-                    async with asyncio.timeout(CURATOR_TIMEOUT_SECONDS):
-                        await curate(
-                            model,
-                            context,
-                            task_text=task.text,
-                            subject=profile.subject,
-                            round_number=body.round,
-                            feedback=body.feedback,
-                            answer=answer.answer,
-                            profile=profile,
-                            subject_memory=subject_memory,
-                        )
-                except Exception as error:
-                    logger.warning(
-                        "[curator] Round %s of job %s: the notes were not saved (%s)",
-                        body.round,
-                        body.job_id,
-                        type(error).__name__,
+        else:
+            async with ContextClient(body.context.url, body.context.token) as context:
+                async with asyncio.timeout_at(deadline + ROUND_GRACE_SECONDS):
+                    task = await context.get_task()
+                    profile = await context.get_profile()
+                    subject = await _job_subject(body, curator_model, task.text, profile)
+                    profile = profile.model_copy(update={"subject": subject})
+                    subject_memory = await context.get_subject_memory(subject)
+                    feedback = round_feedback(task, body.round)
+                    answered = tuple(
+                        r.number
+                        for r in task.rounds
+                        if r.outcome == "answered" and r.number < body.round
                     )
-            return answer
+                    answer = await _answer(
+                        body, models, task.text, profile, subject_memory, feedback, context,
+                        answered, deadline,
+                    )  # fmt: skip
+                # Only the newest run of the job writes notes. A failed curator never fails the
+                # round.
+                if newest_runs.get(body.job_id) == (body.round, body.lease_id):
+                    try:
+                        async with asyncio.timeout(CURATOR_TIMEOUT_SECONDS):
+                            await curate(
+                                curator_model,
+                                context,
+                                task_text=task.text,
+                                subject=profile.subject,
+                                round_number=body.round,
+                                feedback=body.feedback,
+                                answer=answer.answer,
+                                profile=profile,
+                                subject_memory=subject_memory,
+                            )
+                    except Exception as error:
+                        logger.warning(
+                            "[curator] Round %s of job %s: the notes were not saved (%s)",
+                            body.round,
+                            body.job_id,
+                            type(error).__name__,
+                        )
+    tokens = sum(model.spend.tokens for model in metered.values())
+    cost = sum(model.spend.cost for model in metered.values())
+    logger.info("[round] %s: tokens %d (all roles), cost $%.4f", _prefix(body), tokens, cost)
+    return answer
+
+
+def _prefix(body: AgentRun) -> str:
+    return f"Round {body.round} of job {body.job_id}"
 
 
 async def _job_subject(body: AgentRun, model: Model, task_text: str, profile: Profile) -> str:
@@ -167,15 +202,18 @@ def _register_run(body: AgentRun) -> None:
 
 async def _answer(
     body: AgentRun,
-    model: Model,
+    models: dict[Role, Model],
     text: str,
     profile: Profile | None,
     subject_memory: Memory | None,
     feedback: list[str],
     context: ContextClient | None,
     answered: tuple[int, ...] | None,
+    deadline: float,
 ) -> AgentAnswer:
     this_run = (body.round, body.lease_id)
+    prefix = _prefix(body)
+    notes = subject_memory.content_md if subject_memory else ""
     checkpoints = histories.get(body.job_id, {})
     candidates = [
         number
@@ -188,65 +226,83 @@ async def _answer(
     # back that of a failed one. Otherwise the round rebuilds from the task.
     if candidates and body.feedback:
         chosen = max(candidates)
-        prompt = feedback_message(
-            body.feedback, profile, subject_memory.content_md if subject_memory else ""
-        )
+        prompt = feedback_message(body.feedback, profile, notes)
         history = checkpoints[chosen].messages
+        results = dict(checkpoints[chosen].results)
         rounds = (*checkpoints[chosen].rounds, body.round)
-        logger.info(
-            "[general] Round %s of job %s continues round %s", body.round, body.job_id, chosen
-        )
+        logger.info("[orchestrator] %s continues round %s", prefix, chosen)
     else:
-        prompt, history = (
-            task_message(
-                text, profile, feedback, subject_memory.content_md if subject_memory else ""
-            ),
-            None,
-        )
+        prompt, history, results = task_message(text, profile, feedback, notes), None, {}
         rounds = (*(answered or ()), body.round)
-        logger.info(
-            "[general] Round %s of job %s starts from the task and %d feedback",
-            body.round,
-            body.job_id,
-            len(feedback),
-        )
-    result = await agent.run(
-        prompt,
-        model=model,
-        deps=Deps(context, profile.subject if profile else None),
-        message_history=history,
-        usage_limits=UsageLimits(request_limit=MAX_MODEL_REQUESTS),
+        logger.info("[orchestrator] %s starts from the task and %d feedback", prefix, len(feedback))
+    state = RoundState(
+        Job(text, profile, notes, feedback, context, body.round),
+        models,
+        results,
+        deadline,
+        log_prefix=prefix,
     )
-    _log_run(body, result.new_messages(), result.usage)
-    # A run that a newer lease or round has overtaken must not replace its conversation.
-    if newest_runs.get(body.job_id) == this_run:
-        kept = histories.setdefault(body.job_id, {})
-        for number in [n for n in kept if n > body.round]:
-            del kept[number]
-        kept[body.round] = Checkpoint(rounds, result.all_messages())
-        histories.move_to_end(body.job_id)
-        while len(histories) > MAX_JOBS:
-            histories.popitem(last=False)
-    answer = normalize_markdown(
-        result.output.replace("\x00", "")
-    ).strip()  # an answer cannot hold NUL
+    failure: Exception | None = None
+    try:
+        async with asyncio.timeout_at(deadline):
+            run = await orchestrate(prompt, history, state)
+        answer = answer_of(run.output, state.results)
+    except ContextError:
+        raise  # a failed Context API call fails the round: the answer could miss what it saved
+    except Exception as error:
+        # The round's time is up: only a result already done can answer, no new work starts.
+        if asyncio.get_running_loop().time() >= deadline and fallback_result(state) is None:
+            raise
+        answer, failure, run = None, error, None
+    if run is not None and answer:
+        new_messages = run.new_messages()
+        _log_orchestrator(
+            state, body, new_messages, run.usage.input_tokens, run.usage.output_tokens
+        )
+        # A run that a newer lease or round has overtaken must not replace its conversation.
+        if newest_runs.get(body.job_id) == this_run:
+            kept = histories.setdefault(body.job_id, {})
+            for number in [n for n in kept if n > body.round]:
+                del kept[number]
+            kept[body.round] = Checkpoint(rounds, run.all_messages(), dict(state.results))
+            histories.move_to_end(body.job_id)
+            while len(histories) > MAX_JOBS:
+                histories.popitem(last=False)
+    else:
+        # A checkpoint of an earlier attempt of this round or a later one holds a conversation the
+        # student never saw: the next round must not continue it.
+        if newest_runs.get(body.job_id) == this_run:
+            kept = histories.get(body.job_id, {})
+            for number in [n for n in kept if n >= body.round]:
+                del kept[number]
+        answer = await _fall_back(state, prefix, failure)
     return AgentAnswer(answer=answer or None)
 
 
-def _log_run(body: AgentRun, messages: list[ModelMessage], usage: RunUsage) -> None:
-    """Say which tools the round called, which provider served it and the tokens, never the key."""
-    responses = [m for m in messages if isinstance(m, ModelResponse)]
-    tools = [p.tool_name for m in responses for p in m.parts if isinstance(p, ToolCallPart)]
-    providers = sorted(
-        {
-            str(m.provider_details.get("downstream_provider"))
-            for m in responses
-            if m.provider_details
-        }
-    )
+async def _fall_back(state: RoundState, prefix: str, failure: Exception | None) -> str:
+    """Answer with a result the workers already have, or with the general worker on the whole
+    task. A fallback round keeps no checkpoint: the orchestrator's conversation is not sound."""
+    reason = type(failure).__name__ if failure else "no usable answer"
+    fallback = fallback_result(state)
+    if fallback is None:
+        fallback = await run_worker(state, "general", "Answer the whole task.", [])
+    if fallback.status == "done":
+        logger.warning(
+            "[orchestrator] %s: failed (%s), fell back to %s result %s",
+            prefix, reason, fallback.role, fallback.id,
+        )  # fmt: skip
+        return fallback.text
+    if fallback.text == "EmptyAnswer":
+        return ""  # the model had nothing to say: no answer, as for any empty reply
+    raise RuntimeError(f"The round failed ({reason}) and so did the fallback ({fallback.text})")
+
+
+def _log_orchestrator(
+    state: RoundState, body: AgentRun, messages: list[ModelMessage], tokens_in: int, tokens_out: int
+) -> None:
+    requests = sum(isinstance(m, ModelResponse) for m in messages)
+    calls = [r.role for r in state.results.values() if r.round == body.round]
     logger.info(
-        "[general] Round %s of job %s: %d model requests, tools %s, provider %s, "
-        "tokens in %d out %d",
-        body.round, body.job_id, len(responses), tools, providers,
-        usage.input_tokens, usage.output_tokens,
+        "[orchestrator] %s: %d model requests, calls %s, tokens in %d out %d",
+        state.log_prefix, requests, calls, tokens_in, tokens_out,
     )  # fmt: skip
