@@ -49,7 +49,12 @@ ROLE_MODELS: dict[Role, ModelSpec] = {
 def make_models(key: SecretStr, http_client: httpx2.AsyncClient | None = None) -> dict[Role, Model]:
     """One model per role, all on one provider and so one HTTP client."""
     provider = OpenRouterProvider(api_key=key.get_secret_value(), http_client=http_client)
-    return {role: _make_model(provider, spec) for role, spec in ROLE_MODELS.items()}
+    # A failed read is not retried: each try would be paid for again.
+    reader_provider = OpenRouterProvider(openai_client=provider.client.with_options(max_retries=0))
+    return {
+        role: _make_model(reader_provider if role == "reader" else provider, spec)
+        for role, spec in ROLE_MODELS.items()
+    }
 
 
 def _make_model(provider: OpenRouterProvider, spec: ModelSpec) -> OpenRouterModel:

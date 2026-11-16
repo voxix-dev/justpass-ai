@@ -22,7 +22,7 @@ from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
 
 from agent.context import ContextClient, ContextError
-from agent.files import task_text_with_files
+from agent.files import TaskText, task_text_with_files
 from agent.models import MODEL_TIMEOUT_SECONDS, Role, make_models, reported_cost
 from agent.prompt import feedback_message, round_feedback, task_message
 from agent.roles.curator import curate, pick_subject
@@ -101,7 +101,6 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
     # in. A newer run that fails keeps the ownership: the API retries under a still newer lease,
     # and the writes of the old lease are refused anyway.
     _register_run(body)
-    deadline = asyncio.get_running_loop().time() + ROUND_TIMEOUT_SECONDS
     # One HTTP client for all the roles of the round, closed with it.
     async with httpx2.AsyncClient(timeout=httpx2.Timeout(MODEL_TIMEOUT_SECONDS, connect=5)) as http:
         # One metered model per role, so the round's total counts every response, failed runs too.
@@ -111,6 +110,7 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
         models: dict[Role, Model] = dict(metered)
         curator_model = metered["curator"]
         if body.context is None:
+            deadline = asyncio.get_running_loop().time() + ROUND_TIMEOUT_SECONDS
             async with asyncio.timeout_at(deadline + ROUND_GRACE_SECONDS):
                 feedback = [body.feedback] if body.feedback else []
                 answer = await _answer(
@@ -118,17 +118,24 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
                 )
         else:
             async with ContextClient(body.context.url, body.context.token) as context:
-                async with asyncio.timeout_at(deadline + ROUND_GRACE_SECONDS):
-                    task = await context.get_task()
-                    # Files first: the roles read the task with their text in it.
-                    task_text = await task_text_with_files(
+                task = await context.get_task()
+                # Files first: the roles read the task with their text in it. Reading has a time
+                # of its own, so the round's deadline starts after it. The API sees the agent is
+                # alive meanwhile: this runs inside the streamed /run, whose heartbeat goes on.
+                try:
+                    reading = await task_text_with_files(
                         task,
                         context,
                         metered["reader"],
                         lambda: newest_runs.get(body.job_id) == (body.round, body.lease_id),
                     )
+                finally:
+                    _log_reading(body, metered["reader"].spend)
+                task_text = reading.full()
+                deadline = asyncio.get_running_loop().time() + ROUND_TIMEOUT_SECONDS
+                async with asyncio.timeout_at(deadline + ROUND_GRACE_SECONDS):
                     profile = await context.get_profile()
-                    subject = await _job_subject(body, curator_model, task_text, profile)
+                    subject = await _job_subject(body, curator_model, reading, profile)
                     profile = profile.model_copy(update={"subject": subject})
                     subject_memory = await context.get_subject_memory(subject)
                     feedback = round_feedback(task, body.round)
@@ -149,7 +156,7 @@ async def solve_with_model(body: AgentRun) -> AgentAnswer:
                             await curate(
                                 curator_model,
                                 context,
-                                task_text=task_text,
+                                task_text=reading.for_curator(),
                                 subject=profile.subject,
                                 round_number=body.round,
                                 feedback=body.feedback,
@@ -174,7 +181,13 @@ def _prefix(body: AgentRun) -> str:
     return f"Round {body.round} of job {body.job_id}"
 
 
-async def _job_subject(body: AgentRun, model: Model, task_text: str, profile: Profile) -> str:
+def _log_reading(body: AgentRun, spend: Spend) -> None:
+    """What reading the files cost, logged even when the round then fails."""
+    if spend.tokens or spend.cost:
+        logger.info("[reader] %s: tokens %d, cost $%.4f", _prefix(body), spend.tokens, spend.cost)
+
+
+async def _job_subject(body: AgentRun, model: Model, task: TaskText, profile: Profile) -> str:
     """The subject of the job: the one kept from an earlier round, else the one the curator names.
     A curator that fails leaves the subject the API gave the job."""
     kept = job_subjects.get(body.job_id)
@@ -183,7 +196,7 @@ async def _job_subject(body: AgentRun, model: Model, task_text: str, profile: Pr
         return kept
     try:
         async with asyncio.timeout(SUBJECT_TIMEOUT_SECONDS):
-            subject = await pick_subject(model, task_text, profile.subjects)
+            subject = await pick_subject(model, task.for_subject(), profile.subjects)
     except Exception as error:
         logger.warning(
             "[curator] Round %s of job %s: no subject named (%s)",

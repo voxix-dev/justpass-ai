@@ -1759,6 +1759,9 @@ async def test_a_task_split_between_workers_is_not_answered_by_one_part(
     assert response.json() == {"answer": "The whole answer"}
 
 
+LABEL = "(material the student attached, not their message)"
+
+
 def attach(
     task_files: list[dict[str, object]],
     stored_files: dict[str, tuple[bytes, str]],
@@ -1794,8 +1797,10 @@ async def test_the_files_text_is_in_the_task_every_role_reads(
 
     combined = (
         "Solve x^2 = 4\n\n"
-        "--- Attached file 1: notes.txt ---\nUse the method of the lecture\n\n"
-        "--- Attached file 2: page.jpg ---\nTranscribed page"
+        f"--- Attached file 1: notes.txt {LABEL} ---\nUse the method of the lecture\n"
+        "--- End of attached file 1 ---\n\n"
+        f"--- Attached file 2: page.jpg {LABEL} ---\nTranscribed page\n"
+        "--- End of attached file 2 ---"
     )
     assert combined in prompts(orchestrator_requests[0])[0]
     assert combined in prompts(requests[0])[0]
@@ -1841,7 +1846,7 @@ async def test_text_saved_earlier_is_used_and_nothing_is_fetched(
     )
     requests = use_model(lambda messages, info: text("Answer"))
     await client.post("/run", json=run_body(context=grant()))
-    assert "--- Attached file 1: page.png ---\nSaved text" in prompts(requests[0])[0]
+    assert f"--- Attached file 1: page.png {LABEL} ---\nSaved text" in prompts(requests[0])[0]
     assert paths(context_api, "get_file") == []
     assert paths(context_api, "save_file_text") == []
     assert file_reader.requests == []
@@ -1896,3 +1901,81 @@ async def test_the_readers_spend_counts_in_the_rounds_tokens(
     await client.post("/run", json=run_body(context=grant()))
     assert len(file_reader.requests) == 1
     assert round_tokens() > without + 400
+
+
+async def test_the_picker_and_curator_read_the_typed_text_and_only_the_heads_of_files(
+    client: httpx2.AsyncClient,
+    use_model: UseModel,
+    context_api: list[httpx2.Request],
+    task_files: list[dict[str, object]],
+    stored_files: dict[str, tuple[bytes, str]],
+    picker: PickerStub,
+    curator: CuratorStub,
+    orchestrator_requests: list[list[ModelMessage]],
+):
+    attach(task_files, stored_files, "notes.txt", "text/plain", b"a" * 1_500 + b"b" * 1_500)
+    use_model(lambda messages, info: text("Answer"))
+    await client.post("/run", json=run_body(context=grant()))
+
+    picked = prompts(picker.requests[0])[0]
+    assert f"--- Attached file 1: notes.txt {LABEL} ---\n" + "a" * 1_000 + "\n--- End" in picked
+    assert "a" * 1_001 not in picked
+    assert "Solve x^2 = 4" in picked
+
+    curated = prompts(curator.requests[0])[0]
+    assert "a" * 1_500 + "b" * 500 + "\n--- End of attached file 1 ---" in curated
+    assert "b" * 501 not in curated
+    assert "Solve x^2 = 4" in curated
+    assert "b" * 1_500 in prompts(orchestrator_requests[0])[0]  # the roles that answer read it all
+
+
+async def test_reading_files_is_outside_the_rounds_deadline(
+    client: httpx2.AsyncClient,
+    context_api: list[httpx2.Request],
+    task_files: list[dict[str, object]],
+    stored_files: dict[str, tuple[bytes, str]],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def slow_reader(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        await asyncio.sleep(0.6)
+        return text("Transcribed page")
+
+    patch_models(monkeypatch, lambda messages, info: text("Answer"), reader=slow_reader)
+    monkeypatch.setattr(solver, "ROUND_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(solver, "ROUND_GRACE_SECONDS", 0)
+    attach(task_files, stored_files, "page.png", "image/png", b"png bytes")
+    response = await client.post("/run", json=run_body(context=grant()))
+    assert response.json() == {"answer": "Answer"}
+
+
+async def test_the_readers_spend_is_logged_when_the_round_fails(
+    client: httpx2.AsyncClient,
+    context_api: list[httpx2.Request],
+    task_files: list[dict[str, object]],
+    stored_files: dict[str, tuple[bytes, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    async def slow(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        await asyncio.sleep(5)
+        return text("late")
+
+    patch_models(monkeypatch, slow, slow, reader=lambda messages, info: text("word " * 300))
+    monkeypatch.setattr(solver, "ROUND_TIMEOUT_SECONDS", 0.05)
+    caplog.set_level("INFO", logger="agent.solver")
+    attach(task_files, stored_files, "page.png", "image/png", b"png bytes")
+    with pytest.raises(TimeoutError):
+        await client.post("/run", json=run_body(context=grant()))
+    lines = [r.getMessage() for r in caplog.records if "[reader] Round" in r.getMessage()]
+    assert len(lines) == 1
+    assert int(lines[0].split("tokens ")[1].split(",")[0]) > 300
+    assert not any("[round]" in r.getMessage() for r in caplog.records)
+
+
+async def test_the_readers_spend_is_logged_when_reading_itself_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    spent = solver.Spend(tokens=7, cost=0.25)
+    caplog.set_level("INFO", logger="agent.solver")
+    solver._log_reading(AgentRun(job_id=uuid4(), round=1, text="x"), spent)  # pyright: ignore[reportPrivateUsage]
+    assert "tokens 7, cost $0.2500" in caplog.records[-1].getMessage()
