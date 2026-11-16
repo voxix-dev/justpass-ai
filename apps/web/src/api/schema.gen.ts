@@ -33,7 +33,7 @@ export interface paths {
         };
         /**
          * Get File
-         * @description One of the dev user's photos; 404 for a missing one or another user's.
+         * @description One of the signed-in user's photos; 404 for a missing one or another user's.
          */
         get: operations["get_file_files__file_id__get"];
         put?: never;
@@ -80,9 +80,6 @@ export interface paths {
         /**
          * Create Job
          * @description Store a new job with its first round and queue it.
-         *
-         *     The user row is made with the first job. Its is_anonymous follows the token, since an
-         *     anonymous user who links an account keeps the uid.
          */
         post: operations["create_job_jobs_post"];
         delete?: never;
@@ -318,6 +315,15 @@ export interface operations {
                     "application/json": components["schemas"]["FileOut"];
                 };
             };
+            /** @description Missing, invalid or expired Firebase ID token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The photo is over 8 MiB */
             413: {
                 headers: {
@@ -345,7 +351,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description The database cannot be reached */
+            /** @description The database or Google's token signing keys cannot be reached */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -378,6 +384,15 @@ export interface operations {
                     "image/webp": string;
                 };
             };
+            /** @description Missing, invalid or expired Firebase ID token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description No such photo for this user */
             404: {
                 headers: {
@@ -396,7 +411,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The database cannot be reached */
+            /** @description The database or Google's token signing keys cannot be reached */
             503: {
                 headers: {
                     [name: string]: unknown;

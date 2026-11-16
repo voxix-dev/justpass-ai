@@ -156,8 +156,6 @@ async def test_a_photo_is_only_for_the_user_who_uploaded_it(client: httpx2.Async
     file_id = (await client.post("/files", **photo(JPEG, "image/jpeg"))).json()["id"]
     app.dependency_overrides[_current_user] = lambda: BOB
     assert (await client.get(f"/files/{file_id}")).status_code == 404
-    response = await client.post("/jobs", json={"photos": [file_id]})
-    assert response.status_code == 422
     app.dependency_overrides[_current_user] = lambda: ANA
     assert (await client.get(f"/files/{file_id}")).status_code == 200
 

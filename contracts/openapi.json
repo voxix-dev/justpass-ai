@@ -321,6 +321,16 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Missing, invalid or expired Firebase ID token"
+          },
           "413": {
             "content": {
               "application/json": {
@@ -359,9 +369,14 @@
                 }
               }
             },
-            "description": "The database cannot be reached"
+            "description": "The database or Google's token signing keys cannot be reached"
           }
         },
+        "security": [
+          {
+            "FirebaseIdToken": []
+          }
+        ],
         "summary": "Upload File",
         "tags": [
           "files"
@@ -370,7 +385,7 @@
     },
     "/files/{file_id}": {
       "get": {
-        "description": "One of the dev user's photos; 404 for a missing one or another user's.",
+        "description": "One of the signed-in user's photos; 404 for a missing one or another user's.",
         "operationId": "get_file_files__file_id__get",
         "parameters": [
           {
@@ -408,6 +423,16 @@
             },
             "description": "The photo"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Missing, invalid or expired Firebase ID token"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -436,9 +461,14 @@
                 }
               }
             },
-            "description": "The database cannot be reached"
+            "description": "The database or Google's token signing keys cannot be reached"
           }
         },
+        "security": [
+          {
+            "FirebaseIdToken": []
+          }
+        ],
         "summary": "Get File",
         "tags": [
           "files"
@@ -519,7 +549,7 @@
         ]
       },
       "post": {
-        "description": "Store a new job with its first round and queue it.\n\nThe user row is made with the first job. Its is_anonymous follows the token, since an\nanonymous user who links an account keeps the uid.",
+        "description": "Store a new job with its first round and queue it.",
         "operationId": "create_job_jobs_post",
         "requestBody": {
           "content": {

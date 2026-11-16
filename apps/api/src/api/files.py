@@ -13,7 +13,7 @@ from pydantic.alias_generators import to_camel
 from sqlalchemy import select
 
 from api.auth.current_user import CurrentUser
-from api.jobs import UNAVAILABLE, Problem, Responses, Session, ensure_user
+from api.jobs import JOBS_AUTH, Problem, Responses, Session, ensure_user
 from api.storage import NotFound, Storage, get_storage
 from api.tables import File
 
@@ -34,7 +34,7 @@ _PHOTO: Responses = {
     404: {"model": Problem, "description": "No such photo for this user"},
 }
 
-router = APIRouter(prefix="/files", tags=["files"], responses=UNAVAILABLE)
+router = APIRouter(prefix="/files", tags=["files"], responses=JOBS_AUTH)
 Store = Annotated[Storage, Depends(get_storage)]
 
 
