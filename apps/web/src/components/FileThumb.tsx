@@ -1,22 +1,14 @@
 import { useEffect, useState } from 'react'
-import { loadPhoto } from '@/api/jobs'
+import { loadFile } from '@/api/jobs'
+import { blobToDataUrl } from '@/lib/image'
 
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(blob)
-  })
-}
-
-/** Show a stored photo of a job, loaded through the API client; empty until it arrives. */
-export function PhotoImg({ id, alt, className }: { id: string; alt: string; className?: string }) {
+/** Show a stored image file of a job, loaded through the API client; empty until it arrives. */
+export function FileThumb({ id, alt, className }: { id: string; alt: string; className?: string }) {
   const [src, setSrc] = useState<string>()
   useEffect(() => {
     let live = true
     // The page allows only 'self' and data: images (see index.html), so a blob: URL would not load.
-    loadPhoto(id)
+    loadFile(id)
       .then((blob) => blobToDataUrl(blob))
       .then((url) => {
         if (live) setSrc(url)

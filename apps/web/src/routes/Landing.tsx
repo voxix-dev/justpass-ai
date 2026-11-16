@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
 const STEPS: [string, string, ReactNode][] = [
-  ['Snap or paste it', 'The task as text or a photo.', <SnapMock key="s" />],
+  ['Snap or paste it', 'The task as text, a photo, or a file (PDF, Word, ...).', <SnapMock key="s" />],
   ['AI does it', 'Worked step by step, with the math written out properly.', <SolvingMock key="m" />],
   ['You review it', 'Accept it, or push back and get a revised answer.', <ReviewMock key="r" />],
 ]

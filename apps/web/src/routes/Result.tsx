@@ -1,9 +1,9 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronLeft, FlaskConical, LoaderCircle } from 'lucide-react'
-import { acceptJob, sendFeedback, type Job } from '@/api/jobs'
-import { PhotoImg } from '@/components/PhotoImg'
+import { Check, ChevronLeft, Download, FlaskConical, LoaderCircle } from 'lucide-react'
+import { acceptJob, loadFile, sendFeedback, type Job } from '@/api/jobs'
+import { FileThumb } from '@/components/FileThumb'
 import { ErrorState, Skeleton, StatusBadge } from '@/components/bits'
 import { Button } from '@/components/ui/button'
 import { ago, isConflict, isNotFound, isPending, useJob } from '@/lib/jobs'
@@ -120,15 +120,19 @@ function JobDetail({ job }: { job: Job }) {
         {job.round > 1 && !pending && <p className="mt-3 text-muted-foreground">Revised answer, round {job.round}.</p>}
       </header>
 
-      {(job.text !== job.title || job.photos.length > 0) && (
+      {(job.text !== job.title || job.files.length > 0) && (
         <section aria-labelledby="q" className="mt-6 rounded-2xl border-2 border-border bg-card p-4">
           <h2 id="q" className="text-xl">The full task</h2>
-          {job.text && (job.text !== job.title || job.photos.length > 0) && <p dir="auto" className="mt-2 whitespace-pre-wrap break-words">{job.text}</p>}
-          {job.photos.length > 0 && (
+          {job.text && (job.text !== job.title || job.files.length > 0) && <p dir="auto" className="mt-2 whitespace-pre-wrap break-words">{job.text}</p>}
+          {job.files.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-3">
-              {job.photos.map((id, i) => (
-                <PhotoImg key={id} id={id} alt={`Photo ${i + 1} of the task`} className="h-40 max-w-full rounded-xl border-2 border-border bg-muted object-cover" />
-              ))}
+              {job.files.map((f, i) =>
+                f.mimeType.startsWith('image/') ? (
+                  <FileThumb key={f.id} id={f.id} alt={`File ${i + 1} of the task: ${f.name}`} className="h-40 max-w-full rounded-xl border-2 border-border bg-muted object-cover" />
+                ) : (
+                  <DownloadButton key={f.id} file={f} />
+                ),
+              )}
             </div>
           )}
         </section>
@@ -194,6 +198,39 @@ function JobDetail({ job }: { job: Job }) {
         )}
       </Suspense>
     </>
+  )
+}
+
+/** A button that downloads a stored file through the API client, so the request carries the bearer token. */
+function DownloadButton({ file }: { file: Job['files'][number] }) {
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState(false)
+
+  async function download() {
+    setBusy(true)
+    setFailed(false)
+    try {
+      const url = URL.createObjectURL(await loadFile(file.id))
+      const link = document.createElement('a')
+      link.href = url
+      link.download = file.name
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      setFailed(true)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="max-w-full">
+      <Button type="button" variant="outline" onClick={() => !busy && void download()} aria-disabled={busy} className="max-w-full">
+        {busy ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Download aria-hidden="true" />}
+        <span className="truncate">{file.name}</span>
+      </Button>
+      {failed && <p role="alert" className="mt-1 text-sm font-bold text-coral">Could not download this file. Try again.</p>}
+    </div>
   )
 }
 

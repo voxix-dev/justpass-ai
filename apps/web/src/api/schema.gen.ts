@@ -15,7 +15,9 @@ export interface paths {
         put?: never;
         /**
          * Upload File
-         * @description Store a photo sent as the request body, with its image type as the Content-Type.
+         * @description Store a file sent as the request body, with its type as the Content-Type.
+         *
+         *     A missing or invalid Content-Type counts as application/octet-stream.
          */
         post: operations["upload_file_files_post"];
         delete?: never;
@@ -33,7 +35,10 @@ export interface paths {
         };
         /**
          * Get File
-         * @description One of the signed-in user's photos; 404 for a missing one or another user's.
+         * @description One of the signed-in user's files; 404 for a missing one or another user's.
+         *
+         *     Images are shown in the page and everything else is a download, with headers that stop an
+         *     uploaded page or SVG from running on the app's origin.
          */
         get: operations["get_file_files__file_id__get"];
         put?: never;
@@ -186,7 +191,7 @@ export interface components {
         };
         /**
          * FileOut
-         * @description An uploaded photo. Give its id to POST /jobs.
+         * @description An uploaded file. Give its id to POST /jobs.
          */
         FileOut: {
             /**
@@ -196,6 +201,8 @@ export interface components {
             id: string;
             /** Mimetype */
             mimeType: string;
+            /** Name */
+            name: string;
             /** Size */
             size: number;
         };
@@ -207,12 +214,27 @@ export interface components {
         /** JobCreate */
         JobCreate: {
             /**
-             * Photos
+             * Files
              * @default []
              */
-            photos: string[];
+            files: string[];
             /** Text */
             text?: string | null;
+        };
+        /**
+         * JobFile
+         * @description A file of a job, as the web app lists and fetches it (GET /files/{id}).
+         */
+        JobFile: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Mimetype */
+            mimeType: string;
+            /** Name */
+            name: string;
         };
         /**
          * JobOut
@@ -232,13 +254,13 @@ export interface components {
             failedFeedback: string | null;
             /** Feedback */
             feedback: string | null;
+            /** Files */
+            files: components["schemas"]["JobFile"][];
             /**
              * Id
              * Format: uuid
              */
             id: string;
-            /** Photos */
-            photos: string[];
             /** Result */
             result: string | null;
             /** Round */
@@ -293,16 +315,17 @@ export type $defs = Record<string, never>;
 export interface operations {
     upload_file_files_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description The file's name, as the student has it */
+                name?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "image/jpeg": string;
-                "image/png": string;
-                "image/webp": string;
+                "*/*": string;
             };
         };
         responses: {
@@ -324,7 +347,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description The photo is over 8 MiB */
+            /** @description The file is over 20 MiB */
             413: {
                 headers: {
                     [name: string]: unknown;
@@ -333,7 +356,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Not a JPEG, PNG or WebP photo */
+            /** @description The bytes are not an image of the declared type */
             415: {
                 headers: {
                     [name: string]: unknown;
@@ -373,15 +396,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The photo */
+            /** @description The file */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "image/jpeg": string;
-                    "image/png": string;
-                    "image/webp": string;
+                    "*/*": string;
                 };
             };
             /** @description Missing, invalid or expired Firebase ID token */
@@ -393,7 +414,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
-            /** @description No such photo for this user */
+            /** @description No such file for this user */
             404: {
                 headers: {
                     [name: string]: unknown;
