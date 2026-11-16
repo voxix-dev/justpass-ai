@@ -66,9 +66,9 @@ def test_move_to_follows_shared_transitions_and_sets_the_review_deadline():
 
 
 @pytest.mark.anyio
-async def test_job_needs_text_or_a_photo(session: AsyncSession):
+async def test_job_needs_text_or_a_file(session: AsyncSession):
     user = await add_user(session)
-    session.add(new_job(user.id, input_text=None, photo_keys=["users/u/uploads/1.jpg"]))
+    session.add(new_job(user.id, input_text=None, file_keys=["users/u/uploads/1"]))
     await session.flush()
     session.add(new_job(user.id, input_text=None))
     with pytest.raises(IntegrityError, match="ck_jobs_has_input"):

@@ -2,11 +2,13 @@
 
 from types import TracebackType
 from typing import Literal, Self
+from uuid import UUID
 
 import httpx2
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from shared.context import (
+    GetFile,
     GetProfile,
     GetSubjectMemory,
     GetTask,
@@ -14,6 +16,8 @@ from shared.context import (
     ListHistory,
     Memory,
     Profile,
+    SavedFileText,
+    SaveFileText,
     SearchHistory,
     Task,
     UpdateMemory,
@@ -23,6 +27,7 @@ from shared.context import (
 from shared.models import ArtifactKind
 
 TIMEOUT_SECONDS = 30
+MAX_FILE_BYTES = 20 * 1024 * 1024  # the most the API stores for one file
 
 TASK = TypeAdapter(Task)
 PROFILE = TypeAdapter(Profile)
@@ -30,6 +35,7 @@ WRITTEN = TypeAdapter(WrittenArtifact)
 MEMORY = TypeAdapter(Memory)
 HISTORY = TypeAdapter(list[HistoryItem])
 MEMORIES = TypeAdapter(list[Memory])
+SAVED_TEXT = TypeAdapter(SavedFileText)
 
 
 class ContextError(Exception):
@@ -38,6 +44,20 @@ class ContextError(Exception):
 
 class ContextStatusError(ContextError, httpx2.HTTPStatusError):
     """The Context API answered with an error status."""
+
+
+def _check(tool: str, response: httpx2.Response) -> None:
+    """Raise for a response that is not a success; its body must already be read."""
+    if not response.is_success:  # also a redirect: its body is not tool output
+        # Keep the Context API's reason, which raise_for_status() drops.
+        where = (
+            f" (location: {response.headers['location']})" if "location" in response.headers else ""
+        )
+        raise ContextStatusError(
+            f"{tool} returned {response.status_code}{where}: {response.text[:500]}",
+            request=response.request,
+            response=response,
+        )
 
 
 class ContextClient:
@@ -67,18 +87,7 @@ class ContextClient:
             response = await self._http.post(tool, content=arguments.model_dump_json().encode())
         except httpx2.RequestError as error:
             raise ContextError(f"{tool} failed: {type(error).__name__}") from error
-        if not response.is_success:  # also a redirect: its body is not tool output
-            # Keep the Context API's reason, which raise_for_status() drops.
-            where = (
-                f" (location: {response.headers['location']})"
-                if "location" in response.headers
-                else ""
-            )
-            raise ContextStatusError(
-                f"{tool} returned {response.status_code}{where}: {response.text[:500]}",
-                request=response.request,
-                response=response,
-            )
+        _check(tool, response)
         try:
             return reply.validate_json(response.content)
         except ValidationError as error:  # not the tool output the agent was built against
@@ -114,3 +123,26 @@ class ContextClient:
 
     async def search_history(self, query: str) -> list[Memory]:
         return await self._call("search_history", SearchHistory(query=query), MEMORIES)
+
+    async def get_file(self, file_id: UUID) -> tuple[bytes, str]:
+        """The bytes of a file of this job and the content type they were stored with. The body is
+        read as it arrives and refused past 20 MiB, so a wrong answer cannot fill the memory."""
+        content = GetFile(file_id=file_id).model_dump_json().encode()
+        try:
+            async with self._http.stream("POST", "get_file", content=content) as response:
+                if not response.is_success:
+                    await response.aread()
+                    _check("get_file", response)
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body += chunk
+                    if len(body) > MAX_FILE_BYTES:
+                        raise ContextError("get_file returned a body over 20 MiB")
+                content_type = response.headers.get("content-type", "application/octet-stream")
+        except httpx2.RequestError as error:
+            raise ContextError(f"get_file failed: {type(error).__name__}") from error
+        return bytes(body), content_type
+
+    async def save_file_text(self, file_id: UUID, text: str) -> SavedFileText:
+        arguments = SaveFileText(file_id=file_id, text=text)
+        return await self._call("save_file_text", arguments, SAVED_TEXT)

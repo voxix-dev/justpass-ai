@@ -100,7 +100,9 @@ test.describe('signed in', () => {
     await page.setViewportSize({ width: 360, height: 740 })
     await page.goto('/new')
     await page.getByLabel('The task').fill(`Solve 2x² − 8x + 6 = 0 and show each step (${Date.now()})`)
-    const box = (await page.getByRole('button', { name: 'Do it for me' }).boundingBox())!
+    const send = page.getByRole('button', { name: 'Do it for me' })
+    await send.scrollIntoViewIfNeeded()
+    const box = (await send.boundingBox())!
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
     await page.waitForTimeout(180)
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
@@ -400,4 +402,60 @@ test.describe('email link', () => {
     await expect(other.getByRole('heading', { name: 'Solution' })).toBeVisible()
     await other.context().close()
   })
+})
+
+test('a photo task shows its photo on the result page', async ({ page }) => {
+  await signInAsGuest(page)
+  await page.goto('/new')
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  )
+  await page.getByLabel('Files', { exact: true }).setInputFiles({ name: 'task.png', mimeType: 'image/png', buffer: png })
+  await expect(page.getByRole('button', { name: 'Remove file 1' })).toBeVisible()
+  await expect(page.getByRole('img', { name: 'Uploading file 1' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Do it for me' }).click()
+  await expect(page).toHaveURL(/\/jobs\/[0-9a-f-]{36}$/)
+  await expect(page.getByRole('heading', { name: 'task.jpg' })).toBeVisible()
+  const photo = page.getByRole('img', { name: 'File 1 of the task: task.jpg' })
+  await expect(photo).toBeVisible()
+  await expect(photo).toHaveJSProperty('naturalWidth', 1)
+})
+
+test('a PDF task is titled by its file name and downloads from the result page', async ({ page }) => {
+  await signInAsGuest(page)
+  await page.goto('/new')
+  const pdf = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n')
+  await page.getByLabel('Files', { exact: true }).setInputFiles({ name: 'task.pdf', mimeType: 'application/pdf', buffer: pdf })
+  await expect(page.getByRole('button', { name: 'Remove file 1' })).toBeVisible()
+  await expect(page.getByRole('img', { name: 'Uploading file 1' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Do it for me' }).click()
+  await expect(page).toHaveURL(/\/jobs\/[0-9a-f-]{36}$/)
+  await expect(page.getByRole('heading', { name: 'task.pdf' })).toBeVisible()
+  const download = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'task.pdf' }).click()
+  expect((await download).suggestedFilename()).toBe('task.pdf')
+})
+
+test('a failed task with a file keeps the file when sent again', async ({ page }) => {
+  await signInAsGuest(page)
+  await page.goto('/new')
+  const text = `Please fail this one (${Date.now()})`
+  const pdf = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n')
+  await page.getByLabel('The task').fill(text)
+  await page.getByLabel('Files', { exact: true }).setInputFiles({ name: 'again.pdf', mimeType: 'application/pdf', buffer: pdf })
+  await expect(page.getByRole('button', { name: 'Remove file 1' })).toBeVisible()
+  await expect(page.getByRole('img', { name: 'Uploading file 1' })).toHaveCount(0)
+  await expect(page.getByRole('img', { name: 'Waiting to upload file 1' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Do it for me' }).click()
+  await expect(page).toHaveURL(/\/jobs\/[0-9a-f-]{36}$/)
+
+  await page.getByRole('link', { name: 'Send it again' }).click()
+  await expect(page.getByLabel('The task')).toHaveValue(text)
+  await expect(page.getByText('again.pdf')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Remove file 1' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Do it for me' }).click()
+  await expect(page).toHaveURL(/\/jobs\/[0-9a-f-]{36}$/)
+  await expect(page.getByRole('button', { name: 'again.pdf' })).toBeVisible()
 })

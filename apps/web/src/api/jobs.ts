@@ -1,11 +1,15 @@
-// Jobs API used by the screens, called through the generated client. Photos are not supported yet:
-// a job is text only. Every function throws an ApiError with a message fit to show the student.
-import { api } from './client'
+// Jobs API used by the screens, called through the generated client. A job is text,
+// files or both. Every function throws an ApiError with a message fit to show the student.
+import { api, fetchWithin, FILE_TIMEOUT_MS } from './client'
 import type { components } from './schema.gen'
 
 export type Job = components['schemas']['JobOut']
 export type JobStatus = Job['status']
 export type NewJob = components['schemas']['JobCreate']
+export type FileOut = components['schemas']['FileOut']
+
+/** Image types the page shows inline; any other file is offered as a download. */
+export const INLINE_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 
 /** A failed request. status is 0 when no usable response arrived at all. */
 export class ApiError extends Error {
@@ -22,6 +26,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 function message(error: unknown, status: number): string {
   const detail = (error as { detail?: unknown } | undefined)?.detail
   if (typeof detail === 'string') return detail
+  if (status === 413) return 'That file is too big. Use one under 20 MB.'
+  if (status === 415) return 'That photo looks damaged. Try another one.'
   if (status !== 422) return `Something went wrong (${status}). Try again.`
   const tooLong = (detail as { type: string; ctx?: { max_length?: number } }[] | undefined)?.find((e) => e.type === 'string_too_long')
   if (tooLong?.ctx?.max_length) return `That is too long. Keep it under ${tooLong.ctx.max_length.toLocaleString('en')} characters.`
@@ -77,4 +83,27 @@ export async function acceptJob(id: string, round: number): Promise<Job> {
  */
 export async function sendFeedback(id: string, round: number, feedback: string): Promise<Job> {
   return unwrap(api.POST('/jobs/{job_id}/feedback', { params: { path: { job_id: id } }, body: { text: feedback, round } }))
+}
+
+/** Upload one file as its raw bytes under its own name and return its file record. */
+export async function uploadFile(blob: Blob, name: string): Promise<FileOut> {
+  return unwrap(
+    api.POST('/files', {
+      params: { query: { name } },
+      // The body is the file itself, not JSON; the types call it a string.
+      body: blob as unknown as string,
+      bodySerializer: (b) => b as unknown as BodyInit,
+      headers: { 'Content-Type': blob.type || 'application/octet-stream' },
+      fetch: fetchWithin(FILE_TIMEOUT_MS),
+    }),
+  )
+}
+
+/**
+ * Fetch a file through the client, so the bearer token is added like on every other call.
+ * @throws {ApiError} If the file is unknown or not the user's (404).
+ */
+export async function loadFile(id: string): Promise<Blob> {
+  if (!UUID.test(id)) throw new ApiError('File not found', 404)
+  return unwrap(api.GET('/files/{file_id}', { params: { path: { file_id: id } }, parseAs: 'blob', fetch: fetchWithin(FILE_TIMEOUT_MS) }))
 }

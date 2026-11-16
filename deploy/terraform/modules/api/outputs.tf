@@ -14,3 +14,8 @@ output "cloud_sql_instance_name" {
 output "cloud_sql_connection_name" {
   value = google_sql_database_instance.db.connection_name
 }
+
+output "uploads_bucket" {
+  description = "Bucket of the photos students upload; the API gets its name as GCS_BUCKET."
+  value       = google_storage_bucket.uploads.name
+}

@@ -15,6 +15,9 @@ from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from api.main import app
+from api.storage import LocalStorage, get_storage
+
 ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -22,6 +25,14 @@ ROOT = Path(__file__).resolve().parents[3]
 def no_openrouter_key(monkeypatch: pytest.MonkeyPatch) -> None:
     # A key in the developer's environment must not change what the tests expect.
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
+
+
+@pytest.fixture
+def storage(tmp_path: Path) -> LocalStorage:
+    """Uploads go to a temporary directory. The test's client fixture clears the override."""
+    store = LocalStorage(tmp_path / "uploads")
+    app.dependency_overrides[get_storage] = lambda: store
+    return store
 
 
 async def _run_outside_transaction(url: str, sql: str) -> None:

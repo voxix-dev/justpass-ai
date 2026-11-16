@@ -53,6 +53,6 @@ CORS), gets a preview URL per PR from Hosting, and can move to GCS + Cloud CDN u
   [root README](../../README.md#setup).
   The agent is still a fake that answers after 10 seconds; a task with the word "fail" fails.
   `pnpm e2e` waits for it, so one run takes a few minutes.
-  Photos are not supported yet: a task is text only.
+  A task is text, up to 5 files (photos, PDF, Word, ...), or both.
 - Test prep features are previews only (`src/components/lab.tsx`); "Notify me" is saved in
   `localStorage` only.

@@ -87,6 +87,23 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class File(Base):
+    """A file a student uploaded. The bytes are in object storage under `storage_key`; a job
+    lists the keys of its files in `file_keys`."""
+
+    __tablename__ = "files"
+    __table_args__ = (Index(None, "user_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    storage_key: Mapped[str] = mapped_column(unique=True)
+    name: Mapped[str] = mapped_column(String(255))  # as the student named it
+    mime_type: Mapped[str] = mapped_column(String(255))
+    size_bytes: Mapped[int]
+    extracted_text: Mapped[str | None]  # what OCR read from the file, filled in later
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class Job(Base):
     """One homework request."""
 
@@ -111,8 +128,11 @@ class Job(Base):
     level: Mapped[Level] = mapped_column(str_enum(Level, "level"))
     language: Mapped[str] = mapped_column(String(8))
     input_text: Mapped[str | None]
-    # Cloud Storage object keys. The photos themselves never go in the database.
-    photo_keys: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, server_default="{}")
+    # Object storage keys. The files themselves never go in the database. The column keeps its old
+    # name so a revision from before the rename still works on the migrated database.
+    file_keys: Mapped[list[str]] = mapped_column(
+        "photo_keys", ARRAY(String), default=list, server_default="{}"
+    )
     # Feedback is accepted until then. Set when the job reaches awaiting_review.
     review_deadline: Mapped[datetime | None]
     # The grade the student says they got, and their comment. Both optional.

@@ -22,6 +22,36 @@
         "title": "FeedbackCreate",
         "type": "object"
       },
+      "FileOut": {
+        "description": "An uploaded file. Give its id to POST /jobs.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "mimeType": {
+            "title": "Mimetype",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "mimeType",
+          "size"
+        ],
+        "title": "FileOut",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -38,17 +68,56 @@
       "JobCreate": {
         "additionalProperties": false,
         "properties": {
+          "files": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Files",
+            "type": "array"
+          },
           "text": {
-            "maxLength": 20000,
-            "minLength": 1,
-            "title": "Text",
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "title": "JobCreate",
+        "type": "object"
+      },
+      "JobFile": {
+        "description": "A file of a job, as the web app lists and fetches it (GET /files/{id}).",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "mimeType": {
+            "title": "Mimetype",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
             "type": "string"
           }
         },
         "required": [
-          "text"
+          "id",
+          "name",
+          "mimeType"
         ],
-        "title": "JobCreate",
+        "title": "JobFile",
         "type": "object"
       },
       "JobOut": {
@@ -96,6 +165,13 @@
             ],
             "title": "Feedback"
           },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/JobFile"
+            },
+            "title": "Files",
+            "type": "array"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -141,6 +217,7 @@
           "createdAt",
           "title",
           "text",
+          "files",
           "result",
           "error",
           "accepted",
@@ -235,6 +312,198 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/files": {
+      "post": {
+        "description": "Store a file sent as the request body, with its type as the Content-Type.\n\nA missing or invalid Content-Type counts as application/octet-stream.",
+        "operationId": "upload_file_files_post",
+        "parameters": [
+          {
+            "description": "The file's name, as the student has it",
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "default": "file",
+              "description": "The file's name, as the student has it",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "*/*": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Missing, invalid or expired Firebase ID token"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The file is over 20 MiB"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The bytes are not an image of the declared type"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body is empty"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The user uploaded too many files in a day that no task uses"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The database, the storage or Google's token signing keys cannot be reached"
+          }
+        },
+        "security": [
+          {
+            "FirebaseIdToken": []
+          }
+        ],
+        "summary": "Upload File",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/files/{file_id}": {
+      "get": {
+        "description": "One of the signed-in user's files; 404 for a missing one or another user's.\n\nImages are shown in the page and everything else is a download, with headers that stop an\nuploaded page or SVG from running on the app's origin.",
+        "operationId": "get_file_files__file_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The file"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Missing, invalid or expired Firebase ID token"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No such file for this user"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The database, the storage or Google's token signing keys cannot be reached"
+          }
+        },
+        "security": [
+          {
+            "FirebaseIdToken": []
+          }
+        ],
+        "summary": "Get File",
+        "tags": [
+          "files"
+        ]
+      }
+    },
     "/health": {
       "get": {
         "description": "Whether the process is up. /ready also checks the database.",
@@ -309,7 +578,7 @@
         ]
       },
       "post": {
-        "description": "Store a new job with its first round and queue it.\n\nThe user row is made with the first job. Its is_anonymous follows the token, since an\nanonymous user who links an account keeps the uid.",
+        "description": "Store a new job with its first round and queue it.",
         "operationId": "create_job_jobs_post",
         "requestBody": {
           "content": {

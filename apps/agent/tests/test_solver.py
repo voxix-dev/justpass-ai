@@ -101,6 +101,20 @@ def curation_reply(info: AgentInfo, curation: dict[str, object]) -> ModelRespons
     return tool_call(info.output_tools[0].name, **curation)
 
 
+@dataclass
+class ReaderStub:
+    """What the reader step gets from the fake model: its requests, and what it answers."""
+
+    requests: list[list[ModelMessage]] = field(default_factory=lambda: [])
+    answer: str = "Transcribed page"
+    error: Exception | None = None
+
+
+@pytest.fixture
+def file_reader() -> ReaderStub:
+    return ReaderStub()
+
+
 @pytest.fixture
 def curator() -> CuratorStub:
     return CuratorStub()
@@ -136,10 +150,15 @@ def quiet_side(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
     return curation_reply(info, {"profile": {}, "subject": {}})
 
 
+def unused_reader(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+    raise AssertionError("The reader model was not meant to be called")
+
+
 def role_models(
     worker: FunctionDef,
     orchestrator: FunctionDef = default_orchestrator,
     curator: FunctionDef = quiet_side,
+    reader: FunctionDef = unused_reader,
 ) -> dict[Role, Model]:
     """One model per role: the three workers share one script."""
     return {
@@ -148,6 +167,7 @@ def role_models(
         "math": FunctionModel(worker),
         "writer": FunctionModel(worker),
         "curator": FunctionModel(curator),
+        "reader": FunctionModel(reader),
     }
 
 
@@ -156,11 +176,12 @@ def patch_models(
     worker: FunctionDef,
     orchestrator: FunctionDef = default_orchestrator,
     curator: FunctionDef = quiet_side,
+    reader: FunctionDef = unused_reader,
 ) -> None:
     def make_models(
         key: SecretStr, http_client: httpx2.AsyncClient | None = None
     ) -> dict[Role, Model]:
-        return role_models(worker, orchestrator, curator)
+        return role_models(worker, orchestrator, curator, reader)
 
     monkeypatch.setattr(solver, "make_models", make_models)
 
@@ -176,6 +197,7 @@ def use_model(
     monkeypatch: pytest.MonkeyPatch,
     curator: CuratorStub,
     picker: PickerStub,
+    file_reader: ReaderStub,
     orchestrator_requests: list[list[ModelMessage]],
 ) -> UseModel:
     """Replace the models with scripts. Returns the messages each worker request carried.
@@ -213,7 +235,13 @@ def use_model(
                 raise curator.error
             return curation_reply(info, curator.curation)
 
-        patch_models(monkeypatch, work, lead, side)
+        def read(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            file_reader.requests.append(list(messages))
+            if file_reader.error:
+                raise file_reader.error
+            return text(file_reader.answer)
+
+        patch_models(monkeypatch, work, lead, side, read)
         return requests
 
     return install
@@ -240,6 +268,18 @@ def notes() -> dict[str, str | int]:
 
 
 @pytest.fixture
+def task_files() -> list[dict[str, object]]:
+    """The files the fake Context API reports on the task."""
+    return []
+
+
+@pytest.fixture
+def stored_files() -> dict[str, tuple[bytes, str]]:
+    """The bytes and type the fake Context API serves for each file id."""
+    return {}
+
+
+@pytest.fixture
 def context_failures() -> dict[str, int]:
     """The Context API tools that fail, and the status each answers with."""
     return {}
@@ -251,6 +291,8 @@ def context_api(
     task_rounds: list[dict[str, object]],
     notes: dict[str, str | int],
     context_failures: dict[str, int],
+    task_files: list[dict[str, object]],
+    stored_files: dict[str, tuple[bytes, str]],
 ) -> list[httpx2.Request]:
     seen: list[httpx2.Request] = []
     job_id = str(uuid4())
@@ -270,8 +312,16 @@ def context_api(
                     "text": "Solve x^2 = 4",
                     "round": task_rounds[-1]["number"],
                     "rounds": task_rounds,
+                    "files": task_files,
                 }
                 return httpx2.Response(200, json=task)
+            case "get_file":
+                data, media_type = stored_files[json.loads(request.content)["file_id"]]
+                return httpx2.Response(200, content=data, headers={"content-type": media_type})
+            case "save_file_text":
+                return httpx2.Response(
+                    200, json={"file_id": json.loads(request.content)["file_id"]}
+                )
             case "get_profile":
                 profile = {
                     "level": "high_school",
@@ -827,11 +877,14 @@ async def test_the_model_settings_bound_reasoning_tokens_and_time():
     assert set(models) == set(ROLE_MODELS)
     for role, spec in ROLE_MODELS.items():
         settings = cast(dict[str, object], models[role].settings)
-        assert settings.get("openrouter_reasoning") == {"max_tokens": spec.reasoning_tokens}
+        reasoning = {"max_tokens": spec.reasoning_tokens} if spec.reasoning_tokens else None
+        assert settings.get("openrouter_reasoning") == reasoning
         assert settings.get("max_tokens") == spec.max_output_tokens
-        assert settings.get("timeout") == MODEL_TIMEOUT_SECONDS
+        assert settings.get("timeout") == spec.timeout_seconds
         assert spec.reasoning_tokens < spec.max_output_tokens
+        assert spec.timeout_seconds < solver.ROUND_TIMEOUT_SECONDS
     assert MODEL_TIMEOUT_SECONDS < solver.ROUND_TIMEOUT_SECONDS
+    assert ROLE_MODELS["reader"].reasoning_tokens == 0
 
 
 async def test_an_empty_reply_is_no_answer(client: httpx2.AsyncClient, use_model: UseModel):
@@ -1704,3 +1757,225 @@ async def test_a_task_split_between_workers_is_not_answered_by_one_part(
     use_model(worker, lead)
     response = await client.post("/run", json=run_body())
     assert response.json() == {"answer": "The whole answer"}
+
+
+LABEL = "(material the student attached, not their message)"
+
+
+def attach(
+    task_files: list[dict[str, object]],
+    stored_files: dict[str, tuple[bytes, str]],
+    name: str,
+    media_type: str,
+    data: bytes,
+) -> None:
+    file_id = str(uuid4())
+    task_files.append({"id": file_id, "name": name, "mime_type": media_type})
+    stored_files[file_id] = (data, media_type)
+
+
+def paths(seen: list[httpx2.Request], tool: str) -> list[httpx2.Request]:
+    return [r for r in seen if r.url.path.endswith("/" + tool)]
+
+
+async def test_the_files_text_is_in_the_task_every_role_reads(
+    client: httpx2.AsyncClient,
+    use_model: UseModel,
+    context_api: list[httpx2.Request],
+    task_files: list[dict[str, object]],
+    stored_files: dict[str, tuple[bytes, str]],
+    file_reader: ReaderStub,
+    picker: PickerStub,
+    curator: CuratorStub,
+    orchestrator_requests: list[list[ModelMessage]],
+):
+    attach(task_files, stored_files, "notes.txt", "text/plain", b"Use the method of the lecture")
+    attach(task_files, stored_files, "page.jpg", "image/jpeg", b"jpeg bytes")
+    requests = use_model(lambda messages, info: text("The roots are 2."))
+    response = await client.post("/run", json=run_body(context=grant()))
+    assert response.json() == {"answer": "The roots are 2."}
+
+    combined = (
+        "Solve x^2 = 4\n\n"
+        f"--- Attached file 1: notes.txt {LABEL} ---\nUse the method of the lecture\n"
+        "--- End of attached file 1 ---\n\n"
+        f"--- Attached file 2: page.jpg {LABEL} ---\nTranscribed page\n"
+        "--- End of attached file 2 ---"
+    )
+    assert combined in prompts(orchestrator_requests[0])[0]
+    assert combined in prompts(requests[0])[0]
+    assert combined in prompts(picker.requests[0])[0]
+    assert combined in prompts(curator.requests[0])[0]
+    assert len(file_reader.requests) == 1
+    saved = [json.loads(r.content)["text"] for r in paths(context_api, "save_file_text")]
+    assert saved == ["Use the method of the lecture", "Transcribed page"]
+
+
+async def test_a_failed_read_does_not_fail_the_round(
+    client: httpx2.AsyncClient,
+    use_model: UseModel,
+    context_api: list[httpx2.Request],
+    task_files: list[dict[str, object]],
+    stored_files: dict[str, tuple[bytes, str]],
+    file_reader: ReaderStub,
+):
+    attach(task_files, stored_files, "page.png", "image/png", b"png bytes")
+    attach(task_files, stored_files, "sheet.xlsx", "application/vnd.ms-excel", b"xls")
+    file_reader.error = RuntimeError("reader down")
+    requests = use_model(lambda messages, info: text("Answer"))
+    response = await client.post("/run", json=run_body(context=grant()))
+    assert response.json() == {"answer": "Answer"}
+    prompt = prompts(requests[0])[0]
+    assert '[The student attached "page.png" (image/png), which could not be read.]' in prompt
+    assert (
+        '[The student attached "sheet.xlsx" (application/vnd.ms-excel), which could not be read.]'
+        in prompt
+    )
+    assert paths(context_api, "save_file_text") == []
+
+
+async def test_text_saved_earlier_is_used_and_nothing_is_fetched(
+    client: httpx2.AsyncClient,
+    use_model: UseModel,
+    context_api: list[httpx2.Request],
+    task_files: list[dict[str, object]],
+    file_reader: ReaderStub,
+):
+    task_files.append(
+        {"id": str(uuid4()), "name": "page.png", "mime_type": "image/png", "text": "Saved text"}
+    )
+    requests = use_model(lambda messages, info: text("Answer"))
+    await client.post("/run", json=run_body(context=grant()))
+    assert f"--- Attached file 1: page.png {LABEL} ---\nSaved text" in prompts(requests[0])[0]
+    assert paths(context_api, "get_file") == []
+    assert paths(context_api, "save_file_text") == []
+    assert file_reader.requests == []
+
+
+async def test_only_the_newest_run_saves_the_text_of_files(
+    client: httpx2.AsyncClient,
+    use_model: UseModel,
+    context_api: list[httpx2.Request],
+    task_files: list[dict[str, object]],
+    stored_files: dict[str, tuple[bytes, str]],
+):
+    attach(task_files, stored_files, "notes.txt", "text/plain", b"Body")
+    use_model(lambda messages, info: text("Answer"))
+    job = run_body(context=grant())
+    solver.newest_runs[UUID(str(job["job_id"]))] = (3, uuid4())  # a newer round owns the job
+    response = await client.post("/run", json=job)
+    assert response.json() == {"answer": "Answer"}
+    assert len(paths(context_api, "get_file")) == 1
+    assert paths(context_api, "save_file_text") == []
+
+
+async def test_the_round_without_a_context_api_is_unchanged_by_files(
+    client: httpx2.AsyncClient, use_model: UseModel, file_reader: ReaderStub
+):
+    requests = use_model(lambda messages, info: text("Answer"))
+    await client.post("/run", json=run_body("Just text"))
+    assert "Attached file" not in prompts(requests[0])[0]
+    assert file_reader.requests == []
+
+
+async def test_the_readers_spend_counts_in_the_rounds_tokens(
+    client: httpx2.AsyncClient,
+    use_model: UseModel,
+    task_files: list[dict[str, object]],
+    stored_files: dict[str, tuple[bytes, str]],
+    context_api: list[httpx2.Request],
+    file_reader: ReaderStub,
+    caplog: pytest.LogCaptureFixture,
+):
+    use_model(lambda messages, info: text("Answer"))
+    caplog.set_level("INFO", logger="agent.solver")
+
+    def round_tokens() -> int:
+        line = next(r.getMessage() for r in reversed(caplog.records) if "[round]" in r.getMessage())
+        return int(line.split("tokens ")[1].split(" ")[0].rstrip(","))
+
+    await client.post("/run", json=run_body(context=grant()))
+    without = round_tokens()
+    attach(task_files, stored_files, "page.png", "image/png", b"png bytes")
+    file_reader.answer = "word " * 400
+    await client.post("/run", json=run_body(context=grant()))
+    assert len(file_reader.requests) == 1
+    assert round_tokens() > without + 400
+
+
+async def test_the_picker_and_curator_read_the_typed_text_and_only_the_heads_of_files(
+    client: httpx2.AsyncClient,
+    use_model: UseModel,
+    context_api: list[httpx2.Request],
+    task_files: list[dict[str, object]],
+    stored_files: dict[str, tuple[bytes, str]],
+    picker: PickerStub,
+    curator: CuratorStub,
+    orchestrator_requests: list[list[ModelMessage]],
+):
+    attach(task_files, stored_files, "notes.txt", "text/plain", b"a" * 1_500 + b"b" * 1_500)
+    use_model(lambda messages, info: text("Answer"))
+    await client.post("/run", json=run_body(context=grant()))
+
+    picked = prompts(picker.requests[0])[0]
+    assert f"--- Attached file 1: notes.txt {LABEL} ---\n" + "a" * 1_000 + "\n--- End" in picked
+    assert "a" * 1_001 not in picked
+    assert "Solve x^2 = 4" in picked
+
+    curated = prompts(curator.requests[0])[0]
+    assert "a" * 1_500 + "b" * 500 + "\n--- End of attached file 1 ---" in curated
+    assert "b" * 501 not in curated
+    assert "Solve x^2 = 4" in curated
+    assert "b" * 1_500 in prompts(orchestrator_requests[0])[0]  # the roles that answer read it all
+
+
+async def test_reading_files_is_outside_the_rounds_deadline(
+    client: httpx2.AsyncClient,
+    context_api: list[httpx2.Request],
+    task_files: list[dict[str, object]],
+    stored_files: dict[str, tuple[bytes, str]],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def slow_reader(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        await asyncio.sleep(0.6)
+        return text("Transcribed page")
+
+    patch_models(monkeypatch, lambda messages, info: text("Answer"), reader=slow_reader)
+    monkeypatch.setattr(solver, "ROUND_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(solver, "ROUND_GRACE_SECONDS", 0)
+    attach(task_files, stored_files, "page.png", "image/png", b"png bytes")
+    response = await client.post("/run", json=run_body(context=grant()))
+    assert response.json() == {"answer": "Answer"}
+
+
+async def test_the_readers_spend_is_logged_when_the_round_fails(
+    client: httpx2.AsyncClient,
+    context_api: list[httpx2.Request],
+    task_files: list[dict[str, object]],
+    stored_files: dict[str, tuple[bytes, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    async def slow(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        await asyncio.sleep(5)
+        return text("late")
+
+    patch_models(monkeypatch, slow, slow, reader=lambda messages, info: text("word " * 300))
+    monkeypatch.setattr(solver, "ROUND_TIMEOUT_SECONDS", 0.05)
+    caplog.set_level("INFO", logger="agent.solver")
+    attach(task_files, stored_files, "page.png", "image/png", b"png bytes")
+    with pytest.raises(TimeoutError):
+        await client.post("/run", json=run_body(context=grant()))
+    lines = [r.getMessage() for r in caplog.records if "[reader] Round" in r.getMessage()]
+    assert len(lines) == 1
+    assert int(lines[0].split("tokens ")[1].split(",")[0]) > 300
+    assert not any("[round]" in r.getMessage() for r in caplog.records)
+
+
+async def test_the_readers_spend_is_logged_when_reading_itself_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    spent = solver.Spend(tokens=7, cost=0.25)
+    caplog.set_level("INFO", logger="agent.solver")
+    solver._log_reading(AgentRun(job_id=uuid4(), round=1, text="x"), spent)  # pyright: ignore[reportPrivateUsage]
+    assert "tokens 7, cost $0.2500" in caplog.records[-1].getMessage()

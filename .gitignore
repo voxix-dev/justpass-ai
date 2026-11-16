@@ -6,6 +6,7 @@ __pycache__/
 .coverage
 coverage.xml
 .env
+.data/
 *.kubeconfig
 deploy/local/.identity/
 node_modules/

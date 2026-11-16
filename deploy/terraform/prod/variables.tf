@@ -21,7 +21,7 @@ variable "workload_identity_pool_id" {
 
 variable "deletion_protection" {
   type        = bool
-  description = "Refuse to destroy the database and the Cloud Run service."
+  description = "Refuse to destroy the database, the Cloud Run service and a non-empty uploads bucket."
   default     = true
 }
 
@@ -37,7 +37,7 @@ variable "api_image_digest" {
 
 variable "env" {
   type        = map(string)
-  description = "More environment for the API: GCS_BUCKET, ..."
+  description = "More environment for the API. GCS_BUCKET is always the uploads bucket."
   default     = {}
 }
 

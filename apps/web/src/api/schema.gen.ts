@@ -4,6 +4,51 @@
  */
 
 export interface paths {
+    "/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload File
+         * @description Store a file sent as the request body, with its type as the Content-Type.
+         *
+         *     A missing or invalid Content-Type counts as application/octet-stream.
+         */
+        post: operations["upload_file_files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get File
+         * @description One of the signed-in user's files; 404 for a missing one or another user's.
+         *
+         *     Images are shown in the page and everything else is a download, with headers that stop an
+         *     uploaded page or SVG from running on the app's origin.
+         */
+        get: operations["get_file_files__file_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -40,9 +85,6 @@ export interface paths {
         /**
          * Create Job
          * @description Store a new job with its first round and queue it.
-         *
-         *     The user row is made with the first job. Its is_anonymous follows the token, since an
-         *     anonymous user who links an account keeps the uid.
          */
         post: operations["create_job_jobs_post"];
         delete?: never;
@@ -147,6 +189,23 @@ export interface components {
             /** Text */
             text: string;
         };
+        /**
+         * FileOut
+         * @description An uploaded file. Give its id to POST /jobs.
+         */
+        FileOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Mimetype */
+            mimeType: string;
+            /** Name */
+            name: string;
+            /** Size */
+            size: number;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -154,8 +213,28 @@ export interface components {
         };
         /** JobCreate */
         JobCreate: {
+            /**
+             * Files
+             * @default []
+             */
+            files: string[];
             /** Text */
-            text: string;
+            text?: string | null;
+        };
+        /**
+         * JobFile
+         * @description A file of a job, as the web app lists and fetches it (GET /files/{id}).
+         */
+        JobFile: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Mimetype */
+            mimeType: string;
+            /** Name */
+            name: string;
         };
         /**
          * JobOut
@@ -175,6 +254,8 @@ export interface components {
             failedFeedback: string | null;
             /** Feedback */
             feedback: string | null;
+            /** Files */
+            files: components["schemas"]["JobFile"][];
             /**
              * Id
              * Format: uuid
@@ -232,6 +313,136 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    upload_file_files_post: {
+        parameters: {
+            query?: {
+                /** @description The file's name, as the student has it */
+                name?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "*/*": string;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileOut"];
+                };
+            };
+            /** @description Missing, invalid or expired Firebase ID token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The file is over 20 MiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The bytes are not an image of the declared type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The body is empty */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The database or Google's token signing keys cannot be reached */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_file_files__file_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+            /** @description Missing, invalid or expired Firebase ID token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such file for this user */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The database or Google's token signing keys cannot be reached */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     health_health_get: {
         parameters: {
             query?: never;

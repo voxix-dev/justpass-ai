@@ -11,21 +11,31 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 from pydantic.alias_generators import to_camel
-from sqlalchemy import ScalarSelect, Select, and_, func, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import ScalarSelect, Select, and_, any_, func, select
+from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from api.auth.current_user import CurrentUser
+from api.auth.firebase import AuthUser
 from api.db import get_session
 from api.dispatcher import Dispatcher
-from api.tables import Artifact, Job, JobRound, User
+from api.tables import Artifact, File, Job, JobRound, User
 from shared.models import ArtifactKind, JobStatus, Level
 
 LIST_LIMIT = 100
 TITLE_LENGTH = 80
+MAX_FILES = 5
+FILE_TITLE = "File task"
 
 
 def _visible(text: str) -> bool:
@@ -55,7 +65,14 @@ FeedbackText = Annotated[
 class JobCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    text: TaskText
+    text: TaskText | None = None
+    files: Annotated[list[uuid.UUID], Field(max_length=MAX_FILES)] = []  # ids from POST /files
+
+    @model_validator(mode="after")
+    def _has_input(self) -> JobCreate:
+        if self.text is None and not self.files:
+            raise ValueError("Add the task as text or a file.")
+        return self
 
 
 class Review(BaseModel):
@@ -95,6 +112,16 @@ JOBS_AUTH: Responses = {
 }
 
 
+class JobFile(BaseModel):
+    """A file of a job, as the web app lists and fetches it (GET /files/{id})."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    id: uuid.UUID
+    name: str
+    mime_type: str
+
+
 class JobOut(BaseModel):
     """A job as the web app shows it. `done` covers awaiting_review, accepted and expired."""
 
@@ -104,7 +131,8 @@ class JobOut(BaseModel):
     status: Literal["queued", "running", "done", "failed"]
     created_at: datetime
     title: str  # first line of the question
-    text: str
+    text: str  # empty for a job with files only
+    files: list[JobFile]  # in the order the student gave them
     result: str | None  # Markdown with $inline$ and $$display$$ math, set when done
     error: str | None
     accepted: bool
@@ -168,9 +196,28 @@ def _shown_ordinal(job_id: Any) -> ScalarSelect[int]:
     )
 
 
-def _jobs(user_id: str) -> Select[Job, int, str | None, str | None, str | None]:
-    """The user's jobs with the round the student counts, its answer and the feedback of a newer
-    round that failed.
+def _job_files(job: Any) -> ScalarSelect[list[dict[str, Any]] | None]:
+    """A job's files as JSON objects (id, name, mimeType) in `file_keys` order, or NULL if it has
+    none."""
+    one = func.jsonb_build_object("id", File.id, "name", File.name, "mimeType", File.mime_type)
+    return (
+        select(
+            func.jsonb_agg(
+                aggregate_order_by(one, func.array_position(job.file_keys, File.storage_key)),
+                type_=JSONB,
+            )
+        )
+        .where(File.user_id == job.user_id, File.storage_key == any_(job.file_keys))
+        .correlate(Job)
+        .scalar_subquery()
+    )
+
+
+def _jobs(
+    user_id: str,
+) -> Select[Job, int, str | None, str | None, str | None, list[dict[str, Any]] | None]:
+    """The user's jobs with the round the student counts, its answer, the feedback of a newer
+    round that failed and their files.
 
     One statement, so a response never mixes two rounds of a job that is being revised.
     """
@@ -183,7 +230,14 @@ def _jobs(user_id: str) -> Select[Job, int, str | None, str | None, str | None]:
     )
     failed = aliased(JobRound)
     return (
-        select(Job, _shown_ordinal(Job.id), JobRound.feedback, Artifact.content, failed.feedback)
+        select(
+            Job,
+            _shown_ordinal(Job.id),
+            JobRound.feedback,
+            Artifact.content,
+            failed.feedback,
+            _job_files(Job),
+        )
         .join(JobRound, and_(JobRound.job_id == Job.id, JobRound.number == shown))
         .outerjoin(
             failed,
@@ -212,22 +266,37 @@ def _out(
     feedback: str | None,
     answer: str | None,
     failed_feedback: str | None,
+    files: list[dict[str, Any]] | None,
 ) -> JobOut:
     """A row of _jobs() as the web app shows it."""
     text = job.input_text or ""
+    listed = [JobFile.model_validate(f) for f in files or []]
     shown = _STATUS[job.status]
     return JobOut(
         id=job.id,
         status=shown,
         created_at=job.created_at,
-        title=_title(text),
+        title=_title(text) if text else _title(listed[0].name) if listed else FILE_TITLE,
         text=text,
+        files=listed,
         result=answer if shown == "done" else None,
         error=FAILED_MESSAGE if shown == "failed" else None,
         accepted=job.status == JobStatus.ACCEPTED,
         round=round_number,
         feedback=feedback,
         failed_feedback=failed_feedback,
+    )
+
+
+async def ensure_user(session: AsyncSession, user: AuthUser) -> None:
+    """Make the user's row if it is not there yet.
+
+    Its is_anonymous follows the token, since an anonymous user who links an account keeps the uid.
+    """
+    await session.execute(
+        insert(User)
+        .values(id=user.uid, is_anonymous=user.is_anonymous)
+        .on_conflict_do_update(index_elements=[User.id], set_={"is_anonymous": user.is_anonymous})
     )
 
 
@@ -274,16 +343,19 @@ async def list_jobs(user: CurrentUser, session: Session) -> list[JobOut]:
 async def create_job(
     body: JobCreate, user: CurrentUser, session: Session, dispatcher: Dispatch
 ) -> JobOut:
-    """Store a new job with its first round and queue it.
-
-    The user row is made with the first job. Its is_anonymous follows the token, since an
-    anonymous user who links an account keeps the uid.
-    """
-    await session.execute(
-        insert(User)
-        .values(id=user.uid, is_anonymous=user.is_anonymous)
-        .on_conflict_do_update(index_elements=[User.id], set_={"is_anonymous": user.is_anonymous})
-    )
+    """Store a new job with its first round and queue it."""
+    await ensure_user(session, user)
+    ids = list(dict.fromkeys(body.files))
+    files: dict[uuid.UUID, File] = {}
+    if ids:
+        found = await session.scalars(
+            select(File).where(File.id.in_(ids), File.user_id == user.uid)
+        )
+        files = {file.id: file for file in found}
+    if len(files) != len(ids):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "A file is missing. Add it again."
+        )
     # shortcut: the web app does not ask for these yet.
     job = Job(
         user_id=user.uid,
@@ -291,6 +363,7 @@ async def create_job(
         level=Level.HIGH_SCHOOL,
         language="en",
         input_text=body.text,
+        file_keys=[files[i].storage_key for i in ids],
     )
     session.add(job)
     await session.flush()

@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from api import context, context_token, jobs
+from api import context, context_token, files, jobs
 from api.agents import agents_from_env
 from api.db import DATABASE_DOWN, open_session
 from api.dispatcher import Dispatcher
@@ -23,20 +23,34 @@ log = logging.getLogger("uvicorn.error")
 
 
 class BodyLimit:
-    """Refuse bodies over MAX_BODY with a 413, counting what arrives so chunked ones are covered."""
+    """Refuse bodies over MAX_BODY with a 413, counting what arrives so chunked ones are covered.
+
+    Uploading a file may send up to MAX_FILE.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         seen = 0
+        path = scope.get("path", "")
+        root = scope.get("root_path", "")
+        if root and path.startswith(root + "/"):
+            path = path[len(root) :]
+        upload = scope["type"] == "http" and scope["method"] == "POST" and path == "/files"
+        limit = files.MAX_FILE if upload else MAX_BODY
 
         async def limited() -> Message:
             nonlocal seen
             message = await receive()
             seen += len(message.get("body", b""))
-            if seen > MAX_BODY:
-                raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "The request is too large")
+            if seen > limit:
+                raise HTTPException(
+                    status.HTTP_413_CONTENT_TOO_LARGE,
+                    "The file is too large. Use one under 20 MB."
+                    if upload
+                    else "The request is too large",
+                )
             return message
 
         await self.app(scope, limited, send)
@@ -58,6 +72,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Homework API", version="0.0.0", lifespan=lifespan)
 app.add_middleware(BodyLimit)
 app.include_router(jobs.router)
+app.include_router(files.router)
 app.include_router(context.router)
 
 

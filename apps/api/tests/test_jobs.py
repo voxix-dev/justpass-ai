@@ -20,7 +20,8 @@ from api.db import get_session
 from api.dispatcher import MAX_CLAIMS, Dispatcher
 from api.jobs import _STATUS, FAILED_MESSAGE, get_dispatcher
 from api.main import MAX_BODY, MAX_ERRORS, app, lifespan
-from api.tables import Artifact, Job, JobRound, User
+from api.storage import LocalStorage
+from api.tables import Artifact, File, Job, JobRound, User
 from shared.agent_run import AgentAnswer, AgentRun
 from shared.models import ArtifactKind, JobStatus, Level
 
@@ -203,8 +204,8 @@ async def test_a_new_job_is_queued_until_the_agent_answers(
 async def test_create_solves_the_job(create: Create, session: AsyncSession):
     job = await create(f"  {'a' * 90}\nsecond line  ")
     assert job.keys() == {
-        "id", "status", "createdAt", "title", "text", "result", "error", "accepted", "round",
-        "feedback", "failedFeedback",
+        "id", "status", "createdAt", "title", "text", "files", "result", "error", "accepted",
+        "round", "feedback", "failedFeedback",
     }  # fmt: skip
     assert job["status"] == "done"
     assert (job["round"], job["feedback"], job["error"], job["accepted"]) == (1, None, None, False)
@@ -1379,3 +1380,110 @@ async def test_creating_a_job_follows_the_users_anonymous_flag(
     assert (await client.post("/jobs", json={"text": "Second"})).status_code == 201
     assert await session.scalar(select(User.is_anonymous).where(User.id == ANA.uid)) is False
     assert len((await client.get("/jobs")).json()) == 2
+
+
+JPEG = b"\xff\xd8\xff\xe0photo"
+
+
+async def upload(
+    client: httpx2.AsyncClient,
+    data: bytes = JPEG,
+    name: str = "photo.jpg",
+    mime_type: str = "image/jpeg",
+) -> str:
+    response = await client.post(
+        "/files", params={"name": name}, content=data, headers={"content-type": mime_type}
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+def listed(file_id: str, name: str, mime_type: str) -> dict:
+    return {"id": file_id, "name": name, "mimeType": mime_type}
+
+
+async def test_a_job_can_be_files_only(
+    client: httpx2.AsyncClient, dispatcher: StepDispatcher, storage: LocalStorage
+):
+    file = await upload(client, b"%PDF-1.7", "Homework 3.pdf", "application/pdf")
+    response = await client.post("/jobs", json={"files": [file]})
+    assert response.status_code == 201
+    job = response.json()
+    assert (job["title"], job["text"]) == ("Homework 3.pdf", "")
+    assert job["files"] == [listed(file, "Homework 3.pdf", "application/pdf")]
+    await dispatcher.drain()
+    assert (await client.get(f"/jobs/{job['id']}")).json()["status"] == "done"
+
+
+async def test_the_title_of_a_files_only_job_is_the_first_file_name_cut(
+    client: httpx2.AsyncClient, storage: LocalStorage
+):
+    long = "n" * 100 + ".pdf"
+    a = await upload(client, b"a", long, "application/pdf")
+    b = await upload(client, b"b", "second.pdf", "application/pdf")
+    job = (await client.post("/jobs", json={"files": [a, b]})).json()
+    assert job["title"] == "n" * 79 + "…"
+    job = (await client.post("/jobs", json={"files": [b, a]})).json()
+    assert job["title"] == "second.pdf"
+
+
+async def test_a_job_can_have_text_and_files_in_order(
+    client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage
+):
+    a = await upload(client, JPEG + b"a", "a.jpg")
+    b = await upload(client, b"b", "b.docx", "application/vnd.openxmlformats-officedocument")
+    c = await upload(client, b"c", "c", "garbage")
+    response = await client.post("/jobs", json={"text": "Solve x", "files": [c, a, c, b]})
+    job = response.json()
+    assert job["title"] == "Solve x"
+    assert job["files"] == [
+        listed(c, "c", "application/octet-stream"),
+        listed(a, "a.jpg", "image/jpeg"),
+        listed(b, "b.docx", "application/vnd.openxmlformats-officedocument"),
+    ]  # a repeated id counts once
+    assert (await client.get(f"/jobs/{job['id']}")).json() == job
+    assert [j["files"] for j in (await client.get("/jobs")).json()] == [job["files"]]
+    row = await session.get_one(Job, uuid.UUID(job["id"]), populate_existing=True)
+    assert [k.rsplit("/", 1)[1] for k in row.file_keys] == [c, a, b]
+
+
+async def test_a_job_without_files_has_an_empty_list(create: Create):
+    assert (await create())["files"] == []
+
+
+async def test_an_unknown_file_is_422(client: httpx2.AsyncClient, storage: LocalStorage):
+    file = await upload(client)
+    response = await client.post("/jobs", json={"files": [file, str(uuid.uuid4())]})
+    assert response.status_code == 422
+    assert response.json() == {"detail": "A file is missing. Add it again."}
+
+
+async def test_another_users_file_is_422(
+    client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage
+):
+    session.add(User(id="bob", is_anonymous=False))
+    await session.flush()
+    file = File(
+        user_id="bob",
+        storage_key="users/bob/uploads/1",
+        name="x.pdf",
+        mime_type="application/pdf",
+        size_bytes=1,
+    )
+    session.add(file)
+    await session.flush()
+    response = await client.post("/jobs", json={"files": [str(file.id)]})
+    assert response.status_code == 422
+
+
+async def test_more_than_five_files_is_422(client: httpx2.AsyncClient, storage: LocalStorage):
+    files = [await upload(client, JPEG + bytes([i])) for i in range(6)]
+    assert (await client.post("/jobs", json={"files": files[:5]})).status_code == 201
+    assert (await client.post("/jobs", json={"files": files})).status_code == 422
+
+
+@pytest.mark.parametrize("body", [{}, {"files": []}, {"text": None}, {"text": None, "files": []}])
+async def test_a_job_needs_text_or_a_file(client: httpx2.AsyncClient, body: dict):
+    response = await client.post("/jobs", json=body)
+    assert response.status_code == 422
+    assert "Add the task as text or a file." in response.text

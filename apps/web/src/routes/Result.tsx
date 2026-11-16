@@ -2,7 +2,8 @@ import { Component, lazy, Suspense, useEffect, useRef, useState, type FormEvent,
 import { Link, useParams } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronLeft, FlaskConical, LoaderCircle } from 'lucide-react'
-import { acceptJob, sendFeedback, type Job } from '@/api/jobs'
+import { acceptJob, INLINE_IMAGE_TYPES, sendFeedback, type Job } from '@/api/jobs'
+import { DownloadButton, FileThumb } from '@/components/FileThumb'
 import { ErrorState, Skeleton, StatusBadge } from '@/components/bits'
 import { Button } from '@/components/ui/button'
 import { ago, isConflict, isNotFound, isPending, useJob } from '@/lib/jobs'
@@ -119,10 +120,21 @@ function JobDetail({ job }: { job: Job }) {
         {job.round > 1 && !pending && <p className="mt-3 text-muted-foreground">Revised answer, round {job.round}.</p>}
       </header>
 
-      {job.text !== job.title && (
+      {(job.text !== job.title || job.files.length > 0) && (
         <section aria-labelledby="q" className="mt-6 rounded-2xl border-2 border-border bg-card p-4">
           <h2 id="q" className="text-xl">The full task</h2>
-          <p dir="auto" className="mt-2 whitespace-pre-wrap break-words">{job.text}</p>
+          {job.text && (job.text !== job.title || job.files.length > 0) && <p dir="auto" className="mt-2 whitespace-pre-wrap break-words">{job.text}</p>}
+          {job.files.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-3">
+              {job.files.map((f, i) =>
+                INLINE_IMAGE_TYPES.includes(f.mimeType) ? (
+                  <FileThumb key={f.id} file={f} alt={`File ${i + 1} of the task: ${f.name}`} className="h-40 max-w-full rounded-xl border-2 border-border bg-muted object-cover" />
+                ) : (
+                  <DownloadButton key={f.id} file={f} />
+                ),
+              )}
+            </div>
+          )}
         </section>
       )}
 
@@ -145,7 +157,7 @@ function JobDetail({ job }: { job: Job }) {
               <h2 className="text-3xl text-coral">Could not solve this one</h2>
               <p className="mt-2">{job.error ?? 'Something went wrong while solving.'}</p>
               <p className="mt-1 text-muted-foreground">
-                <Link to="/new" state={{ text: job.text }} className="font-bold text-volt underline underline-offset-4">
+                <Link to="/new" state={{ text: job.text, files: job.files.map(({ id, name, mimeType }) => ({ id, name, mimeType })) }} className="font-bold text-volt underline underline-offset-4">
                   Send it again
                 </Link>
                 , maybe worded a different way.
