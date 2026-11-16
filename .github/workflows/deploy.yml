@@ -2,11 +2,11 @@ name: deploy
 
 # After ci passes on main, applies the production Terraform (deploy/terraform/prod) for the tip of main, then applies
 # Substrate to the GKE cluster it made (after preparing its database) and stores what the API reads from the cluster
-# in Secret Manager (`cluster` job), then deploys the API to Cloud Run and the web app to Firebase Hosting, which
-# rewrites /api/** to Cloud Run. The API authenticates to Substrate with Google ID tokens it fetches itself from the
-# Cloud Run metadata server, so nothing expires between deploys.
-# The API image is the one ci's `images` job pushed to GHCR; it is deployed by digest through the Artifact Registry
-# remote repository that proxies GHCR. Terraform ignores the Cloud Run image, so applying never rolls a deploy back.
+# in Secret Manager (`cluster` job), then deploys the web app to Firebase Hosting, which rewrites /api/** to Cloud
+# Run. The API authenticates to Substrate with Google ID tokens it fetches itself from the Cloud Run metadata server,
+# so nothing expires between deploys.
+# The API image is the one ci's `images` job pushed to GHCR. Terraform deploys it by digest through the Artifact
+# Registry remote repository that proxies GHCR, in the same Cloud Run revision as the environment it was built for.
 # Without GCP_PROJECT_ID nothing runs. The repository variables are the outputs of deploy/terraform/bootstrap, applied
 # by hand once, and the bucket that holds the Terraform state:
 #   GCP_PROJECT_ID, GCP_REGION, GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_TERRAFORM_SERVICE_ACCOUNT, GCP_TF_STATE_BUCKET
@@ -39,7 +39,6 @@ jobs:
       current: ${{ steps.tip.outputs.current }}
       cluster: ${{ steps.out.outputs.cluster }}
       deployer: ${{ steps.out.outputs.deployer }}
-      image_repository: ${{ steps.out.outputs.image_repository }}
     steps:
       # An older run that finishes late must not roll back a newer deploy.
       - id: tip
@@ -75,20 +74,33 @@ jobs:
           terraform -chdir=deploy/terraform/prod init -input=false \
             -backend-config=bucket="$STATE_BUCKET" -backend-config=prefix=prod
       - if: steps.tip.outputs.current == 'true'
+        id: image
+        name: Resolve the digest of the image ci pushed
+        env:
+          REF: ghcr.io/voxix-dev/justpass-ai/api:${{ github.event.workflow_run.head_sha }}
+        # Cloud Run swaps an index digest for its linux/amd64 image's, which every plan would show as a change.
+        run: |
+          digest=$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r '
+            if .manifests then .manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")
+            | .digest else .digest end')
+          case "$digest" in sha256:*) ;; *) echo "::error::No image $REF; did the ci images job push it?"; exit 1 ;; esac
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - if: steps.tip.outputs.current == 'true'
         name: Apply the production Terraform
         env:
           PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           REGION: ${{ vars.GCP_REGION }}
+          DIGEST: ${{ steps.image.outputs.digest }}
           TF_VAR_openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+        # By digest, not by tag: a tag can move. Terraform waits for the new revision to be ready and fails otherwise.
         run: |
           terraform -chdir=deploy/terraform/prod apply -input=false -auto-approve \
-            -var project_id="$PROJECT_ID" -var region="$REGION"
+            -var project_id="$PROJECT_ID" -var region="$REGION" -var api_image_digest="$DIGEST"
       - if: steps.tip.outputs.current == 'true'
         id: out
         run: |
           out() { terraform -chdir=deploy/terraform/prod output -raw "$1"; }
           echo "deployer=$(out GCP_DEPLOYER_SERVICE_ACCOUNT)" >> "$GITHUB_OUTPUT"
-          echo "image_repository=$(out GCP_IMAGE_REPOSITORY)" >> "$GITHUB_OUTPUT"
           echo "cluster=$(terraform -chdir=deploy/terraform/prod output -json cluster | jq -c .)" >> "$GITHUB_OUTPUT"
 
   # Applies Substrate to the cluster and stores what the API reads from it (secret ids only in the output, no values).
@@ -178,48 +190,10 @@ jobs:
             gcloud secrets versions add "$(jq -r ".secrets.$key" <<<"$CLUSTER")" --data-file="$RUNNER_TEMP/cluster/$f" >/dev/null
           done
 
-  api:
+  web-build:
     needs: [infra, cluster]
     if: >-
       needs.infra.result == 'success' && needs.infra.outputs.current == 'true' && needs.cluster.result == 'success'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          persist-credentials: false
-      - id: auth
-        uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ needs.infra.outputs.deployer }}
-          token_format: access_token
-      - id: image
-        name: Resolve the digest of the image ci pushed
-        env:
-          REF: ghcr.io/voxix-dev/justpass-ai/api:${{ github.event.workflow_run.head_sha }}
-        # Cloud Run swaps an index digest for its linux/amd64 image's, so take that one or the revision check fails.
-        run: |
-          digest=$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' | jq -r '
-            if .manifests then .manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")
-            | .digest else .digest end')
-          case "$digest" in sha256:*) ;; *) echo "::error::No image $REF; did the ci images job push it?"; exit 1 ;; esac
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-      - name: Deploy to Cloud Run
-        run: deploy/gcp/deploy-api.sh
-        env:
-          # By digest, not by tag: a tag can move, so the revision check proves this exact build is serving.
-          IMAGE: ${{ needs.infra.outputs.image_repository }}@${{ steps.image.outputs.digest }}
-          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-          REGION: ${{ vars.GCP_REGION }}
-          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
-
-  web-build:
-    needs: api
-    if: needs.api.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read # no id-token: dependency install scripts must not be able to mint a token

@@ -1,7 +1,7 @@
 # Production on GCP, applied by the deploy workflow on every merge: the API on Cloud Run (pulling the image CI pushes
-# to GHCR through an Artifact Registry remote repository), Postgres on Cloud SQL, and the identity GitHub Actions
-# deploys the API and the web app with, and the GKE cluster Substrate runs on (modules/cluster). What has to exist before the workflow can run (Firebase project and Hosting
-# site, Workload Identity pool, the Terraform service account) is deploy/terraform/bootstrap. Substrate is the only
+# to GHCR through an Artifact Registry remote repository), Postgres on Cloud SQL, the identity GitHub Actions deploys
+# the web app with, and the GKE cluster Substrate runs on (modules/cluster). What has to exist before the workflow can
+# run (Firebase project and Hosting site, Workload Identity pool, the Terraform service account) is deploy/terraform/bootstrap. Substrate is the only
 # thing that runs on Kubernetes, so the manifests are in deploy/gke, not here.
 # Test the module locally first: deploy/gcp/local-e2e.sh.
 
@@ -15,6 +15,9 @@ locals {
     "secretmanager.googleapis.com",
     "sqladmin.googleapis.com",
   ]
+
+  # The image CI pushed to GHCR, pulled by digest through the Artifact Registry remote repository.
+  api_image = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.ghcr.repository_id}/${var.github_repository}/api@${var.api_image_digest}"
 }
 
 resource "google_project_service" "api" {
@@ -39,7 +42,7 @@ module "api" {
 
   project_id         = var.project_id
   region             = var.region
-  image              = var.bootstrap_image
+  image              = local.api_image
   openrouter_api_key = var.openrouter_api_key
   env = merge({
     FIREBASE_PROJECT_ID = var.project_id
@@ -104,11 +107,11 @@ resource "google_artifact_registry_repository" "ghcr" {
   depends_on = [google_project_service.api]
 }
 
-# GitHub Actions deploys as this service account, with a short-lived token from its OIDC identity. The Workload
-# Identity pool is in bootstrap.
+# GitHub Actions deploys the web app as this service account, with a short-lived token from its OIDC identity. The
+# Workload Identity pool is in bootstrap.
 resource "google_service_account" "deployer" {
   account_id   = "github-deployer"
-  display_name = "GitHub Actions deploys the API"
+  display_name = "GitHub Actions deploys the web app"
 
   depends_on = [google_project_service.api]
 }
@@ -117,14 +120,6 @@ resource "google_service_account_iam_member" "deployer_from_github" {
   service_account_id = google_service_account.deployer.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "principalSet://iam.googleapis.com/projects/${data.google_project.this.number}/locations/global/workloadIdentityPools/${var.workload_identity_pool_id}/attribute.repository/${var.github_repository}"
-}
-
-# Cloud Run checks that whoever deploys an image can read it.
-resource "google_artifact_registry_repository_iam_member" "deployer_reads" {
-  repository = google_artifact_registry_repository.ghcr.name
-  location   = var.region
-  role       = "roles/artifactregistry.reader"
-  member     = "serviceAccount:${google_service_account.deployer.email}"
 }
 
 # `firebase deploy --only hosting` as the deployer.
@@ -138,23 +133,14 @@ resource "google_project_iam_member" "deployer_firebase" {
   member  = "serviceAccount:${google_service_account.deployer.email}"
 }
 
-# The deploy script polls the deploy operation. Cloud Run checks run.operations.get on the project, not the service.
-resource "google_project_iam_member" "deployer_reads_operations" {
+moved {
+  from = google_project_iam_member.deployer_reads_operations
+  to   = google_project_iam_member.deployer_reads_run
+}
+
+# Read-only, for the Cloud Run service the /api/** rewrite names.
+resource "google_project_iam_member" "deployer_reads_run" {
   project = var.project_id
   role    = "roles/run.viewer"
   member  = "serviceAccount:${google_service_account.deployer.email}"
-}
-
-resource "google_cloud_run_v2_service_iam_member" "deployer_deploys" {
-  location = var.region
-  name     = module.api.service_name
-  role     = "roles/run.developer"
-  member   = "serviceAccount:${google_service_account.deployer.email}"
-}
-
-# A new revision runs as the API's service account, which deploying it counts as acting as.
-resource "google_service_account_iam_member" "deployer_acts_as_runtime" {
-  service_account_id = module.api.runtime_service_account_name
-  role               = "roles/iam.serviceAccountUser"
-  member             = "serviceAccount:${google_service_account.deployer.email}"
 }

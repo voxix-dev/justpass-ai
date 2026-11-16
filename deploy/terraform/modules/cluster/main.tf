@@ -137,11 +137,28 @@ resource "google_container_cluster" "substrate" {
   # Substrate needs 1.37 on the control plane and every node pool.
   min_master_version = "1.37"
 
-  # Upstream wants node auto-upgrade off on worker pools, because an upgrade drains a worker and an actor still awake
-  # when its grace period ends is lost. GKE keeps auto-upgrade on in every release channel, so the cluster is on none
-  # and the pool turns it off. The control plane still upgrades itself; node upgrades are done by hand.
+  # Upstream wants node upgrades off on worker pools, because an upgrade drains a worker and an actor still awake when
+  # its grace period ends is lost. GKE no longer lets new clusters go without a release channel, and keeps node
+  # auto-upgrade on in every channel. The exclusion below blocks minor and node upgrades until the version's end of
+  # support, which is the documented replacement for no channel. Patches reach the control plane only.
   release_channel {
-    channel = "UNSPECIFIED"
+    channel = "REGULAR"
+  }
+
+  maintenance_policy {
+    daily_maintenance_window {
+      start_time = "03:00"
+    }
+
+    maintenance_exclusion {
+      exclusion_name = "no-node-upgrades"
+      start_time     = timeadd(plantimestamp(), "5m") # GKE refuses a start in the past
+
+      exclusion_options {
+        scope             = "NO_MINOR_OR_NODE_UPGRADES"
+        end_time_behavior = "UNTIL_END_OF_SUPPORT"
+      }
+    }
   }
 
   datapath_provider = "ADVANCED_DATAPATH" # Dataplane V2
@@ -167,6 +184,12 @@ resource "google_container_cluster" "substrate" {
   remove_default_node_pool = true
   initial_node_count       = 1
 
+  # The exclusion's start is the first plan's time; later plans would move it, and GKE fills in its end. The
+  # exclusions are a set, so only the whole block can be ignored; change an existing cluster's exclusion with gcloud.
+  lifecycle {
+    ignore_changes = [maintenance_policy[0].maintenance_exclusion]
+  }
+
   depends_on = [google_compute_subnetwork.gke]
 }
 
@@ -187,7 +210,7 @@ resource "google_container_node_pool" "workers" {
 
   management {
     auto_repair  = true
-    auto_upgrade = false
+    auto_upgrade = true
   }
 
   node_config {
@@ -243,7 +266,8 @@ resource "google_service_account" "snapshot_transfer" {
 }
 
 # ate-api runs as the Cloud SQL account below once its Kubernetes service account is annotated with it, and as its own
-# Workload Identity principal before that: both need the snapshot grants.
+# Workload Identity principal before that: both need the snapshot grants. Grants to a Workload Identity principal wait
+# for the cluster, which creates the pool.
 locals {
   ate_api_members = {
     principal = local.ksa.ate_api
@@ -263,6 +287,8 @@ resource "google_storage_bucket_iam_member" "snapshots" {
   bucket   = google_storage_bucket.snapshots[local.snapshot_bucket].name
   role     = each.value.role
   member   = each.value.member
+
+  depends_on = [google_container_cluster.substrate]
 }
 
 # atelet reads the micro-VM sandbox assets with its own identity and gets nothing on the snapshots.
@@ -270,6 +296,8 @@ resource "google_storage_bucket_iam_member" "atelet_assets" {
   bucket = google_storage_bucket.snapshots[local.assets_bucket].name
   role   = "roles/storage.objectViewer"
   member = local.ksa.atelet
+
+  depends_on = [google_container_cluster.substrate]
 }
 
 resource "google_service_account_iam_member" "snapshot_transfer_token_creator" {
@@ -277,6 +305,8 @@ resource "google_service_account_iam_member" "snapshot_transfer_token_creator" {
   service_account_id = google_service_account.snapshot_transfer.name
   role               = "roles/iam.serviceAccountTokenCreator"
   member             = each.value
+
+  depends_on = [google_container_cluster.substrate]
 }
 
 # --- Database ---
@@ -293,6 +323,8 @@ resource "google_service_account_iam_member" "cloudsql_workload_identity" {
   service_account_id = google_service_account.cloudsql.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "serviceAccount:${local.wi_pool}[ate-system/ate-api-server]"
+
+  depends_on = [google_container_cluster.substrate]
 }
 
 resource "google_project_iam_member" "cloudsql" {

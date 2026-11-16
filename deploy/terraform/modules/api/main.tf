@@ -148,7 +148,7 @@ resource "google_cloud_run_v2_service" "api" {
   ingress             = "INGRESS_TRAFFIC_ALL"
   deletion_protection = var.deletion_protection
 
-  # Always serve the latest revision, which deploy-api.sh checks after a deploy.
+  # Always serve the latest revision; applying waits for it to be ready and fails if it is not.
   traffic {
     type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
     percent = 100
@@ -256,10 +256,9 @@ resource "google_cloud_run_v2_service" "api" {
     }
   }
 
-  # CI deploys the image (deploy/gcp/deploy-api.sh); Terraform only sets the first one.
+  # The image is part of the revision with the environment it was built for, so it is not ignored.
   lifecycle {
     ignore_changes = [
-      template[0].containers[0].image,
       client,
       client_version,
     ]

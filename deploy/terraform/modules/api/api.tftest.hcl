@@ -183,8 +183,8 @@ run "emulator_skips_the_vpc_and_secret_mounts" {
   }
 }
 
-# The state of the run above stays: a new image (CI's deploy) must not make Terraform redeploy the old one.
-run "ci_owns_the_image" {
+# The state of the run above stays: a new image must be rolled out by Terraform together with the environment.
+run "terraform_owns_the_image" {
   command = plan
 
   variables {
@@ -192,7 +192,7 @@ run "ci_owns_the_image" {
   }
 
   assert {
-    condition     = google_cloud_run_v2_service.api.template[0].containers[0].image == "example/api:1"
-    error_message = "Terraform must ignore changes to the image."
+    condition     = google_cloud_run_v2_service.api.template[0].containers[0].image == "example/api:2"
+    error_message = "A new image must change the Cloud Run revision template."
   }
 }

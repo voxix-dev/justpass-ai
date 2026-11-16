@@ -42,12 +42,13 @@ Cloud targets: [wiki: Architecture](https://github.com/voxix-dev/justpass-ai/wik
 - `terraform/prod/`: the module plus an Artifact Registry remote repository that proxies GHCR, where CI's `images`
   job pushes the API image (Cloud Run cannot pull from GHCR; deploys pull it through the proxy by digest) and the
   deployer service account. `.github/workflows/deploy.yml` applies it on every merge after `ci` passes (state prefix
-  `prod`), then deploys the API with `gcp/deploy-api.sh` and the web app to Firebase Hosting, which rewrites `/api/**`
-  to Cloud Run. Until `GCP_PROJECT_ID` is set that workflow does nothing. Terraform sets only the first image and
-  ignores it afterwards, so applying never rolls a deploy back.
+  `prod`) and then deploys the web app to Firebase Hosting, which rewrites `/api/**` to Cloud Run. Until
+  `GCP_PROJECT_ID` is set that workflow does nothing. The apply is also the API deploy: the workflow passes the digest
+  of the image `ci` pushed for the commit as `api_image_digest`, so one Cloud Run revision gets the new image and the
+  environment it expects.
 - `terraform/local/`: the module in floci-gcp. `gcp/local-e2e.sh` starts floci-gcp (`ENGINE=podman` for podman,
-  with `podman.socket` enabled), builds the API image, applies this root, deploys with the same
-  script CI uses and checks that the API answers from its database. `gcp/local-e2e.sh down` removes everything.
+  with `podman.socket` enabled), builds the API image, applies this root with that image
+  (`-var image=...`) and checks that the API answers from its database. `gcp/local-e2e.sh down` removes everything.
   CI runs it as `gcp-e2e`.
 
 ## GCP: Substrate on GKE
@@ -55,7 +56,7 @@ Cloud targets: [wiki: Architecture](https://github.com/voxix-dev/justpass-ai/wik
 - `terraform/modules/cluster/`: the GKE cluster with the internal load balancers for ate-api and the router, the
   private DNS zone for `ate-system.svc`, and the Secret Manager secrets the API reads (`ca`, `template`).
   Terraform creates each with a placeholder version. Its tests: `terraform test` in that directory.
-- The deploy workflow's `cluster` job (after `infra`, before `api`) first runs `gke/substrate-db.sql` on the
+- The deploy workflow's `cluster` job (after `infra`, before `web-build`) first runs `gke/substrate-db.sql` on the
   `substrate` database through the Cloud SQL Auth Proxy, as the `substrate_admin` user Terraform creates (the
   roles and schema ate-api needs). Then it runs `gke/sync.sh` against the cluster, with the agent image CI pushed for
   the commit, pinned by digest: it applies Substrate (v1.0.0) and the agents, trusts the API's Google identity in ate-api (and makes it an
