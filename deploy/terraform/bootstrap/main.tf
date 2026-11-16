@@ -1,6 +1,8 @@
 # Applied by hand once, by someone who owns the project:
 #   terraform init -backend-config=bucket=<state bucket> -backend-config=prefix=bootstrap
 #   terraform apply -var project_id=<project>
+# On a fresh project, also open the Firebase console, Authentication, Get started, once: prod/auth.tf imports the
+# Identity Platform config, which exists only after that.
 # It holds what the deploy workflow needs before it can run Terraform, and what Google cannot delete again
 # (the Firebase project and its default Hosting site). Everything else is deploy/terraform/prod,
 # which the deploy workflow applies.

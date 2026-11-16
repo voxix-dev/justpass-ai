@@ -1,8 +1,8 @@
 """Jobs API: students send homework, follow it, and accept the answer or ask for changes.
 
-For now there is no auth: every job belongs to one dev user. The agent works in the background (see
-dispatcher.py), so a new job comes back queued and the web app polls for the answer. The response
-shape is what the web app's screens use.
+Every job belongs to the Firebase user whose ID token comes with the request. The agent works in
+the background (see dispatcher.py), so a new job comes back queued and the web app polls for the
+answer. The response shape is what the web app's screens use.
 """
 
 import unicodedata
@@ -18,6 +18,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from api.auth.current_user import CurrentUser
 from api.db import get_session
 from api.dispatcher import Dispatcher
 from api.tables import Artifact, Job, JobRound, User
@@ -85,6 +86,13 @@ BAD_BODY: Responses = {
     413: {"model": Problem, "description": "The body is too large"},
 }
 UNAVAILABLE: Responses = {503: {"model": Problem, "description": "The database cannot be reached"}}
+JOBS_AUTH: Responses = {
+    401: {"model": Problem, "description": "Missing, invalid or expired Firebase ID token"},
+    503: {
+        "model": Problem,
+        "description": "The database or Google's token signing keys cannot be reached",
+    },
+}
 
 
 class JobOut(BaseModel):
@@ -111,12 +119,9 @@ def get_dispatcher(request: Request) -> Dispatcher:
     return request.app.state.dispatcher
 
 
-router = APIRouter(prefix="/jobs", tags=["jobs"], responses=UNAVAILABLE)
+router = APIRouter(prefix="/jobs", tags=["jobs"], responses=JOBS_AUTH)
 Session = Annotated[AsyncSession, Depends(get_session)]
 Dispatch = Annotated[Dispatcher, Depends(get_dispatcher)]
-
-# shortcut: no auth yet. Replace with the Firebase user once sign-in lands.
-DEV_USER = "dev-user"
 
 _STATUS: dict[JobStatus, Literal["queued", "running", "done", "failed"]] = {
     JobStatus.RECEIVED: "queued",
@@ -163,8 +168,8 @@ def _shown_ordinal(job_id: Any) -> ScalarSelect[int]:
     )
 
 
-def _jobs() -> Select[Job, int, str | None, str | None, str | None]:
-    """The dev user's jobs with the round the student counts, its answer and the feedback of a newer
+def _jobs(user_id: str) -> Select[Job, int, str | None, str | None, str | None]:
+    """The user's jobs with the round the student counts, its answer and the feedback of a newer
     round that failed.
 
     One statement, so a response never mixes two rounds of a job that is being revised.
@@ -197,7 +202,7 @@ def _jobs() -> Select[Job, int, str | None, str | None, str | None]:
                 Artifact.kind == ArtifactKind.FINAL,
             ),
         )
-        .where(Job.user_id == DEV_USER)
+        .where(Job.user_id == user_id)
     )
 
 
@@ -226,9 +231,9 @@ def _out(
     )
 
 
-async def _read(session: AsyncSession, job_id: uuid.UUID) -> JobOut:
+async def _read(session: AsyncSession, user_id: str, job_id: uuid.UUID) -> JobOut:
     """One job as the web app shows it; 404 for a missing job or another user's."""
-    row = (await session.execute(_jobs().where(Job.id == job_id))).one_or_none()
+    row = (await session.execute(_jobs(user_id).where(Job.id == job_id))).one_or_none()
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
     return _out(*row)
@@ -243,11 +248,11 @@ async def _newest_round(session: AsyncSession, job_id: uuid.UUID) -> int:
     return number
 
 
-async def _own_job(session: AsyncSession, job_id: uuid.UUID) -> Job:
-    """Load and lock one of the dev user's jobs, so two requests cannot change it at once."""
+async def _own_job(session: AsyncSession, user_id: str, job_id: uuid.UUID) -> Job:
+    """Load and lock one of the user's jobs, so two requests cannot change it at once."""
     job = await session.scalar(
         select(Job)
-        .where(Job.id == job_id, Job.user_id == DEV_USER)
+        .where(Job.id == job_id, Job.user_id == user_id)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
@@ -257,21 +262,31 @@ async def _own_job(session: AsyncSession, job_id: uuid.UUID) -> Job:
 
 
 @router.get("")
-async def list_jobs(session: Session) -> list[JobOut]:
-    """The dev user's newest jobs first, at most LIST_LIMIT."""
-    rows = await session.execute(_jobs().order_by(Job.created_at.desc(), Job.id).limit(LIST_LIMIT))
+async def list_jobs(user: CurrentUser, session: Session) -> list[JobOut]:
+    """The user's newest jobs first, at most LIST_LIMIT."""
+    rows = await session.execute(
+        _jobs(user.uid).order_by(Job.created_at.desc(), Job.id).limit(LIST_LIMIT)
+    )
     return [_out(*row) for row in rows]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, responses=BAD_BODY)
-async def create_job(body: JobCreate, session: Session, dispatcher: Dispatch) -> JobOut:
-    """Store a new job with its first round and queue it (the dev user is created once)."""
+async def create_job(
+    body: JobCreate, user: CurrentUser, session: Session, dispatcher: Dispatch
+) -> JobOut:
+    """Store a new job with its first round and queue it.
+
+    The user row is made with the first job. Its is_anonymous follows the token, since an
+    anonymous user who links an account keeps the uid.
+    """
     await session.execute(
-        insert(User).values(id=DEV_USER, is_anonymous=False).on_conflict_do_nothing()
+        insert(User)
+        .values(id=user.uid, is_anonymous=user.is_anonymous)
+        .on_conflict_do_update(index_elements=[User.id], set_={"is_anonymous": user.is_anonymous})
     )
     # shortcut: the web app does not ask for these yet.
     job = Job(
-        user_id=DEV_USER,
+        user_id=user.uid,
         subject="general",
         level=Level.HIGH_SCHOOL,
         language="en",
@@ -281,16 +296,16 @@ async def create_job(body: JobCreate, session: Session, dispatcher: Dispatch) ->
     await session.flush()
     session.add(JobRound(job_id=job.id, number=1))
     await session.flush()
-    out = await _read(session, job.id)
+    out = await _read(session, user.uid, job.id)
     await session.commit()
     dispatcher.start(job.id, 1)
     return out
 
 
 @router.get("/{job_id}", responses=NOT_FOUND)
-async def get_job(job_id: uuid.UUID, session: Session) -> JobOut:
-    """One of the dev user's jobs; 404 for a missing job or another user's."""
-    return await _read(session, job_id)
+async def get_job(job_id: uuid.UUID, user: CurrentUser, session: Session) -> JobOut:
+    """One of the user's jobs; 404 for a missing job or another user's."""
+    return await _read(session, user.uid, job_id)
 
 
 async def _check_review(session: AsyncSession, job: Job, seen: int, *allowed: JobStatus) -> None:
@@ -307,16 +322,16 @@ async def _check_review(session: AsyncSession, job: Job, seen: int, *allowed: Jo
 
 @router.post("/{job_id}/accept", responses=NOT_FOUND | NOT_IN_REVIEW | BAD_BODY)
 async def accept_job(
-    job_id: uuid.UUID, body: Review, session: Session, dispatcher: Dispatch
+    job_id: uuid.UUID, body: Review, user: CurrentUser, session: Session, dispatcher: Dispatch
 ) -> JobOut:
     """Accept the answer and schedule agent release after committing.
 
     Raise 404 for a missing job and 409 unless it is awaiting review on the submitted round.
     """
-    job = await _own_job(session, job_id)
+    job = await _own_job(session, user.uid, job_id)
     await _check_review(session, job, body.round, JobStatus.AWAITING_REVIEW)
     job.move_to(JobStatus.ACCEPTED, datetime.now(UTC))
-    out = await _read(session, job.id)
+    out = await _read(session, user.uid, job.id)
     await session.commit()
     dispatcher.release(job.id)
     return out
@@ -324,14 +339,18 @@ async def accept_job(
 
 @router.post("/{job_id}/feedback", responses=NOT_FOUND | NOT_IN_REVIEW | BAD_BODY)
 async def send_feedback(
-    job_id: uuid.UUID, body: FeedbackCreate, session: Session, dispatcher: Dispatch
+    job_id: uuid.UUID,
+    body: FeedbackCreate,
+    user: CurrentUser,
+    session: Session,
+    dispatcher: Dispatch,
 ) -> JobOut:
     """Queue the next round with the student's feedback and return the running job.
 
     Raise 404 for a missing job and 409 unless it is awaiting review or expired on the submitted
     round (accepted and failed are final).
     """
-    job = await _own_job(session, job_id)
+    job = await _own_job(session, user.uid, job_id)
     await _check_review(session, job, body.round, JobStatus.AWAITING_REVIEW, JobStatus.EXPIRED)
     number = (
         await _newest_round(session, job.id) + 1
@@ -339,7 +358,7 @@ async def send_feedback(
     session.add(JobRound(job_id=job.id, number=number, feedback=body.text))
     job.move_to(JobStatus.PROCESSING, datetime.now(UTC))
     await session.flush()
-    out = await _read(session, job.id)
+    out = await _read(session, user.uid, job.id)
     await session.commit()
     dispatcher.start(job.id, number)
     return out

@@ -69,7 +69,7 @@ chmod 644 "$template_tmp"
 mv "$template_tmp" deploy/local/.identity/mounted/template
 
 compose=("$tool" compose -f compose.yaml -f deploy/local/compose.yaml)
-"${compose[@]}" up -d --build --wait api context-uds context-relay
+"${compose[@]}" up -d --build --wait api auth context-uds context-relay
 
 # The Service context-api has no selector, so its endpoint is the relay's address on the kind network,
 # which is a new one whenever the container was recreated. Applying this again is harmless.

@@ -1,6 +1,6 @@
 # Points the API from the root compose.yaml at the local Substrate cluster, instead of its one agent,
 # and gives the actors a way to the Context API (and to nothing else on this machine):
-#   docker compose -f compose.yaml -f deploy/local/compose.yaml up -d --build --wait api context-uds context-relay
+#   docker compose -f compose.yaml -f deploy/local/compose.yaml up -d --build --wait api auth context-uds context-relay
 # deploy.sh does this, after identity.sh and forward.sh. Relative paths start at the repo root.
 services:
   api:
@@ -10,7 +10,8 @@ services:
     depends_on: !override
       db:
         condition: service_healthy
-    # Same as the image's command, on 127.0.0.1: no auth yet, and the host network has no port mapping.
+    # Same as the image's command, on 127.0.0.1: it accepts the emulator's tokens, and the host network has no
+    # port mapping.
     command: ["sh", "-c", "alembic upgrade head && exec uvicorn api.main:app --host 127.0.0.1 --port ${API_PORT:-8000}"]
     # The names on the serving certificates, which are the ones to verify through a port-forward too.
     extra_hosts:
@@ -19,6 +20,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://app:app@127.0.0.1:${DB_PORT:-5432}/app
       AGENT_URL: ""
+      FIREBASE_AUTH_EMULATOR_HOST: 127.0.0.1:9099
       # What the agents call, and the one destination their egress policy allows. The Service has no
       # selector: deploy.sh points its EndpointSlice at context-relay below, which is how an actor on
       # kind gets to an API that listens on 127.0.0.1 of this machine.
@@ -71,7 +73,7 @@ services:
       retries: 15
 
   # Listens on the kind network, so the cluster can reach it, and lets through only POSTs to the
-  # Context API: the Jobs API has no auth, and an actor must not see it. See the conf.
+  # Context API: an actor has no user's token and must not see the Jobs API. See the conf.
   # Its address on the kind network is new whenever the container is recreated: deploy.sh and e2e.sh
   # keep the Service's EndpointSlice in step with it.
   context-relay:

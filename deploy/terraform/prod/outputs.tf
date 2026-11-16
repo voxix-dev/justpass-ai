@@ -38,3 +38,17 @@ output "substrate_admin_password" {
   value     = module.cluster.substrate_admin_password
   sensitive = true
 }
+
+# The web app's Firebase config, which the deploy workflow gives the web build (VITE_FIREBASE_*). None of it is secret.
+output "firebase_web_api_key" {
+  value = data.google_firebase_web_app_config.web.api_key
+}
+
+output "firebase_web_app_id" {
+  value = google_firebase_web_app.web.app_id
+}
+
+# The Hosting domain, used as the web app's Firebase auth domain.
+output "firebase_auth_domain" {
+  value = local.hosting_domains[0]
+}

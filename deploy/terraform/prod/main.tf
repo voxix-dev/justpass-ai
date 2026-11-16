@@ -1,6 +1,6 @@
 # Production on GCP, applied by the deploy workflow on every merge: the API on Cloud Run (pulling the image CI pushes
 # to GHCR through an Artifact Registry remote repository), Postgres on Cloud SQL, the identity GitHub Actions deploys
-# the web app with, and the GKE cluster Substrate runs on (modules/cluster). What has to exist before the workflow can
+# the web app with, Firebase Auth (auth.tf), and the GKE cluster Substrate runs on (modules/cluster). What has to exist before the workflow can
 # run (Firebase project and Hosting site, Workload Identity pool, the Terraform service account) is deploy/terraform/bootstrap. Substrate is the only
 # thing that runs on Kubernetes, so the manifests are in deploy/gke, not here.
 # Test the module locally first: deploy/gcp/local-e2e.sh.
@@ -11,6 +11,7 @@ locals {
     "compute.googleapis.com",
     "container.googleapis.com",
     "dns.googleapis.com",
+    "identitytoolkit.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
     "sqladmin.googleapis.com",

@@ -21,7 +21,13 @@ relay=$("$tool" inspect -f '{{(index .NetworkSettings.Networks "kind").IPAddress
   "$("${compose[@]}" ps -q context-relay)")
 endpoint=$(kubectl -n justpass-agents get endpointslice context-api -o jsonpath='{.endpoints[0].addresses[0]}')
 [[ $endpoint == "$relay" ]] || fail "the Service context-api points at $endpoint, but context-relay is at $relay: run deploy.sh"
-post() { curl -fsS -X POST "$api$1" -H 'content-type: application/json' -d "$2"; }
+# A token from the Firebase Auth emulator (compose service auth) for a new anonymous user.
+auth_url=http://127.0.0.1:9099
+token=$(curl -fsS -X POST "$auth_url/identitytoolkit.googleapis.com/v1/accounts:signUp?key=demo-key" \
+  -H 'content-type: application/json' -d '{"returnSecureToken":true}' | jq -r .idToken)
+[[ -n $token && $token != null ]] || fail "no token from the Auth emulator on $auth_url: run deploy.sh"
+authed() { curl -fsS -H "Authorization: Bearer $token" "$@"; }
+post() { authed -X POST "$api$1" -H 'content-type: application/json' -d "$2"; }
 actor_state() {
   kubectl ate get actor "job-$1" -a justpass-agents -o json 2> /dev/null | jq -r .status.state || echo gone
 }
@@ -30,7 +36,7 @@ actor_state() {
 wait_for_job() {
   local started=$SECONDS status
   for _ in {1..120}; do
-    status=$(curl -fsS "$api/jobs/$1" | jq -r .status)
+    status=$(authed "$api/jobs/$1" | jq -r .status)
     if [[ $status != queued && $status != running ]]; then
       echo $((SECONDS - started))
       return
@@ -83,8 +89,8 @@ expect "a new job" "$(jq -r .status <<< "$job")" queued
 seconds=$(wait_for_job "$id")
 ((seconds >= 10)) || fail "the agent answered in ${seconds}s, it should wait 10s"
 echo "ok: the answer took ${seconds}s"
-expect "the answered job" "$(curl -fsS "$api/jobs/$id" | jq -r .status)" done
-expect "the answer" "$(curl -fsS "$api/jobs/$id" | jq -r '.result | split("\n")[0]')" "## Solution"
+expect "the answered job" "$(authed "$api/jobs/$id" | jq -r .status)" done
+expect "the answer" "$(authed "$api/jobs/$id" | jq -r '.result | split("\n")[0]')" "## Solution"
 expect "the hibernated actor" "$(actor_state "$id")" ACTOR_STATE_SUSPENDED
 expect "the drafts after round 1" "$(drafts "$id")" 1
 expect "the actor's egress policy" \
@@ -107,7 +113,7 @@ expect "an actor's call to the relay's bare IP" "$(actor_error "$id" "http://$re
 running=$(post "/jobs/$id/feedback" '{"text": "Explain step 2", "round": 1}')
 expect "the job after feedback" "$(jq -r .status <<< "$running")" running
 wait_for_job "$id" > /dev/null
-revised=$(curl -fsS "$api/jobs/$id")
+revised=$(authed "$api/jobs/$id")
 expect "the revised job" "$(jq -r .status <<< "$revised")" done
 expect "its round" "$(jq -r .round <<< "$revised")" 2
 expect "its feedback" "$(jq -r .feedback <<< "$revised")" "Explain step 2"
@@ -125,7 +131,7 @@ expect "the accepted job's actor" "$(actor_state "$id")" gone
 
 failed=$(post /jobs '{"text": "Please fail this one"}' | jq -r .id)
 wait_for_job "$failed" > /dev/null
-expect "a job the agent cannot solve" "$(curl -fsS "$api/jobs/$failed" | jq -r .status)" failed
+expect "a job the agent cannot solve" "$(authed "$api/jobs/$failed" | jq -r .status)" failed
 expect "its actor" "$(actor_state "$failed")" gone
 
 # What the relay in front of the API lets through, asked from a plain pod in the cluster (the egress
@@ -147,7 +153,7 @@ ids=()
 for n in 1 2 3 4; do ids+=("$(post /jobs "{\"text\": \"Job $n of 4\"}" | jq -r .id)"); done
 for job_id in "${ids[@]}"; do
   wait_for_job "$job_id" > /dev/null
-  expect "job ${job_id:0:8} of four at once" "$(curl -fsS "$api/jobs/$job_id" | jq -r .status)" done
+  expect "job ${job_id:0:8} of four at once" "$(authed "$api/jobs/$job_id" | jq -r .status)" done
   post "/jobs/$job_id/accept" '{"round": 1}' > /dev/null
 done
 

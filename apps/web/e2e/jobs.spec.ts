@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { authorization, emailedLink, signInAsGuest, signInWithEmail, trackBearer } from './auth.ts'
 
 // Runs against the live API and the fake agent, which takes 10 seconds per round: see the timeouts in
 // playwright.config.ts. Tests run in parallel, so each must stay within its own jobs.
@@ -14,9 +15,7 @@ async function sendTask(page: Page, text: string) {
 }
 
 test('sign in, send a task, and accept the answer', async ({ page }) => {
-  await page.goto('/signin')
-  await page.getByRole('button', { name: 'Continue' }).click()
-  await expect(page).toHaveURL(/\/new$/)
+  await signInAsGuest(page)
 
   await sendTask(page, `Solve x^2 - 5x + 6 = 0 (${Date.now()})`)
   await expect(page.getByRole('heading', { name: 'Solution' })).toBeVisible()
@@ -28,7 +27,8 @@ test('sign in, send a task, and accept the answer', async ({ page }) => {
 
 test.describe('signed in', () => {
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('justpass.devUser', '1'))
+    trackBearer(page)
+    await signInAsGuest(page)
   })
 
   test('feedback revises the same job', async ({ page }) => {
@@ -59,7 +59,7 @@ test.describe('signed in', () => {
     const api = url.replace('/jobs/', '/api/jobs/')
     let failed = false
     await page.route('**/feedback', async (route) => {
-      const job = await (await page.request.get(api)).json()
+      const job = await (await page.request.get(api, { headers: authorization(page) })).json()
       failed = true
       await route.fulfill({ json: { ...job, status: 'running', round: 2, result: null } })
     })
@@ -269,9 +269,9 @@ test.describe('signed in', () => {
         await route.fulfill({ response })
       })
       await pushBack(page)
-      await expect.poll(async () => (await page.request.get(api)).json()).toMatchObject({ round: 2, status: 'done' })
+      await expect.poll(async () => (await page.request.get(api, { headers: authorization(page) })).json()).toMatchObject({ round: 2, status: 'done' })
 
-      await page.request.post(`${api}/feedback`, { data: { text: 'From another tab', round: 2 } })
+      await page.request.post(`${api}/feedback`, { data: { text: 'From another tab', round: 2 }, headers: authorization(page) })
       await refetch(page)
       await expect(page.getByText('Revised answer, round 3.')).toBeVisible()
 
@@ -309,6 +309,7 @@ test.describe('signed in', () => {
 
   test('signing out goes home and closes the job', async ({ page }) => {
     await sendTask(page, `Private (${Date.now()})`)
+    page.once('dialog', (dialog) => void dialog.accept())
     await page.getByRole('button', { name: 'Sign out' }).click()
     await expect(page).toHaveURL(/\/$/)
     await expect(page.getByRole('link', { name: 'Sign in' })).toBeVisible()
@@ -340,5 +341,63 @@ test.describe('signed in', () => {
   test('an unknown job does not exist', async ({ page }) => {
     await page.goto(`/jobs/${crypto.randomUUID()}`)
     await expect(page.getByRole('heading', { name: 'This job does not exist' })).toBeVisible()
+  })
+})
+
+test.describe('email link', () => {
+  const taskText = () => `Solve x^2 - 5x + 6 = 0 (${Date.now()})`
+
+  test('an anonymous user who signs in with an email keeps their job', async ({ page }) => {
+    await signInAsGuest(page)
+    const url = await sendTask(page, taskText())
+    await expect(page.getByRole('heading', { name: 'Solution' })).toBeVisible()
+
+    await page.getByRole('link', { name: 'Save your work' }).click()
+    await signInWithEmail(page, `keep-${Date.now()}@example.com`)
+
+    await expect(page.getByRole('link', { name: 'Save your work' })).toHaveCount(0)
+    await page.goto(url)
+    await expect(page.getByRole('heading', { name: 'Solution' })).toBeVisible()
+  })
+
+  test('linking an email in another tab updates this tab without a reload', async ({ page }) => {
+    await signInAsGuest(page)
+    await page.getByRole('link', { name: 'Save your work' }).click()
+    await page.getByLabel('Your email').fill(`tabs-${Date.now()}@example.com`)
+    await page.getByRole('button', { name: 'Email me a sign-in link' }).click()
+    await expect(page.getByText('Check your inbox.')).toBeVisible()
+    const email = await page.evaluate(() => localStorage.getItem('justpass.emailForSignIn') ?? '')
+
+    const second = await page.context().newPage()
+    await second.goto(await emailedLink(second, email))
+    await expect(second).toHaveURL(/\/new$/)
+
+    await expect(page.getByText('Check your inbox.')).toHaveCount(0)
+  })
+
+  test('a new email on another browser signs in to the existing account', async ({ page, browser, baseURL }) => {
+    const email = `again-${Date.now()}@example.com`
+    await signInAsGuest(page)
+    const task = taskText()
+    const url = await sendTask(page, task)
+    const used = await signInWithEmail(page, email)
+
+    const other = await (await browser.newContext({ baseURL })).newPage()
+    await signInAsGuest(other)
+    await sendTask(other, taskText())
+    // The first link would link the guest to an email that has an account, so the app sends a second one.
+    await other.goto('/signin')
+    await other.getByLabel('Your email').fill(email)
+    await other.getByRole('button', { name: 'Email me a sign-in link' }).click()
+    await expect(other.getByText('Check your inbox.')).toBeVisible()
+    const first = await emailedLink(other, email, used)
+    await other.goto(first)
+    await expect(other.getByText('That email already has an account')).toBeVisible()
+    await other.goto(await emailedLink(other, email, first))
+    await expect(other).toHaveURL(/\/new$/)
+
+    await other.goto(url)
+    await expect(other.getByRole('heading', { name: 'Solution' })).toBeVisible()
+    await other.context().close()
   })
 })

@@ -274,8 +274,8 @@ resource "google_cloud_run_v2_service" "api" {
   ]
 }
 
-# Firebase Hosting calls the API without a Google identity, so Cloud Run lets everyone call it. Until the API checks
-# Firebase ID tokens, every caller is the same development user.
+# Firebase Hosting calls the API without a Google identity, so Cloud Run lets everyone call it. The API verifies the
+# caller's Firebase ID token itself.
 resource "google_cloud_run_v2_service_iam_member" "public" {
   project  = var.project_id
   location = var.region

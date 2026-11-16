@@ -1,3 +1,6 @@
+allowBuilds:
+  '@firebase/util': false
+  protobufjs: false
 # rehype-katex ships its own katex, but the CSS comes from ours: both must be the same version.
 overrides:
   katex: $katex

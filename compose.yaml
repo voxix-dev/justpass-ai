@@ -1,5 +1,6 @@
 # Postgres for local development and tests: `docker compose up -d db`.
-# The API and one agent in containers (migrates on start): `docker compose up -d --build api`.
+# The API, one agent and the Firebase Auth emulator in containers (migrates on start):
+# `docker compose up -d --build api auth`.
 services:
   db:
     image: postgres:18.6
@@ -27,6 +28,22 @@ services:
       interval: 2s
       retries: 15
 
+  # Firebase Auth emulator (no Java needed for Auth). Sign-in works for any web app that points at it.
+  auth:
+    image: node:22-alpine
+    working_dir: /work
+    command: ["npx", "--yes", "firebase-tools@15.36.0", "emulators:start", "--only", "auth", "--project", "demo-justpass"]
+    volumes:
+      - ./apps/web/firebase.json:/work/firebase.json:ro,z
+      - auth-npm:/root/.npm
+    ports:
+      - "127.0.0.1:9099:9099"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9099/"]
+      start_period: 180s  # npx downloads firebase-tools first
+      interval: 2s
+      retries: 15
+
   api:
     build:
       context: .
@@ -41,10 +58,12 @@ services:
       DATABASE_URL: postgresql+asyncpg://app:app@db:5432/app
       AGENT_URL: http://agent
       CONTEXT_API_URL: http://api:8000  # where the agent reaches the Context API
+      FIREBASE_PROJECT_ID: demo-justpass
+      FIREBASE_AUTH_EMULATOR_HOST: auth:9099  # accepts the emulator's tokens; the API does not call it
       CONTEXT_TOKEN_SECRET: ${CONTEXT_TOKEN_SECRET:?see .env.example}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}  # empty: the agent gives the fixed sample answer
     ports:
-      - "127.0.0.1:${API_PORT:-8000}:8000"  # no auth yet: keep it off the network
+      - "127.0.0.1:${API_PORT:-8000}:8000"  # the emulator's tokens are accepted: keep it off the network
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
       interval: 5s
@@ -52,3 +71,4 @@ services:
 
 volumes:
   db-data:
+  auth-npm:

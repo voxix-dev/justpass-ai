@@ -1,9 +1,18 @@
 import { defineConfig, devices } from '@playwright/test'
 
 // End-to-end tests against the web app (dev server, or the production build in CI), which proxies
-// /api to a live API on localhost:8000.
-// Start the API first (see README.md); each test makes its own jobs, so the database can hold others.
+// /api to a live API on localhost:8000 and signs in against the Firebase Auth emulator on 127.0.0.1:9099.
+// Start both first (see README.md); each test makes its own jobs, so the database can hold others.
 const CI = !!process.env.CI
+
+// The same local values as .env.development; the CI build does not read that file.
+const firebaseEnv = {
+  VITE_FIREBASE_API_KEY: 'demo-key',
+  VITE_FIREBASE_AUTH_DOMAIN: 'demo-justpass.firebaseapp.com',
+  VITE_FIREBASE_PROJECT_ID: 'demo-justpass',
+  VITE_FIREBASE_APP_ID: 'demo-app',
+  VITE_FIREBASE_AUTH_EMULATOR_URL: 'http://127.0.0.1:9099',
+}
 
 export default defineConfig({
   testDir: 'e2e',
@@ -21,6 +30,7 @@ export default defineConfig({
   webServer: {
     command: CI ? 'pnpm build && pnpm preview --port 5173 --strictPort' : 'pnpm dev --port 5173 --strictPort',
     url: 'http://localhost:5173',
+    env: firebaseEnv,
     reuseExistingServer: !CI,
     timeout: 120_000, // in CI this includes the production build
   },
