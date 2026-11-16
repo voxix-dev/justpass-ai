@@ -97,12 +97,30 @@ class RoundInfo(BaseModel):
     artifacts: list[ArtifactRef]  # the answer (kind final) is one of them
 
 
+class GetFile(BaseModel):
+    """Read the bytes of a file the student attached to this job."""
+
+    file_id: uuid.UUID
+
+
+class SaveFileText(BaseModel):
+    """Save the text read from a file of this job, so later rounds need not read it again."""
+
+    file_id: uuid.UUID
+    text: Text = Field(max_length=100_000)
+
+
+class SavedFileText(BaseModel):
+    file_id: uuid.UUID
+
+
 class TaskFile(BaseModel):
-    """A file the student attached; GET /v1/context/files/{id} returns its bytes."""
+    """A file the student attached; `get_file` returns its bytes."""
 
     id: uuid.UUID
     name: str
     mime_type: str
+    text: str | None = None  # what was read from it (`save_file_text`); None until then
 
 
 class Task(BaseModel):

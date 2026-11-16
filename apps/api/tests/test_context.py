@@ -30,6 +30,8 @@ BODIES: dict[str, dict[str, Any]] = {
         "content_md": "Likes worked examples.",
         "base_version": 0,
     },
+    "get_file": {"file_id": str(uuid.uuid4())},
+    "save_file_text": {"file_id": str(uuid.uuid4()), "text": "x"},
     "read_artifact": {"artifact_id": str(uuid.uuid4())},
     "write_artifact": {"kind": "draft", "title": "Notes", "content_md": "# Notes"},
 }
@@ -493,8 +495,8 @@ async def test_get_task_lists_the_files_in_order(
     job = await add_job(session, "alice", file_keys=[second.storage_key, first.storage_key])
     task = (await call(client, "get_task", auth(job))).json()
     assert task["files"] == [
-        {"id": str(second.id), "name": "second.pdf", "mime_type": "application/pdf"},
-        {"id": str(first.id), "name": "first.jpg", "mime_type": "image/jpeg"},
+        {"id": str(second.id), "name": "second.pdf", "mime_type": "application/pdf", "text": None},
+        {"id": str(first.id), "name": "first.jpg", "mime_type": "image/jpeg", "text": None},
     ]
 
 
@@ -506,14 +508,64 @@ async def test_read_file_returns_the_jobs_own_files_only(
     theirs = await add_file(session, storage, "bob")
     job = await add_job(session, "alice", file_keys=[mine.storage_key])
 
-    response = await client.get(f"/v1/context/files/{mine.id}", headers=auth(job))
+    response = await call(client, "get_file", auth(job), file_id=str(mine.id))
     assert response.status_code == 200
     assert response.content == b"\xff\xd8\xffmine"
     assert response.headers["content-type"] == "image/jpeg"
     assert response.headers["x-content-type-options"] == "nosniff"
     for file_id in (other_file.id, theirs.id, uuid.uuid4()):
-        response = await client.get(f"/v1/context/files/{file_id}", headers=auth(job))
+        response = await call(client, "get_file", auth(job), file_id=str(file_id))
         assert response.status_code == 404
+
+
+async def test_save_file_text_shows_in_get_task_and_overwrites(
+    client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage
+):
+    file = await add_file(session, storage, "alice")
+    job = await add_job(session, "alice", file_keys=[file.storage_key])
+    for text in ("first reading", "second reading"):
+        response = await call(client, "save_file_text", auth(job), file_id=str(file.id), text=text)
+        assert response.status_code == 200
+        assert response.json() == {"file_id": str(file.id)}
+        task = (await call(client, "get_task", auth(job))).json()
+        assert task["files"][0]["text"] == text
+
+
+async def test_save_file_text_is_for_the_jobs_own_files_only(
+    client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage
+):
+    mine = await add_file(session, storage, "alice")
+    other_file = await add_file(session, storage, "alice")
+    theirs = await add_file(session, storage, "bob")
+    job = await add_job(session, "alice", file_keys=[mine.storage_key])
+    for file_id in (other_file.id, theirs.id, uuid.uuid4()):
+        response = await call(client, "save_file_text", auth(job), file_id=str(file_id), text="x")
+        assert response.status_code == 404
+    await session.refresh(other_file)
+    assert other_file.extracted_text is None
+
+
+async def test_save_file_text_is_refused_for_a_lease_that_was_taken_over(
+    client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage
+):
+    file = await add_file(session, storage, "alice")
+    job = await add_job(session, "alice", file_keys=[file.storage_key])
+    old = auth(job)
+    round_row = await session.get_one(JobRound, (job.id, 1))
+    round_row.lease_id = uuid.uuid4()
+    await session.flush()
+    response = await call(client, "save_file_text", old, file_id=str(file.id), text="x")
+    assert response.status_code == 409
+
+
+@pytest.mark.parametrize("text", ["a\u0000b", "x" * 100_001])
+async def test_save_file_text_refuses_bad_text(
+    client: httpx2.AsyncClient, session: AsyncSession, storage: LocalStorage, text: str
+):
+    file = await add_file(session, storage, "alice")
+    job = await add_job(session, "alice", file_keys=[file.storage_key])
+    response = await call(client, "save_file_text", auth(job), file_id=str(file.id), text=text)
+    assert response.status_code == 422
 
 
 async def test_read_file_needs_a_valid_token(
@@ -521,7 +573,7 @@ async def test_read_file_needs_a_valid_token(
 ):
     file = await add_file(session, storage, "alice")
     await add_job(session, "alice", file_keys=[file.storage_key])
-    response = await client.get(f"/v1/context/files/{file.id}")
+    response = await client.post("/v1/context/get_file", json={"file_id": str(file.id)})
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
 
@@ -537,6 +589,6 @@ async def test_read_file_is_503_when_the_storage_fails(
             raise StorageUnavailable(key)
 
     app.dependency_overrides[get_storage] = lambda: Broken()
-    response = await client.get(f"/v1/context/files/{file.id}", headers=auth(job))
+    response = await call(client, "get_file", auth(job), file_id=str(file.id))
     assert response.status_code == 503
     assert response.json()["detail"] == "This file cannot be loaded right now. Try again later."

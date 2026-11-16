@@ -22,6 +22,7 @@ from api.tables import Artifact, File, Job, JobRound, MemoryDoc, search_memory
 from shared.context import (
     ArtifactContent,
     ArtifactRef,
+    GetFile,
     GetProfile,
     GetSubjectMemory,
     GetTask,
@@ -31,6 +32,8 @@ from shared.context import (
     Profile,
     ReadArtifact,
     RoundInfo,
+    SavedFileText,
+    SaveFileText,
     SearchHistory,
     Task,
     TaskFile,
@@ -157,7 +160,9 @@ async def get_task(args: GetTask, agent: Caller, session: Session) -> Task:
         select(File).where(File.user_id == job.user_id, File.storage_key.in_(job.file_keys))
     )
     by_key = {
-        file.storage_key: TaskFile(id=file.id, name=file.name, mime_type=file.mime_type)
+        file.storage_key: TaskFile(
+            id=file.id, name=file.name, mime_type=file.mime_type, text=file.extracted_text
+        )
         for file in files
     }
     return Task(
@@ -172,14 +177,7 @@ async def get_task(args: GetTask, agent: Caller, session: Session) -> Task:
     )
 
 
-@router.get("/files/{file_id}")
-async def read_file(
-    file_id: uuid.UUID,
-    agent: Caller,
-    session: Session,
-    storage: Annotated[Storage, Depends(get_storage)],
-) -> Response:
-    """A file of this job. Any other file 404s, like a missing one."""
+async def _job_file(session: AsyncSession, agent: Agent, file_id: uuid.UUID) -> File:
     file = await session.scalar(
         select(File).where(
             File.id == file_id,
@@ -189,6 +187,18 @@ async def read_file(
     )
     if file is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
+    return file
+
+
+@router.post("/get_file")
+async def get_file(
+    args: GetFile,
+    agent: Caller,
+    session: Session,
+    storage: Annotated[Storage, Depends(get_storage)],
+) -> Response:
+    """A file of this job. Any other file 404s, like a missing one."""
+    file = await _job_file(session, agent, args.file_id)
     key, mime_type = file.storage_key, file.mime_type
     # End the read's transaction: the download must not hold a pooled connection.
     await session.commit()
@@ -202,6 +212,16 @@ async def read_file(
             "This file cannot be loaded right now. Try again later.",
         ) from None
     return Response(data, media_type=mime_type, headers={"X-Content-Type-Options": "nosniff"})
+
+
+@router.post("/save_file_text")
+async def save_file_text(args: SaveFileText, agent: Caller, session: Session) -> SavedFileText:
+    """Keep the text read from a file of this job; saving again overwrites it."""
+    await _lock_current(session, agent)
+    file = await _job_file(session, agent, args.file_id)
+    file.extracted_text = args.text
+    await session.commit()
+    return SavedFileText(file_id=file.id)
 
 
 @router.post("/read_artifact")
