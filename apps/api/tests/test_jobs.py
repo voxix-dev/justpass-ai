@@ -1,14 +1,19 @@
 import asyncio
+import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx2
+import jwt
 import pytest
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from api.auth import firebase
+from api.auth.current_user import _current_user  # pyright: ignore[reportPrivateUsage]
+from api.auth.firebase import AuthUser
 from api.context import Agent, _lock_current  # pyright: ignore[reportPrivateUsage]
 from api.context_token import InvalidToken, verify_token
 from api.db import get_session
@@ -22,6 +27,13 @@ from shared.models import ArtifactKind, JobStatus, Level
 pytestmark = pytest.mark.anyio
 
 ANSWER = "## Solution"
+ANA = AuthUser(
+    uid="uid-ana",
+    is_anonymous=False,
+    email="ana@example.com",
+    email_verified=True,
+    provider="google.com",
+)
 
 
 class FakeAgents:
@@ -116,6 +128,7 @@ async def client(dispatcher: StepDispatcher) -> AsyncIterator[httpx2.AsyncClient
 
     app.dependency_overrides[get_session] = request_session
     app.dependency_overrides[get_dispatcher] = lambda: dispatcher
+    app.dependency_overrides[_current_user] = lambda: ANA
     transport = httpx2.ASGITransport(app=app)
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
@@ -241,7 +254,7 @@ async def test_get_unknown_job_is_404(client: httpx2.AsyncClient):
     assert response.json() == {"detail": "Job not found"}
 
 
-async def test_list_shows_only_the_dev_users_jobs_newest_first(
+async def test_list_shows_only_the_users_jobs_newest_first(
     client: httpx2.AsyncClient, session: AsyncSession, create: Create
 ):
     first, second = await create("first"), await create("second")
@@ -267,6 +280,8 @@ async def test_list_shows_only_the_dev_users_jobs_newest_first(
     assert [j["id"] for j in listed] == [second["id"], first["id"]]
     assert (await client.get(f"/jobs/{other.id}")).status_code == 404
     assert (await client.post(f"/jobs/{other.id}/accept", json={"round": 1})).status_code == 404
+    feedback = await client.post(f"/jobs/{other.id}/feedback", json={"round": 1, "text": "Again"})
+    assert feedback.status_code == 404
 
 
 async def test_list_behind_api_prefix(client: httpx2.AsyncClient, create: Create):
@@ -820,6 +835,7 @@ async def test_database_down_is_503(path: str):
         yield
 
     app.dependency_overrides[get_session] = down
+    app.dependency_overrides[_current_user] = lambda: ANA
     transport = httpx2.ASGITransport(app=app)
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(path)
@@ -1239,7 +1255,7 @@ async def test_the_agent_gets_a_token_for_the_context_api(
     assert context is not None
     assert context.url == "http://api:8000"
     claims = verify_token(context.token)
-    assert (claims.job_id, claims.user_id, claims.round) == (uuid.UUID(job["id"]), "dev-user", 1)
+    assert (claims.job_id, claims.user_id, claims.round) == (uuid.UUID(job["id"]), ANA.uid, 1)
     assert context.token not in repr(agents.runs[0])
 
 
@@ -1261,3 +1277,105 @@ async def test_lifespan_refuses_a_context_api_without_a_good_secret(
     with pytest.raises(InvalidToken, match="CONTEXT_TOKEN_SECRET"):
         async with lifespan(app):
             pass
+
+
+def token(**claims: Any) -> str:
+    """An unsigned ID token, which the verifier accepts in Auth Emulator mode."""
+    now = int(time.time())
+    payload = {
+        "iss": "https://securetoken.google.com/demo-justpass",
+        "aud": "demo-justpass",
+        "sub": "uid-emulator",
+        "iat": now - 60,
+        "auth_time": now - 60,
+        "exp": now + 3600,
+        "firebase": {"sign_in_provider": "anonymous"},
+    } | claims
+    key: Any = None
+    return jwt.encode(payload, key, algorithm="none")
+
+
+@pytest.fixture
+def signed_out(client: httpx2.AsyncClient) -> httpx2.AsyncClient:
+    """The client with the real sign-in check instead of the fixed user."""
+    del app.dependency_overrides[_current_user]
+    return client
+
+
+@pytest.fixture
+def emulator(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "demo-justpass")
+    monkeypatch.setenv("FIREBASE_AUTH_EMULATOR_HOST", "localhost:9099")
+    firebase._verifier.cache_clear()  # pyright: ignore[reportPrivateUsage]
+    yield
+    firebase._verifier.cache_clear()  # pyright: ignore[reportPrivateUsage]
+
+
+ROUTES = [
+    ("GET", "/jobs"),
+    ("POST", "/jobs"),
+    ("GET", f"/jobs/{uuid.uuid4()}"),
+    ("POST", f"/jobs/{uuid.uuid4()}/accept"),
+    ("POST", f"/jobs/{uuid.uuid4()}/feedback"),
+]
+
+
+@pytest.mark.parametrize(("method", "path"), ROUTES)
+@pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer not-a-token"}])
+async def test_jobs_need_a_valid_token(
+    signed_out: httpx2.AsyncClient, emulator: None, method: str, path: str, headers: dict[str, str]
+):
+    response = await signed_out.request(method, path, headers=headers, json={})
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+async def test_an_expired_token_is_401(signed_out: httpx2.AsyncClient, emulator: None):
+    headers = {"Authorization": f"Bearer {token(exp=int(time.time()) - 60)}"}
+    assert (await signed_out.get("/jobs", headers=headers)).status_code == 401
+
+
+async def test_a_key_fetch_failure_is_503(
+    signed_out: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    def down(_token: str) -> AuthUser:
+        raise jwt.PyJWKClientConnectionError("down")
+
+    monkeypatch.setattr("api.auth.current_user.verify_id_token", down)
+    response = await signed_out.get("/jobs", headers={"Authorization": "Bearer abc"})
+    assert response.status_code == 503
+
+
+async def test_a_token_verified_by_the_emulator_owns_its_jobs(
+    signed_out: httpx2.AsyncClient,
+    session: AsyncSession,
+    dispatcher: StepDispatcher,
+    emulator: None,
+):
+    mine = {"Authorization": f"Bearer {token()}"}
+    other = {"Authorization": f"Bearer {token(sub='uid-other')}"}
+    created = await signed_out.post("/jobs", json={"text": "Solve x"}, headers=mine)
+    assert created.status_code == 201
+    await dispatcher.drain()
+    job_id = created.json()["id"]
+
+    assert [j["id"] for j in (await signed_out.get("/jobs", headers=mine)).json()] == [job_id]
+    assert (await signed_out.get("/jobs", headers=other)).json() == []
+    assert (await signed_out.get(f"/jobs/{job_id}", headers=other)).status_code == 404
+    row = await session.get(Job, uuid.UUID(job_id))
+    assert row is not None
+    assert row.user_id == "uid-emulator"
+
+
+async def test_creating_a_job_follows_the_users_anonymous_flag(
+    client: httpx2.AsyncClient, session: AsyncSession
+):
+    anonymous = ANA.model_copy(update={"is_anonymous": True, "provider": "anonymous"})
+    app.dependency_overrides[_current_user] = lambda: anonymous
+    assert (await client.post("/jobs", json={"text": "First"})).status_code == 201
+    assert await session.scalar(select(User.is_anonymous).where(User.id == ANA.uid)) is True
+
+    app.dependency_overrides[_current_user] = lambda: ANA
+    assert (await client.post("/jobs", json={"text": "Second"})).status_code == 201
+    assert await session.scalar(select(User.is_anonymous).where(User.id == ANA.uid)) is False
+    assert len((await client.get("/jobs")).json()) == 2

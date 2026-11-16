@@ -3,7 +3,8 @@ name: deploy
 # After ci passes on main, applies the production Terraform (deploy/terraform/prod) for the tip of main, then applies
 # Substrate to the GKE cluster it made (after preparing its database) and stores what the API reads from the cluster
 # in Secret Manager (`cluster` job), then deploys the web app to Firebase Hosting, which rewrites /api/** to Cloud
-# Run. The API authenticates to Substrate with Google ID tokens it fetches itself from the Cloud Run metadata server,
+# Run. Firebase Auth is part of the production Terraform, and the web build gets its config from the outputs.
+# The API authenticates to Substrate with Google ID tokens it fetches itself from the Cloud Run metadata server,
 # so nothing expires between deploys.
 # The API image is the one ci's `images` job pushed to GHCR. Terraform deploys it by digest through the Artifact
 # Registry remote repository that proxies GHCR, in the same Cloud Run revision as the environment it was built for.
@@ -39,6 +40,9 @@ jobs:
       current: ${{ steps.tip.outputs.current }}
       cluster: ${{ steps.out.outputs.cluster }}
       deployer: ${{ steps.out.outputs.deployer }}
+      firebase_api_key: ${{ steps.out.outputs.firebase_api_key }}
+      firebase_app_id: ${{ steps.out.outputs.firebase_app_id }}
+      firebase_auth_domain: ${{ steps.out.outputs.firebase_auth_domain }}
     steps:
       # An older run that finishes late must not roll back a newer deploy.
       - id: tip
@@ -100,8 +104,12 @@ jobs:
         id: out
         run: |
           out() { terraform -chdir=deploy/terraform/prod output -raw "$1"; }
-          echo "deployer=$(out GCP_DEPLOYER_SERVICE_ACCOUNT)" >> "$GITHUB_OUTPUT"
-          echo "cluster=$(terraform -chdir=deploy/terraform/prod output -json cluster | jq -c .)" >> "$GITHUB_OUTPUT"
+          # A value is assigned first: in `echo "x=$(...)"` the echo would hide a failing terraform.
+          v=$(out GCP_DEPLOYER_SERVICE_ACCOUNT); echo "deployer=$v" >> "$GITHUB_OUTPUT"
+          v=$(out firebase_web_api_key); echo "firebase_api_key=$v" >> "$GITHUB_OUTPUT"
+          v=$(out firebase_web_app_id); echo "firebase_app_id=$v" >> "$GITHUB_OUTPUT"
+          v=$(out firebase_auth_domain); echo "firebase_auth_domain=$v" >> "$GITHUB_OUTPUT"
+          v=$(terraform -chdir=deploy/terraform/prod output -json cluster | jq -c .); echo "cluster=$v" >> "$GITHUB_OUTPUT"
 
   # Applies Substrate to the cluster and stores what the API reads from it (secret ids only in the output, no values).
   cluster:
@@ -214,7 +222,15 @@ jobs:
           cache: pnpm
           cache-dependency-path: apps/web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build
+      - run: |
+          : "${VITE_FIREBASE_API_KEY:?}" "${VITE_FIREBASE_AUTH_DOMAIN:?}" "${VITE_FIREBASE_PROJECT_ID:?}" "${VITE_FIREBASE_APP_ID:?}"
+          pnpm build
+        env:
+          # The web app's Firebase config; none of it is secret.
+          VITE_FIREBASE_API_KEY: ${{ needs.infra.outputs.firebase_api_key }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ needs.infra.outputs.firebase_auth_domain }}
+          VITE_FIREBASE_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          VITE_FIREBASE_APP_ID: ${{ needs.infra.outputs.firebase_app_id }}
       - name: Point the /api/** rewrite at the Cloud Run region
         env:
           REGION: ${{ vars.GCP_REGION }}

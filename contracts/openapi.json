@@ -220,6 +220,13 @@
         "title": "ValidationError",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "FirebaseIdToken": {
+        "description": "A Firebase Auth ID token of the signed-in user (anonymous or not).",
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
@@ -253,7 +260,7 @@
     },
     "/jobs": {
       "get": {
-        "description": "The dev user's newest jobs first, at most LIST_LIMIT.",
+        "description": "The user's newest jobs first, at most LIST_LIMIT.",
         "operationId": "list_jobs_jobs_get",
         "responses": {
           "200": {
@@ -270,6 +277,16 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Missing, invalid or expired Firebase ID token"
+          },
           "503": {
             "content": {
               "application/json": {
@@ -278,16 +295,21 @@
                 }
               }
             },
-            "description": "The database cannot be reached"
+            "description": "The database or Google's token signing keys cannot be reached"
           }
         },
+        "security": [
+          {
+            "FirebaseIdToken": []
+          }
+        ],
         "summary": "List Jobs",
         "tags": [
           "jobs"
         ]
       },
       "post": {
-        "description": "Store a new job with its first round and queue it (the dev user is created once).",
+        "description": "Store a new job with its first round and queue it.\n\nThe user row is made with the first job. Its is_anonymous follows the token, since an\nanonymous user who links an account keeps the uid.",
         "operationId": "create_job_jobs_post",
         "requestBody": {
           "content": {
@@ -320,6 +342,16 @@
             },
             "description": "The body cannot be parsed"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Missing, invalid or expired Firebase ID token"
+          },
           "413": {
             "content": {
               "application/json": {
@@ -348,9 +380,14 @@
                 }
               }
             },
-            "description": "The database cannot be reached"
+            "description": "The database or Google's token signing keys cannot be reached"
           }
         },
+        "security": [
+          {
+            "FirebaseIdToken": []
+          }
+        ],
         "summary": "Create Job",
         "tags": [
           "jobs"
@@ -359,7 +396,7 @@
     },
     "/jobs/{job_id}": {
       "get": {
-        "description": "One of the dev user's jobs; 404 for a missing job or another user's.",
+        "description": "One of the user's jobs; 404 for a missing job or another user's.",
         "operationId": "get_job_jobs__job_id__get",
         "parameters": [
           {
@@ -383,6 +420,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Missing, invalid or expired Firebase ID token"
           },
           "404": {
             "content": {
@@ -412,9 +459,14 @@
                 }
               }
             },
-            "description": "The database cannot be reached"
+            "description": "The database or Google's token signing keys cannot be reached"
           }
         },
+        "security": [
+          {
+            "FirebaseIdToken": []
+          }
+        ],
         "summary": "Get Job",
         "tags": [
           "jobs"
@@ -468,6 +520,16 @@
             },
             "description": "The body cannot be parsed"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Missing, invalid or expired Firebase ID token"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -516,9 +578,14 @@
                 }
               }
             },
-            "description": "The database cannot be reached"
+            "description": "The database or Google's token signing keys cannot be reached"
           }
         },
+        "security": [
+          {
+            "FirebaseIdToken": []
+          }
+        ],
         "summary": "Accept Job",
         "tags": [
           "jobs"
@@ -572,6 +639,16 @@
             },
             "description": "The body cannot be parsed"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Missing, invalid or expired Firebase ID token"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -620,9 +697,14 @@
                 }
               }
             },
-            "description": "The database cannot be reached"
+            "description": "The database or Google's token signing keys cannot be reached"
           }
         },
+        "security": [
+          {
+            "FirebaseIdToken": []
+          }
+        ],
         "summary": "Send Feedback",
         "tags": [
           "jobs"

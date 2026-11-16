@@ -12,7 +12,7 @@ pnpm lint
 pnpm typecheck
 pnpm build
 pnpm gen:api    # regenerate src/api/schema.gen.ts after contracts/openapi.json changes
-pnpm e2e        # Playwright tests; needs the API on localhost:8000 (see Stubs)
+pnpm e2e        # Playwright tests; needs the API on localhost:8000 and the auth emulator (see Auth)
 ```
 
 Before the first `pnpm e2e`, run `pnpm exec playwright install chromium`.
@@ -24,13 +24,30 @@ Before the first `pnpm e2e`, run `pnpm exec playwright install chromium`.
 - openapi-typescript + openapi-fetch: the API client is generated from `contracts/openapi.json`.
   CI fails if `src/api/schema.gen.ts` is out of date.
 
+## Auth
+
+Firebase Auth in the browser: anonymous ("Continue without an account"), and email link.
+`src/auth/auth.ts` is the only module that talks to the SDK; screens use `useAuth()`
+and the API client sends `Authorization: Bearer <ID token>` from `getIdToken()`. An anonymous user who signs in
+with an email link keeps the same uid, so their jobs stay.
+
+The build reads these variables (a missing one fails at startup with a clear error):
+
+| Variable | Meaning |
+|---|---|
+| `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_APP_ID` | the Firebase web app's settings |
+| `VITE_FIREBASE_AUTH_EMULATOR_URL` | the Auth emulator, e.g. `http://127.0.0.1:9099`; leave empty in production |
+
+`.env.development` points `pnpm dev` at the emulator from the root `compose.yaml` (`docker compose up -d auth`,
+project `demo-justpass`). Playwright passes the same values to its web server, in dev and for the CI build.
+Production values come from the Terraform outputs (see `.github/workflows/deploy.yml`).
+
 Why a client-side SPA: auth uses a Firebase ID token in the `Authorization` header (no cookies),
 so server rendering gains nothing. A static build keeps the same-origin `/api/**` rewrite (no
 CORS), gets a preview URL per PR from Hosting, and can move to GCS + Cloud CDN unchanged.
 
 ## Stubs
 
-- `src/auth/auth.ts`: fake signed-in user, to be replaced by Firebase Auth.
 - Jobs come from the real Jobs API, so `pnpm dev` needs the API on localhost:8000: from the repo
   root, `docker compose up -d --build api` (starts Postgres and the agent, and migrates), or uvicorn as in the
   [root README](../../README.md#setup).

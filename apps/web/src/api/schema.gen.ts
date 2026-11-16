@@ -33,13 +33,16 @@ export interface paths {
         };
         /**
          * List Jobs
-         * @description The dev user's newest jobs first, at most LIST_LIMIT.
+         * @description The user's newest jobs first, at most LIST_LIMIT.
          */
         get: operations["list_jobs_jobs_get"];
         put?: never;
         /**
          * Create Job
-         * @description Store a new job with its first round and queue it (the dev user is created once).
+         * @description Store a new job with its first round and queue it.
+         *
+         *     The user row is made with the first job. Its is_anonymous follows the token, since an
+         *     anonymous user who links an account keeps the uid.
          */
         post: operations["create_job_jobs_post"];
         delete?: never;
@@ -57,7 +60,7 @@ export interface paths {
         };
         /**
          * Get Job
-         * @description One of the dev user's jobs; 404 for a missing job or another user's.
+         * @description One of the user's jobs; 404 for a missing job or another user's.
          */
         get: operations["get_job_jobs__job_id__get"];
         put?: never;
@@ -269,7 +272,16 @@ export interface operations {
                     "application/json": components["schemas"]["JobOut"][];
                 };
             };
-            /** @description The database cannot be reached */
+            /** @description Missing, invalid or expired Firebase ID token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The database or Google's token signing keys cannot be reached */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -311,6 +323,15 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Missing, invalid or expired Firebase ID token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description The body is too large */
             413: {
                 headers: {
@@ -329,7 +350,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The database cannot be reached */
+            /** @description The database or Google's token signing keys cannot be reached */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -360,6 +381,15 @@ export interface operations {
                     "application/json": components["schemas"]["JobOut"];
                 };
             };
+            /** @description Missing, invalid or expired Firebase ID token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description No such job for this user */
             404: {
                 headers: {
@@ -378,7 +408,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The database cannot be reached */
+            /** @description The database or Google's token signing keys cannot be reached */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -422,6 +452,15 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Missing, invalid or expired Firebase ID token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description No such job for this user */
             404: {
                 headers: {
@@ -458,7 +497,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The database cannot be reached */
+            /** @description The database or Google's token signing keys cannot be reached */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -502,6 +541,15 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Missing, invalid or expired Firebase ID token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description No such job for this user */
             404: {
                 headers: {
@@ -538,7 +586,7 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description The database cannot be reached */
+            /** @description The database or Google's token signing keys cannot be reached */
             503: {
                 headers: {
                     [name: string]: unknown;

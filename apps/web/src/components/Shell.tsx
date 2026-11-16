@@ -3,7 +3,7 @@ import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react
 import { useQueryClient } from '@tanstack/react-query'
 import { CircleAlert, CircleCheck, FlaskConical, ListChecks, LogOut, PenLine, X } from 'lucide-react'
 import type { JobStatus } from '@/api/jobs'
-import { signOut, useAuth } from '@/auth/auth'
+import { signOut, useAuthState } from '@/auth/auth'
 import { Logo, Soon } from '@/components/bits'
 import { Button } from '@/components/ui/button'
 import { isPending, useJobs } from '@/lib/jobs'
@@ -26,7 +26,7 @@ function pageTitle(pathname: string) {
 
 /** Render navigation and job notifications; focus and scroll to the main content on path changes. */
 export function Shell() {
-  const user = useAuth()
+  const { user, loading } = useAuthState()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { pathname } = useLocation()
@@ -40,8 +40,9 @@ export function Shell() {
 
   /** Leave protected pages first: signed out on one, RequireAuth would send us to /signin instead. */
   async function leave() {
+    if (user?.isAnonymous && !window.confirm('Sign out of this guest session? Its jobs will be gone for good.')) return
     await navigate('/', { flushSync: true })
-    signOut()
+    await signOut()
     queryClient.clear()
     clearToasts()
   }
@@ -77,10 +78,18 @@ export function Shell() {
           )}
           <div className="ml-auto">
             {user ? (
-              <Button variant="ghost" onClick={() => void leave()}>
-                <LogOut aria-hidden="true" /> Sign out
-              </Button>
+              <div className="flex items-center gap-1">
+                {user.isAnonymous && pathname !== '/signin' && (
+                  <Button asChild>
+                    <Link to="/signin">Save your work</Link>
+                  </Button>
+                )}
+                <Button variant="ghost" onClick={() => void leave()}>
+                  <LogOut aria-hidden="true" /> <span className={cn(user.isAnonymous && 'max-sm:sr-only')}>Sign out</span>
+                </Button>
+              </div>
             ) : (
+              !loading &&
               pathname !== '/signin' && (
                 <Button asChild>
                   <Link to="/signin">Sign in</Link>
@@ -116,8 +125,9 @@ export function Shell() {
 
 /** Render protected routes or redirect to sign-in, preserving the requested location in state. */
 export function RequireAuth() {
-  const user = useAuth()
+  const { user, loading } = useAuthState()
   const location = useLocation()
+  if (loading) return null
   return user ? <Outlet /> : <Navigate to="/signin" replace state={{ from: location }} />
 }
 

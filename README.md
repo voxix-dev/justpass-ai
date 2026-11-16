@@ -30,7 +30,7 @@ You need uv, Docker or Podman, and for the web app Node 22 and pnpm. With Podman
 uv sync
 uv run pre-commit install
 cp .env.example .env
-docker compose up -d --wait db                # Postgres for development and tests
+docker compose up -d --wait db auth           # Postgres for development and tests, the Firebase Auth emulator
 uv run --env-file .env alembic upgrade head   # create or update the tables
 uv run --env-file .env pytest
 uv run --env-file .env uvicorn agent.server:app --port 8001 &   # the agent
@@ -38,10 +38,12 @@ uv run --env-file .env uvicorn api.main:app --reload
 ```
 
 Or run the API and the agent in containers (migrates on start, then serves on :8000):
-`docker compose up -d --build api`.
+`docker compose up -d --build api auth`.
+The API needs a Firebase ID token on every job call; the `auth` service is the Firebase Auth emulator (project
+`demo-justpass`, port 9099), which the web app signs in to in development.
 
 Ports taken? `API_PORT` moves the API for both compose and the web app's `pnpm dev`. `DB_PORT` moves
-Postgres; change the port in `.env` too.
+Postgres; change the port in `.env` too. The emulator stays on 9099.
 
 The agent calls OpenRouter (`deepseek/deepseek-v4.1-flash`, cheapest provider) and has sympy math tools
 and tools to write documents through the Context API. Set `OPENROUTER_API_KEY` in `.env`. Without it the

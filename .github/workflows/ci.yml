@@ -90,8 +90,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Make a secret for the Context API tokens
         run: echo "CONTEXT_TOKEN_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
-      - name: Start Postgres, the agent and the API
-        run: docker compose up -d --build --wait api
+      - name: Start Postgres, the agent, the Auth emulator and the API
+        run: docker compose up -d --build --wait api auth
         working-directory: .
       - uses: pnpm/action-setup@v4
         with:
@@ -104,7 +104,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm e2e
-      - name: API and database logs
+      - name: API, Auth emulator and database logs
         if: failure()
         run: docker compose logs
         working-directory: .
