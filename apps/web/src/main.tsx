@@ -13,6 +13,7 @@ import Prep from '@/routes/Prep'
 import Result from '@/routes/Result'
 import SignIn from '@/routes/SignIn'
 import './index.css'
+import { LogIn } from 'lucide-react'
 
 // networkMode always: fail with a message when offline, rather than wait silently for a connection.
 const queryClient = new QueryClient({

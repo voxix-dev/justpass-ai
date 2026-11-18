@@ -1,76 +1,102 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "@fontsource-variable/bricolage-grotesque/standard.css";
-@import "@fontsource-variable/inclusive-sans";
-@import "@fontsource-variable/caveat";
+@import "@fontsource-variable/inter";
+@import "@fontsource/stix-two-text/400.css";
+@import "@fontsource/stix-two-text/600.css";
+@import "@fontsource/stix-two-text/400-italic.css";
 
-/* Inclusive Sans draws a slashed zero, which reads as the empty set in math. Digits come from Bricolage. */
-@font-face {
-  font-family: 'JP Digits';
-  font-style: normal;
-  font-display: swap;
-  font-weight: 200 800;
-  src: url('@fontsource-variable/bricolage-grotesque/files/bricolage-grotesque-latin-standard-normal.woff2') format('woff2-variations');
-  unicode-range: U+0030-0039;
-}
-
-/* Dark-first by design: the app is used at night. Answers sit on a light "paper" sheet. */
-@custom-variant dark (&:where(.dark, .dark *));
+/*
+  JustPass: warm paper, ink, one green. Light only.
+  Bricolage Grotesque for headings, Inter for UI, STIX Two Text for hand-rolled maths previews.
+  (Inter's zero is unslashed by default, so the old "JP Digits" font-face hack is gone.)
+*/
 
 @theme inline {
-  --font-sans: 'JP Digits', 'Inclusive Sans Variable', ui-sans-serif, system-ui, sans-serif;
-  --font-display: 'Bricolage Grotesque Variable', 'Inclusive Sans Variable', sans-serif;
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Bricolage Grotesque Variable', 'Inter Variable', sans-serif;
   --font-heading: var(--font-display);
-  --font-hand: 'Caveat Variable', cursive;
+  --font-math: 'STIX Two Text', Georgia, serif;
+
+  /* shadcn-style semantic tokens */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--foreground);
   --color-popover: var(--card);
   --color-popover-foreground: var(--foreground);
-  --color-primary: var(--volt);
-  --color-primary-foreground: var(--ink);
-  --color-secondary: var(--raised);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--sand);
   --color-secondary-foreground: var(--foreground);
-  --color-muted: var(--raised);
+  --color-muted: var(--sand);
   --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--raised);
+  --color-accent: var(--sand);
   --color-accent-foreground: var(--foreground);
-  --color-destructive: var(--coral);
+  --color-destructive: var(--destructive);
   --color-border: var(--line);
   --color-input: var(--input);
-  --color-ring: var(--volt);
+  --color-ring: var(--primary);
+
+  /* design palette */
   --color-ink: var(--ink);
-  --color-raised: var(--raised);
-  --color-volt: var(--volt);
-  --color-pink: var(--pink);
-  --color-coral: var(--coral);
-  --color-paper: var(--paper);
-  --color-paper-ink: var(--paper-ink);
-  --color-paper-muted: var(--paper-muted);
-  --radius-sm: 0.5rem;
-  --radius-md: 0.7rem;
-  --radius-lg: 0.9rem;
-  --radius-xl: 1.25rem;
-  --radius-2xl: 1.75rem;
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-muted: var(--ink-muted);
+  --color-surface: var(--surface);
+  --color-sand: var(--sand);
+  --color-sand-hover: var(--sand-hover);
+  --color-line: var(--line);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-ink: var(--primary-ink);
+  --color-highlight: var(--highlight);
+
+  --radius-xs: 0.375rem;  /* maths sheet */
+  --radius-sm: 0.5rem;    /* pills */
+  --radius-md: 0.75rem;   /* inputs */
+  --radius-lg: 0.875rem;  /* buttons */
+  --radius-xl: 1.25rem;   /* cards */
+  --radius-2xl: 2rem;     /* big dark panel */
+
+  --shadow-float: 0 16px 48px rgb(20 18 15 / 0.1);
+  --shadow-sheet: 0 12px 40px rgb(20 18 15 / 0.1);
+
+  --container-page: 72.5rem; /* 1160px: landing sections */
+  --container-main: 47.5rem; /* 760px: app main column */
+
+  --text-display: clamp(2.875rem, 6.4vw, 5.25rem);
+  --text-display--line-height: 0.98;
+  --text-headline: clamp(2.125rem, 4.6vw, 3.625rem);
+  --text-headline--line-height: 1;
+  --text-title: clamp(2rem, 4vw, 3rem);
+  --text-title--line-height: 1.05;
 }
 
 :root {
-  color-scheme: dark;
-  --ink: #130f2b;
-  --background: var(--ink);
-  --card: #1d1840;
-  --raised: #282256;
-  --line: #3b3470;
-  --input: #6e66a8;
-  --foreground: #f1eeff;
-  --muted-foreground: #b1aad6;
-  --volt: #d4ff3a;
-  --pink: #ff4fa3;
-  --coral: #ff7a59;
-  --paper: #f6f5fb;
-  --paper-ink: #17132f;
-  --paper-muted: #5b5680;
+  color-scheme: light;
+  --ink: #14120f;
+  --ink-soft: #2a2722;       /* tiles on the dark panel */
+  --ink-muted: #d8d3c5;      /* body text on the dark panel */
+
+  --background: #f5f2ea;
+  --surface: #fbfaf6;        /* sidebar, file box */
+  --card: #ffffff;
+  --sand: #ece7da;           /* pills, user bubble, skeletons */
+  --sand-hover: #e9e4d6;
+  --line: #e4dfd2;
+  --input: #c9c4b6;
+
+  --foreground: var(--ink);
+  --muted-foreground: #5e5a50;
+
+  --primary: #0e7c57;
+  --primary-hover: #0a6446;
+  --primary-foreground: #ffffff;
+  --primary-soft: #ddf1e7;   /* "Ready" pill */
+  --primary-ink: #0a6446;    /* green text on light backgrounds */
+
+  --highlight: #ffe45c;
+  --destructive: #b3261e;
 }
 
 @layer base {
@@ -80,24 +106,24 @@
   html {
     @apply font-sans;
     -webkit-text-size-adjust: 100%;
-    /* Keep focused elements clear of the sticky header and the phone nav. */
-    scroll-padding-block: 5rem 6rem;
   }
   body {
     @apply min-h-dvh bg-background text-foreground antialiased;
-    font-size: 1.0625rem;
+    font-size: 1rem;
     line-height: 1.55;
   }
   h1, h2, h3 {
     font-family: var(--font-display);
     font-weight: 800;
-    font-stretch: 82%;
-    letter-spacing: -0.015em;
+    letter-spacing: -0.02em;
     line-height: 1;
     text-wrap: balance;
   }
+  mark {
+    @apply rounded bg-highlight px-1 text-ink;
+  }
   :focus-visible {
-    outline: 3px solid var(--volt);
+    outline: 3px solid var(--ring, var(--primary));
     outline-offset: 3px;
   }
   @media (prefers-reduced-motion: reduce) {
@@ -110,84 +136,231 @@
   }
 }
 
-/* A slapped-on label: tilted, hard shadow. Colour comes from bg-/text- utilities. */
-@utility sticker {
+/* ---------- Layout ---------- */
+
+/* Landing section wrapper: centred, 1160px, 24px gutters. */
+@utility wrap {
+  width: 100%;
+  max-width: var(--container-page);
+  margin-inline: auto;
+  padding-inline: 1.5rem;
+}
+
+/* ---------- Buttons ---------- */
+
+/* Primary green. Add btn-sm for the 44px variant. */
+@utility btn {
   display: inline-flex;
   align-items: center;
-  gap: 0.35em;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: var(--btn-h, 3rem);
+  padding-inline: var(--btn-px, 1.5rem);
+  border: 2px solid var(--primary);
+  border-radius: var(--radius-lg);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s;
+  &:hover {
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
+  }
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+/* Secondary: ink outline, transparent. */
+@utility btn-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: var(--btn-h, 3rem);
+  padding-inline: var(--btn-px, 1.5rem);
+  border: 2px solid var(--ink);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--ink);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s;
+  &:hover {
+    background: var(--sand-hover);
+  }
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+@utility btn-sm {
+  --btn-h: 2.75rem;
+  --btn-px: 1.125rem;
+}
+
+/* Underlined green text action, e.g. "Send back with a note". */
+@utility link-action {
+  min-height: 2.75rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--primary-ink);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ---------- Surfaces and labels ---------- */
+
+@utility card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+}
+
+/* Chat bubbles: the corner nearest the speaker is squared off. */
+@utility bubble-ai {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  border-top-left-radius: 0.25rem;
+}
+@utility bubble-user {
+  background: var(--sand);
+  border-radius: var(--radius-xl);
+  border-bottom-right-radius: 0.25rem;
+}
+
+/* Small status label. Default is sand; pick one variant. */
+@utility pill {
+  display: inline-block;
+  padding: 0.25rem 0.625rem;
+  border-radius: var(--radius-sm);
+  background: var(--sand);
+  color: var(--foreground);
+  font-size: 0.75rem;
+  line-height: 1.35;
+  font-weight: 600;
+}
+@utility pill-ready {
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+}
+@utility pill-highlight {
+  background: var(--highlight);
+  color: var(--ink);
+}
+@utility pill-quiet {
+  background: var(--sand);
+  color: var(--muted-foreground);
+}
+
+/* Text input / textarea. */
+@utility field {
+  width: 100%;
+  height: 3rem;
+  padding-inline: 0.875rem;
+  border: 1.5px solid var(--input);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 1rem;
+}
+
+/* Sidebar job row. Mark the open one with aria-current="page" or data-active="true". */
+@utility nav-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 3.5rem;
+  padding: 0.75rem;
+  border: 1.5px solid transparent;
+  border-radius: var(--radius-lg);
+  text-align: left;
+  cursor: pointer;
+  &[aria-current="page"],
+  &[data-active="true"] {
+    border-color: var(--ink);
+    background: var(--card);
+  }
+}
+
+@utility wordmark {
   font-family: var(--font-display);
   font-weight: 800;
-  font-stretch: 90%;
-  border-radius: 0.5rem;
-  padding: 0.3em 0.7em;
-  rotate: -3deg;
-  box-shadow: 3px 3px 0 #000;
+  letter-spacing: -0.02em;
 }
 
-/* Work in progress, everywhere: hot pink hazard tape. */
-@utility tape {
-  background: repeating-linear-gradient(-45deg, var(--pink) 0 14px, var(--ink) 14px 28px);
+/* ---------- Maths preview ---------- */
+
+/* The white paper sheet that previews the PDF. */
+@utility sheet {
+  padding: clamp(1.5rem, 5vw, 3.5rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: #fff;
+  box-shadow: var(--shadow-sheet);
+  color: #111;
 }
 
-/* Diagonal hatching laid over sample content so it reads as a preview, not data. */
-@utility hatch {
-  background-image: repeating-linear-gradient(45deg, rgb(255 79 163 / 0.09) 0 2px, transparent 2px 11px);
+/* Hand-rolled equation lines (STIX), for static previews. Real answers go through KaTeX. */
+@utility math {
+  font-family: var(--font-math);
+  font-size: 1.25rem;
+  line-height: 1.7;
+}
+@utility frac {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  margin-inline: 0.2rem;
+  font-size: 0.95em;
+  line-height: 1.25;
+  & > :first-child {
+    border-bottom: 1px solid currentColor;
+    padding-inline: 0.25rem;
+  }
+}
+@utility radicand {
+  border-top: 1.5px solid currentColor;
+  padding-inline: 0.125rem;
 }
 
-/* The rubber "PASS" stamp. */
-@utility stamp {
-  font-family: var(--font-display);
-  font-weight: 800;
-  font-stretch: 75%;
-  letter-spacing: 0.06em;
-  border: 4px solid currentColor;
-  border-radius: 0.6rem;
-  padding: 0.05em 0.4em;
-  rotate: -12deg;
-  outline: 2px solid currentColor;
-  outline-offset: 3px;
-}
+/* ---------- Rendered answers (markdown + KaTeX) ---------- */
 
-/* Worked answers: a clean, high-contrast sheet of paper. */
+/* Goes inside a card or bubble-ai; it has no surface of its own. */
 @layer components {
   .answer {
-    @apply rounded-xl bg-paper p-5 leading-relaxed text-paper-ink sm:p-8;
+    @apply leading-relaxed text-foreground;
     overflow-wrap: anywhere;
     overflow-x: auto;
   }
   .answer > * + * { margin-top: 0.9em; }
-  .answer h2, .answer h3 { color: var(--paper-ink); }
+  .answer h2, .answer h3 { color: var(--ink); }
   .answer h2 { @apply text-3xl; }
-  .answer h3 { @apply mt-8 text-2xl; }
+  .answer h3 { @apply mt-6 text-2xl; }
   .answer strong { font-weight: 700; }
-  .answer em { color: var(--paper-muted); }
-  .answer a { @apply font-bold underline underline-offset-4; }
-  .answer :focus-visible { outline-color: var(--paper-ink); }
+  .answer em { color: var(--muted-foreground); }
+  .answer a { @apply font-semibold text-primary-ink underline underline-offset-4; }
   .answer ul, .answer ol { padding-left: 1.4em; }
   .answer ul { list-style: disc; }
   .answer ol { list-style: decimal; }
-  .answer code { @apply rounded bg-paper-ink/10 px-1 py-0.5 text-[0.92em]; }
-  .answer pre { @apply overflow-x-auto rounded-lg bg-paper-ink/10 p-3; }
-  .answer blockquote { @apply w-fit max-w-full rounded-lg border-2 border-paper-ink bg-volt px-4 py-3; }
-  /* Long display math scrolls in its own box. Edge shadows appear only on the side with more to see. */
+  .answer code { @apply rounded-sm bg-sand px-1 py-0.5 text-[0.92em]; }
+  .answer pre { @apply overflow-x-auto rounded-lg bg-sand p-3; }
+  .answer blockquote { @apply w-fit max-w-full rounded-lg bg-highlight px-4 py-3 text-ink; }
+  /* Long display math scrolls in its own box. Edge shadows show only on the side with more to see. */
   .answer .katex-display {
     overflow-x: auto;
     overflow-y: hidden;
     padding: 0.25em 0;
     background:
-      linear-gradient(to right, var(--paper) 40%, transparent) left / 2.5rem 100% no-repeat local,
-      linear-gradient(to left, var(--paper) 40%, transparent) right / 2.5rem 100% no-repeat local,
-      radial-gradient(farthest-side at 0 50%, rgb(23 19 47 / 0.5), transparent) left / 1rem 100% no-repeat scroll,
-      radial-gradient(farthest-side at 100% 50%, rgb(23 19 47 / 0.5), transparent) right / 1rem 100% no-repeat scroll;
+      linear-gradient(to right, var(--card) 40%, transparent) left / 2.5rem 100% no-repeat local,
+      linear-gradient(to left, var(--card) 40%, transparent) right / 2.5rem 100% no-repeat local,
+      radial-gradient(farthest-side at 0 50%, rgb(20 18 15 / 0.3), transparent) left / 1rem 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%, rgb(20 18 15 / 0.3), transparent) right / 1rem 100% no-repeat scroll;
   }
-}
-
-/* Hero: one scan pass over the worksheet on load. */
-.scan {
-  top: 100%;
-  animation: scan 1.6s ease-in-out 0.4s 1 both;
-}
-@keyframes scan {
-  from { top: 0; opacity: 1; }
-  to { top: 100%; opacity: 0; }
 }
