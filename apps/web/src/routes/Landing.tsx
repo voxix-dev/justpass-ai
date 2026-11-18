@@ -122,10 +122,10 @@ export default function Landing() {
         <h2 className="text-headline">Get your evenings back.</h2>
         <div className="flex flex-wrap justify-center gap-3">
           <Button asChild size="lg" className="h-12 px-6">
-            <Link to={isAuthenticated ? '/new' : '/login'}>{primaryLabel}</Link>
+            <Link to={isAuthenticated ? '/new' : '/signin'}>{primaryLabel}</Link>
           </Button>
           <Button asChild size="lg" variant="outline" className="h-12 px-6">
-            <Link to="/login">Log in</Link>
+            <Link to="/signin">Log in</Link>
           </Button>
         </div>
       </section>

@@ -115,7 +115,7 @@ export default function SignIn() {
               <p className="mt-1 text-muted-foreground">
                 We sent a sign-in link to {sentTo}. Open it in this browser to finish.
               </p>
-              <Button variant="ghost" className="mt-2" onClick={() => setSentTo('')}>
+              <Button className="mt-2" onClick={() => setSentTo('')}>
                 Use a different email
               </Button>
             </div>
@@ -142,13 +142,13 @@ export default function SignIn() {
           )}
 
           {!saving && (
-            <Button variant="ghost" size="lg" className="mt-3 h-12 w-full" onClick={() => void run('guest', signInAsGuest, () => navigate(target, { replace: true }))} disabled={waiting} aria-busy={busy === 'guest'}>
+            <Button  size="lg" className="mt-3 h-12 w-full" onClick={() => void run('guest', signInAsGuest, () => navigate(target, { replace: true }))} disabled={waiting} aria-busy={busy === 'guest'}>
               {busy === 'guest' && <LoaderCircle className="animate-spin" aria-hidden="true" />}
               Continue without an account
             </Button>
           )}
           {saving && (
-            <Button asChild variant="ghost" size="lg" className="mt-3 h-12 w-full">
+            <Button asChild  size="lg" className="mt-3 h-12 w-full">
               <Link to={target}>Not now</Link>
             </Button>
           )}

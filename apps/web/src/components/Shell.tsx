@@ -84,12 +84,11 @@ export function Shell() {
                     <Link to="/signin">Save your work</Link>
                   </Button>
                 )}
-                <Button variant="ghost" onClick={() => void leave()}>
+                <Button variant="default" onClick={() => void leave()}>
                   <LogOut aria-hidden="true" /> <span className={cn(user.isAnonymous && 'max-sm:sr-only')}>Sign out</span>
                 </Button>
               </div>
             ) : (
-              !loading &&
               pathname !== '/signin' && (
                 <Button asChild>
                   <Link to="/signin">Sign in</Link>
