@@ -64,7 +64,7 @@ export function Shell() {
       <header className="sticky top-0 z-30 border-b-2 [@media(max-height:480px)]:static border-border bg-background/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-1 px-4">
           <Link to="/" className="-ml-2 flex h-11 items-center gap-2.5 rounded-lg px-2 font-display text-2xl font-extrabold tracking-tight [font-stretch:85%]">
-            <Logo /> JustPass
+            <Logo /> 
           </Link>
           {user && (
             <nav aria-label="Main" className="ml-8 hidden gap-1 sm:flex">

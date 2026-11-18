@@ -3,13 +3,39 @@ import type { Job } from '@/api/jobs'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
-/** Render the decorative JustPass mark, hidden from assistive technology. */
-export function Logo({ className }: { className?: string }) {
+type LogoVariant = 'light' | 'dark'
+
+type BrandProps = {
+  variant?: LogoVariant
+  className?: string
+}
+
+/** JustPass symbol. Color follows the selected variant. */
+export function Mark({ variant = 'dark', className }: BrandProps) {
   return (
-    <svg viewBox="0 0 32 32" aria-hidden="true" className={cn('size-8 -rotate-6', className)}>
-      <rect x="1" y="1" width="30" height="30" rx="8" fill="var(--volt)" stroke="#000" strokeWidth="2" />
-      <path d="M8.5 16.5l5 5L24 10.5" fill="none" stroke="var(--ink)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
+    <span
+      aria-hidden="true"
+      className={cn(
+        'inline-block size-8 shrink-0 bg-current',
+        variant === 'light' ? 'text-white' : 'text-foreground',
+        className,
+      )}
+      style={{
+        mask: "url('/justpass-mark-currentcolor.svg') center / contain no-repeat",
+        WebkitMask: "url('/justpass-mark-currentcolor.svg') center / contain no-repeat",
+      }}
+    />
+  )
+}
+
+/** JustPass full wordmark. */
+export function Logo({ variant = 'dark', className }: BrandProps) {
+  return (
+    <img
+      src={variant === 'light' ? '/justpass-logo-light.svg' : '/justpass-logo.svg'}
+      alt="JustPass"
+      className={cn('h-8 w-auto', className)}
+    />
   )
 }
 
