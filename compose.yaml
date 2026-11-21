@@ -31,6 +31,7 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn api.main:app --host 127.0.0.1 --port ${API_PORT:-8000}"]
     restart: on-failure  # the first migration can beat a just-started Postgres
     depends_on:
       db:
