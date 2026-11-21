@@ -54,7 +54,7 @@ services:
         condition: service_healthy
       agent:
         condition: service_healthy
-command: ["sh", "-c", "alembic upgrade head && exec uvicorn api.main:app --host 127.0.0.1 --port ${API_PORT:-8000}"]
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn api.main:app --host 127.0.0.1 --port ${API_PORT:-8000}"]
     environment:
       DATABASE_URL: postgresql+asyncpg://app:app@db:5432/app
       AGENT_URL: http://agent
